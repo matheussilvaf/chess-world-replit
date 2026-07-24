@@ -46,6 +46,9 @@ interface GameState {
   showVoiceChat: boolean;
   boardLocked: boolean;
   unreadChat: number;
+  /** Last chat message received LIVE (room broadcast / realtime insert) —
+   *  never set by history loads, so the HUD preview balloon can trust it. */
+  liveChatMessage: ChatMessage | null;
   colyseusBoards: ColyseusBoardInfo[];
   matchStartedInfo: MatchStartedInfo | null;
   challengeColor: 'w' | 'b' | null;
@@ -104,6 +107,7 @@ export const useGameStore = create<GameState>((set, get) => ({
   showVoiceChat: false,
   boardLocked: false,
   unreadChat: 0,
+  liveChatMessage: null,
   colyseusBoards: [],
   matchStartedInfo: null,
   challengeColor: null,
@@ -118,7 +122,7 @@ export const useGameStore = create<GameState>((set, get) => ({
   setHouses: (houses) => set({ houses }),
   setCurrentMatch: (match) => set({ currentMatch: match }),
   setChatMessages: (msgs) => set({ chatMessages: msgs }),
-  addChatMessage: (msg) => set((s) => ({ chatMessages: [...s.chatMessages.slice(-99), msg], unreadChat: s.showChat ? 0 : s.unreadChat + 1 })),
+  addChatMessage: (msg) => set((s) => ({ chatMessages: [...s.chatMessages.slice(-99), msg], unreadChat: s.showChat ? 0 : s.unreadChat + 1, liveChatMessage: msg })),
   setOnlinePlayers: (count) => set({ onlinePlayers: count }),
   setSelectedBoard: (board) => set({ selectedBoard: board }),
   setSelectedHouse: (house) => set({ selectedHouse: house }),
@@ -148,7 +152,9 @@ export const useGameStore = create<GameState>((set, get) => ({
 
     await supabase.from('profiles').update({ current_region: region }).eq('user_id', userId);
 
-    set({ region, playerPosition: { x: spawnX, y: spawnY } });
+    // liveChatMessage is cleared so a leftover from a previous session/region
+    // can never trigger a stale preview balloon after re-entering.
+    set({ region, playerPosition: { x: spawnX, y: spawnY }, liveChatMessage: null });
     await get().loadBoards(region);
     await get().loadHouses(region);
     await get().loadChat(region);

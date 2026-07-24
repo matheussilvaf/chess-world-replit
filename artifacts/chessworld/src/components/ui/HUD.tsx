@@ -1,8 +1,10 @@
-import { useState, useCallback, useEffect } from 'react';
+import { useState, useCallback, useEffect, useRef } from 'react';
 import { useAuthStore } from '../../stores/authStore';
 import { useGameStore } from '../../stores/gameStore';
 import { useChessStore } from '../../stores/chessStore';
+import { useGameSettingsStore } from '../../stores/gameSettingsStore';
 import { useColyseusStore } from '../../hooks/useColyseusConnection';
+import type { ChatMessage } from '../../types';
 import { REGIONS } from '../../config/game';
 import { voiceClient } from '../../game/voice/livekitVoiceClient';
 import { leaveWorldRoom } from '../../game/network/colyseusClient';
@@ -17,13 +19,39 @@ const FULLSCREEN_SUPPORTED =
 
 export function HUD() {
   const { profile } = useAuthStore();
-  const { region, onlinePlayers, unreadChat, toggleChat, toggleProfile, toggleFriends, toggleSettings, toggleVoiceChat } = useGameStore();
+  const { region, onlinePlayers, unreadChat, liveChatMessage, showChat, toggleChat, toggleProfile, toggleFriends, toggleSettings, toggleVoiceChat } = useGameStore();
   const { phase } = useColyseusStore();
   const matchId = useChessStore(s => s.matchId);
+  const chatPreviewSeconds = useGameSettingsStore((s) => s.chatPreviewSeconds);
   const [isFullscreen, setIsFullscreen] = useState(!!document.fullscreenElement);
 
   const regionInfo = REGIONS.find(r => r.id === region);
   const inGame = !!matchId;
+
+  // New-message preview balloon under the chat icon (auto-hides; admin-tunable).
+  // Only liveChatMessage triggers it — the store sets that field exclusively on
+  // live room/realtime messages, never on history loads (loadChat), so region
+  // switches or reconnects can't fire ghost previews of old messages.
+  const [chatPreview, setChatPreview] = useState<ChatMessage | null>(null);
+  const seenLiveRef = useRef<ChatMessage | null>(useGameStore.getState().liveChatMessage);
+
+  useEffect(() => {
+    if (!liveChatMessage || liveChatMessage === seenLiveRef.current) return;
+    seenLiveRef.current = liveChatMessage;
+    if (useGameStore.getState().showChat) return; // chat open — the panel already shows it
+    setChatPreview(liveChatMessage);
+  }, [liveChatMessage]);
+
+  useEffect(() => {
+    if (!chatPreview) return;
+    const seconds = Math.min(10, Math.max(2, chatPreviewSeconds));
+    const t = window.setTimeout(() => setChatPreview(null), seconds * 1000);
+    return () => window.clearTimeout(t);
+  }, [chatPreview, chatPreviewSeconds]);
+
+  useEffect(() => {
+    if (showChat) setChatPreview(null);
+  }, [showChat]);
 
   useEffect(() => {
     const handler = () =>
@@ -109,12 +137,30 @@ export function HUD() {
         {/* Action buttons */}
         <div className="pointer-events-auto flex items-center gap-1.5">
           {/* Always visible in game mode: Chat, Voice, Settings, Fullscreen */}
-          <HUDButton
-            icon={<MessageSquare className="w-4 h-4" />}
-            onClick={toggleChat}
-            label="Chat"
-            badge={unreadChat}
-          />
+          <div className="relative">
+            <HUDButton
+              icon={<MessageSquare className="w-4 h-4" />}
+              onClick={toggleChat}
+              label="Chat"
+              badge={unreadChat}
+            />
+            {chatPreview && (
+              <button
+                key={chatPreview.id}
+                onClick={() => { setChatPreview(null); toggleChat(); }}
+                className="absolute right-0 top-full mt-2 w-60 max-w-[72vw] rounded-xl rounded-tr-sm border border-slate-700/60 bg-slate-900/95 backdrop-blur-sm px-3 py-2 text-left shadow-2xl"
+                style={{ animation: 'chat-preview-in 0.18s ease-out' }}
+              >
+                <span className="absolute -top-[5px] right-4 h-2.5 w-2.5 rotate-45 border-l border-t border-slate-700/60 bg-slate-900" />
+                <span className="block truncate text-[11px] font-semibold text-emerald-400">{chatPreview.username}</span>
+                <span className="block break-words text-xs leading-snug text-white/90 line-clamp-3">
+                  {chatPreview.message.length > 80
+                    ? `${chatPreview.message.slice(0, 80).trimEnd()}...`
+                    : chatPreview.message}
+                </span>
+              </button>
+            )}
+          </div>
           <HUDButton icon={<Mic className="w-4 h-4" />} onClick={toggleVoiceChat} label="Voice" />
           <HUDButton icon={<Settings className="w-4 h-4" />} onClick={toggleSettings} label="Settings" />
           {FULLSCREEN_SUPPORTED && (

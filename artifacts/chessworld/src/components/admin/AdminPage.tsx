@@ -2,7 +2,7 @@ import { useEffect, useState, useCallback } from 'react';
 import { supabase } from '../../lib/supabase';
 import { useInteractionStore } from '../../stores/interactionStore';
 import { getColyseusHttpUrl } from '../../config/colyseus';
-import { Settings, Gauge, ZoomIn, ArrowLeft, Crosshair, Bug, Waypoints, Monitor, Smartphone } from 'lucide-react';
+import { Settings, Gauge, ZoomIn, ArrowLeft, Crosshair, Bug, Waypoints, Monitor, Smartphone, MessageSquare } from 'lucide-react';
 import { TournamentConfigSection } from './TournamentConfigSection';
 
 interface GameSettings {
@@ -11,11 +11,15 @@ interface GameSettings {
   show_debug_visuals: boolean;
   board_zoom_desktop: number;
   board_zoom_mobile: number;
+  chat_preview_seconds: number;
 }
 
 const BOARD_ZOOM_MIGRATION_SQL = `ALTER TABLE game_settings
   ADD COLUMN IF NOT EXISTS board_zoom_desktop numeric NOT NULL DEFAULT 3,
   ADD COLUMN IF NOT EXISTS board_zoom_mobile numeric NOT NULL DEFAULT 2.5;`;
+
+const CHAT_PREVIEW_MIGRATION_SQL = `ALTER TABLE game_settings
+  ADD COLUMN IF NOT EXISTS chat_preview_seconds numeric NOT NULL DEFAULT 3;`;
 
 export function AdminPage() {
   // The game forces overflow:hidden on html/body/#root. Override it here so
@@ -33,12 +37,15 @@ export function AdminPage() {
     show_debug_visuals: false,
     board_zoom_desktop: 3,
     board_zoom_mobile: 2.5,
+    chat_preview_seconds: 3,
   });
   const [saving, setSaving] = useState(false);
   const { debugEnabled, setDebugEnabled } = useInteractionStore();
   const [lastSaved, setLastSaved] = useState<string | null>(null);
   // The board zoom columns may not exist yet (added via SQL editor migration)
   const [boardZoomMissing, setBoardZoomMissing] = useState(false);
+  // Same for the chat preview duration column
+  const [chatPreviewMissing, setChatPreviewMissing] = useState(false);
 
   useEffect(() => {
     loadSettings();
@@ -54,13 +61,16 @@ export function AdminPage() {
     if (data) {
       const row = data as Record<string, unknown>;
       const hasBoardZoom = row.board_zoom_desktop != null;
+      const hasChatPreview = row.chat_preview_seconds != null;
       setBoardZoomMissing(!hasBoardZoom);
+      setChatPreviewMissing(!hasChatPreview);
       setSettings({
         default_zoom: Number(row.default_zoom),
         player_speed: Number(row.player_speed),
         show_debug_visuals: Boolean(row.show_debug_visuals),
         board_zoom_desktop: hasBoardZoom ? Number(row.board_zoom_desktop) : 3,
         board_zoom_mobile: row.board_zoom_mobile != null ? Number(row.board_zoom_mobile) : 2.5,
+        chat_preview_seconds: hasChatPreview ? Number(row.chat_preview_seconds) : 3,
       });
     }
   };
@@ -78,6 +88,10 @@ export function AdminPage() {
       payload.board_zoom_desktop = newSettings.board_zoom_desktop;
       payload.board_zoom_mobile = newSettings.board_zoom_mobile;
     }
+    // Same for the chat preview duration column
+    if (!chatPreviewMissing) {
+      payload.chat_preview_seconds = newSettings.chat_preview_seconds;
+    }
     const { error } = await supabase
       .from('game_settings')
       .update(payload)
@@ -87,7 +101,7 @@ export function AdminPage() {
     if (!error) {
       setLastSaved(new Date().toLocaleTimeString());
     }
-  }, [boardZoomMissing]);
+  }, [boardZoomMissing, chatPreviewMissing]);
 
   const handleZoomChange = (value: number) => {
     const clamped = Math.round(value * 4) / 4; // snap to 0.25 steps
@@ -108,6 +122,13 @@ export function AdminPage() {
     const newSettings = { ...settings, [key]: clamped };
     setSettings(newSettings);
     if (!boardZoomMissing) saveSettings(newSettings);
+  };
+
+  const handleChatPreviewChange = (value: number) => {
+    const clamped = Math.min(10, Math.max(2, Math.round(value * 2) / 2)); // snap to 0.5s, keep 2–10s
+    const newSettings = { ...settings, chat_preview_seconds: clamped };
+    setSettings(newSettings);
+    if (!chatPreviewMissing) saveSettings(newSettings);
   };
 
   return (
@@ -382,6 +403,87 @@ export function AdminPage() {
                     </button>
                   ))}
                 </div>
+              </div>
+            </div>
+          </div>
+
+          {/* Chat Preview Duration */}
+          <div className="bg-slate-900 rounded-xl border border-slate-800 p-6">
+            <div className="flex items-center gap-3 mb-4">
+              <div className="w-9 h-9 rounded-lg bg-emerald-500/10 flex items-center justify-center">
+                <MessageSquare className="w-4 h-4 text-emerald-400" />
+              </div>
+              <div>
+                <h2 className="text-base font-medium text-white">Chat Message Preview</h2>
+                <p className="text-sm text-slate-400">How long the new-message balloon stays visible under the chat icon</p>
+              </div>
+            </div>
+
+            {chatPreviewMissing && (
+              <div className="mb-5 px-4 py-3 rounded-lg bg-amber-500/10 border border-amber-500/30">
+                <p className="text-sm text-amber-300 font-medium mb-2">
+                  One-time setup: run this in the Supabase SQL editor, then click Re-check.
+                </p>
+                <pre className="text-[11px] text-amber-200/90 bg-slate-950/70 rounded-md p-3 overflow-x-auto whitespace-pre-wrap font-mono">
+                  {CHAT_PREVIEW_MIGRATION_SQL}
+                </pre>
+                <div className="flex items-center gap-3 mt-2">
+                  <button
+                    onClick={loadSettings}
+                    className="px-3 py-1.5 rounded-md bg-amber-500/20 border border-amber-500/40 text-amber-300 text-xs font-medium hover:bg-amber-500/30 transition-colors"
+                  >
+                    Re-check
+                  </button>
+                  <p className="text-xs text-amber-200/70">
+                    Until then the game uses the default: 3 seconds.
+                  </p>
+                </div>
+              </div>
+            )}
+
+            <div className="space-y-3">
+              <div className="flex items-center justify-between">
+                <span className="text-xs text-slate-500 uppercase tracking-wide">Duration</span>
+                <span className="text-lg font-mono font-semibold text-emerald-400">
+                  {settings.chat_preview_seconds.toFixed(1)}s
+                </span>
+              </div>
+              <input
+                type="range"
+                min="2"
+                max="10"
+                step="0.5"
+                disabled={chatPreviewMissing}
+                value={settings.chat_preview_seconds}
+                onChange={(e) => handleChatPreviewChange(parseFloat(e.target.value))}
+                className="w-full h-2 rounded-full appearance-none bg-slate-700 cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed
+                  [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-5 [&::-webkit-slider-thumb]:h-5
+                  [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-emerald-500
+                  [&::-webkit-slider-thumb]:shadow-lg [&::-webkit-slider-thumb]:cursor-grab
+                  [&::-moz-range-thumb]:w-5 [&::-moz-range-thumb]:h-5
+                  [&::-moz-range-thumb]:rounded-full [&::-moz-range-thumb]:bg-emerald-500
+                  [&::-moz-range-thumb]:border-none [&::-moz-range-thumb]:cursor-grab"
+              />
+              <div className="flex justify-between text-xs text-slate-500">
+                <span>2s (Quick)</span>
+                <span>3s (Default)</span>
+                <span>10s (Long)</span>
+              </div>
+              <div className="flex gap-2 mt-1">
+                {[2, 3, 4, 5, 7, 10].map((s) => (
+                  <button
+                    key={s}
+                    disabled={chatPreviewMissing}
+                    onClick={() => handleChatPreviewChange(s)}
+                    className={`px-3 py-1.5 rounded-md text-xs font-medium transition-colors disabled:opacity-40 disabled:cursor-not-allowed ${
+                      settings.chat_preview_seconds === s
+                        ? 'bg-emerald-500 text-white'
+                        : 'bg-slate-800 text-slate-300 hover:bg-slate-700'
+                    }`}
+                  >
+                    {s}s
+                  </button>
+                ))}
               </div>
             </div>
           </div>

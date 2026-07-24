@@ -79,3 +79,9 @@ canvas {
   from { transform: translateY(18px); opacity: 0; }
   to   { transform: translateY(0);    opacity: 1; }
 }
+
+/* HUD chat message preview balloon */
+@keyframes chat-preview-in {
+  from { transform: translateY(-4px); opacity: 0; }
+  to   { transform: translateY(0);    opacity: 1; }
+}

@@ -1,9 +1,10 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useGameStore } from '../../stores/gameStore';
 import { useAuthStore } from '../../stores/authStore';
-import { Mic, MicOff, PhoneOff, X, Volume2, LogIn } from 'lucide-react';
+import { Mic, MicOff, PhoneOff, X, Volume2, LogIn, GripVertical } from 'lucide-react';
 import { voiceClient, type VoiceStatus } from '../../game/voice/livekitVoiceClient';
 import { getWorldRoom } from '../../game/network/colyseusClient';
+import { usePanelPlacement } from '../../hooks/usePanelPlacement';
 
 interface VoiceParticipant {
   sessionId: string;
@@ -20,6 +21,13 @@ export function VoiceChatPanel() {
   const [error, setError] = useState<string | null>(voiceClient.error);
   const [micOn, setMicOn] = useState(false);
   const [participants, setParticipants] = useState<VoiceParticipant[]>([]);
+
+  // Draggable placement (drag the header to move; persists across sessions).
+  const { panelRef, style, dragging, dragHandleProps } = usePanelPlacement({
+    storageKey: 'chessworld.panel.voice',
+    defaultWidth: 288,
+    defaultHeight: 320,
+  });
 
   useEffect(() => {
     const unsub = voiceClient.onStatusChange((s, err) => {
@@ -86,11 +94,26 @@ export function VoiceChatPanel() {
   const connecting = status === 'connecting';
 
   return (
-    <div className="fixed right-4 top-1/2 -translate-y-1/2 z-[500] w-72">
-      <div className="bg-slate-900/95 backdrop-blur-sm rounded-xl border border-slate-700/60 overflow-hidden shadow-2xl">
-        {/* Header */}
-        <div className="flex items-center justify-between px-4 py-3 border-b border-slate-700/50">
+    <div
+      ref={panelRef}
+      style={style}
+      className={`fixed z-[500] w-72 ${style ? '' : 'right-4 top-1/2 -translate-y-1/2'}`}
+    >
+      <div
+        className={`bg-slate-900/95 backdrop-blur-sm rounded-xl border overflow-hidden shadow-2xl transition-colors ${
+          dragging ? 'border-emerald-500/50' : 'border-slate-700/60'
+        }`}
+      >
+        {/* Header — drag handle */}
+        <div
+          {...dragHandleProps}
+          title="Drag to move"
+          className={`flex items-center justify-between px-4 py-3 border-b border-slate-700/50 select-none ${
+            dragging ? 'cursor-grabbing' : 'cursor-grab'
+          }`}
+        >
           <div className="flex items-center gap-2">
+            <GripVertical className="w-3.5 h-3.5 text-slate-500" />
             <Volume2 className="w-4 h-4 text-emerald-400" />
             <span className="text-white font-semibold text-sm">World Voice</span>
             <span className="text-slate-400 text-xs">({participants.length})</span>

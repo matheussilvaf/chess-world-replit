@@ -99,3 +99,8 @@ The api-server dev script is `build && start` (esbuild → dist), NOT watch mode
 The Bolt-era `reportResult` client message (any authed user could falsify results) was removed from TournamentRoom and the client hook.
 **Why:** WorldRoom already reports every end condition (checkmate/resign/timeout/disconnect) and the coordinator sweeps forfeits; a client path is purely a cheat vector.
 **How to apply:** never reintroduce client-sent results; new end conditions belong in WorldRoom/coordinator.
+
+## E2E testing subagent cannot load the game world (no WebGL)
+The tester's headless browser has no WebGL context; Phaser 4 is WebGL-only (no Canvas fallback), so login/region-select works but "Enter World" crashes with "Cannot create WebGL context, aborting" — every in-world HUD feature (chat, voice, balloons, drag) is unreachable for it.
+**Why:** burned a tester run on a chat-panel plan that died at world load; this is an environment limit, not an app bug.
+**How to apply:** use the tester only for non-Phaser routes (/admin, login, region select); verify in-world UI via tsc + targeted logic review + real-device testing by the user. Related pattern: distinguishing live chat messages from history loads must use an explicit store signal (`liveChatMessage`, set only in addChatMessage, cleared in enterRegion) — length-diff heuristics ghost-fire on region re-entry because loadChat bulk-replaces the array.

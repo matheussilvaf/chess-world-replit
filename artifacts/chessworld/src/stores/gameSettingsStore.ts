@@ -7,6 +7,9 @@ import { supabase } from '../lib/supabase';
 // loading falls back to these defaults until the migration is applied.
 export const BOARD_ZOOM_DESKTOP_DEFAULT = 3;
 export const BOARD_ZOOM_MOBILE_DEFAULT = 2.5;
+// Seconds the HUD chat preview balloon stays visible (DB column
+// chat_preview_seconds may not exist yet — falls back to this default).
+export const CHAT_PREVIEW_SECONDS_DEFAULT = 3;
 
 interface GameSettingsState {
   defaultZoom: number;
@@ -14,6 +17,7 @@ interface GameSettingsState {
   showDebugVisuals: boolean;
   boardZoomDesktop: number;
   boardZoomMobile: number;
+  chatPreviewSeconds: number;
   loaded: boolean;
   load: () => Promise<void>;
   subscribe: () => () => void;
@@ -25,6 +29,7 @@ type SettingsRow = {
   show_debug_visuals?: boolean | null;
   board_zoom_desktop?: number | null;
   board_zoom_mobile?: number | null;
+  chat_preview_seconds?: number | null;
 };
 
 function mapRow(row: SettingsRow) {
@@ -34,6 +39,9 @@ function mapRow(row: SettingsRow) {
     ...(row.show_debug_visuals != null ? { showDebugVisuals: Boolean(row.show_debug_visuals) } : {}),
     ...(row.board_zoom_desktop != null ? { boardZoomDesktop: Number(row.board_zoom_desktop) } : {}),
     ...(row.board_zoom_mobile != null ? { boardZoomMobile: Number(row.board_zoom_mobile) } : {}),
+    ...(row.chat_preview_seconds != null
+      ? { chatPreviewSeconds: Math.min(10, Math.max(2, Number(row.chat_preview_seconds))) }
+      : {}),
   };
 }
 
@@ -43,6 +51,7 @@ export const useGameSettingsStore = create<GameSettingsState>((set) => ({
   showDebugVisuals: false,
   boardZoomDesktop: BOARD_ZOOM_DESKTOP_DEFAULT,
   boardZoomMobile: BOARD_ZOOM_MOBILE_DEFAULT,
+  chatPreviewSeconds: CHAT_PREVIEW_SECONDS_DEFAULT,
   loaded: false,
 
   load: async () => {
