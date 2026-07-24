@@ -22,4 +22,3 @@ timeoutMs = 20000
 [userenv]
 
 [userenv.development]
-VITE_COLYSEUS_LOCAL = "1"
