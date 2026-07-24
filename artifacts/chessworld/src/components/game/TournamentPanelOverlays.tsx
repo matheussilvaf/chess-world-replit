@@ -260,6 +260,9 @@ export function TournamentPanelOverlays() {
 
   useTournamentAutoSeat(state, connected);
 
+  // Must be called before any early returns (Rules of Hooks).
+  const opponentDisconnected = useGameStore(s => s.opponentDisconnected);
+
   if (!panelRects || !connected) return null;
   if (state.status === 'idle' && !state.startsAt) return null;
 
@@ -267,7 +270,6 @@ export function TournamentPanelOverlays() {
   const standingsRect = panelRects.standings;
 
   // ── Overlay logic ─────────────────────────────────────────────────────────
-  const opponentDisconnected = useGameStore(s => s.opponentDisconnected);
 
   // Round countdown: show when between_rounds and server wrote a nextRoundAt
   const showRoundCountdown = state.status === 'between_rounds' && !!state.nextRoundAt;
