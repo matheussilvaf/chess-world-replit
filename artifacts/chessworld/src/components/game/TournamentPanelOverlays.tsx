@@ -2,7 +2,7 @@ import { useEffect, useState, useRef, ReactNode } from 'react';
 import { useTournamentRoom } from '../../hooks/useTournamentRoom';
 import { useTournamentAutoSeat } from '../../hooks/useTournamentAutoSeat';
 import { TournamentRegistryPanel } from '../tournament/TournamentRegistryPanel';
-import { TournamentStandingsPanel } from '../tournament/TournamentStandingsPanel';
+import { TournamentStandingsPanel, TournamentStandingsModal } from '../tournament/TournamentStandingsPanel';
 import { useAuthStore } from '../../stores/authStore';
 
 interface PanelRect {
@@ -79,6 +79,7 @@ export function TournamentPanelOverlays() {
   const { user } = useAuthStore();
   const { state, connected, connect, register, unregister } = useTournamentRoom();
   const [panelRects, setPanelRects] = useState<{ registry?: PanelRect; standings?: PanelRect } | null>(null);
+  const [standingsModalOpen, setStandingsModalOpen] = useState(false);
   const [inReception, setInReception] = useState(false);
   const prevDoorOpen = useRef(false);
   const prevModules = useRef<string>('');
@@ -218,8 +219,18 @@ export function TournamentPanelOverlays() {
           baseWidth={STANDINGS_BASE_WIDTH}
           baseHeight={STANDINGS_BASE_HEIGHT}
         >
-          <TournamentStandingsPanel state={state} />
+          <TournamentStandingsPanel
+            state={state}
+            onExpandStandings={state.standings.length > 0 ? () => setStandingsModalOpen(true) : undefined}
+          />
         </ScaledAnchorPanel>
+      )}
+      {standingsModalOpen && state.standings.length > 0 && (
+        <TournamentStandingsModal
+          title={state.status === 'registration_open' ? 'Ultimo Torneio' : state.status === 'completed' ? 'Classificacao Final' : 'Classificacao'}
+          standings={state.standings}
+          onClose={() => setStandingsModalOpen(false)}
+        />
       )}
     </>
   );

@@ -93,17 +93,27 @@ export function useTournamentAutoSeat(
     const sendSeat = () => {
       if (!pendingBoardId.current) return;
       retryCount.current++;
-      if (retryCount.current > 10) {
-        console.warn('[useTournamentAutoSeat] Gave up after 10 retries');
+      if (retryCount.current > 20) {
+        console.warn('[useTournamentAutoSeat] Gave up seating at', pendingBoardId.current, 'after', retryCount.current - 1, 'attempts');
         cleanup();
         return;
       }
 
       const currentRoom = getActiveRoom();
-      if (!currentRoom) return;
+      if (!currentRoom) {
+        // No active room right now (e.g. switching world<->arena). Keep the
+        // retry loop alive instead of dead-ending with pendingBoardId set,
+        // which used to block re-seating for the whole round.
+        retryTimer.current = setTimeout(sendSeat, 500);
+        return;
+      }
 
       if (listenerRoom.current !== currentRoom) {
         installListener(currentRoom);
+      }
+
+      if (retryCount.current === 1) {
+        console.log('[useTournamentAutoSeat] Requesting seat', myPairing.runtimeTableId, 'round', stateRef.current.currentRound);
       }
 
       currentRoom.send('tournament_seat', {

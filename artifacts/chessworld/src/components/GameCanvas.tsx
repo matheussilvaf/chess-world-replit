@@ -502,13 +502,25 @@ export function GameCanvas() {
       useGameStore.getState().setLastEvent(`match_finished: ${data.result}`);
       useChessStore.getState().finishMatchFromServer(data);
       setTimeout(() => {
+        // The next tournament round may have begun during the 3s grace: a new
+        // match is already open, or the sprite was just re-seated (possibly
+        // at the SAME table). Skipping the teardown then is critical — it
+        // used to stand the winner up from the next round's board.
+        const currentMatchId = useChessStore.getState().matchId;
+        if (currentMatchId && currentMatchId !== data.matchId) return;
+
+        const seatAt = (window as any).__tournamentSeatAt || 0;
+        const freshlySeated = Date.now() - seatAt < 4000;
+
         if (gameRef.current) {
           const worldScene = getWorldScene(gameRef.current);
           if (worldScene) {
             worldScene.deactivateOverlayInteraction();
-            worldScene.unseatPlayer();
-            if (data.boardId) {
-              worldScene.updateBoardStatus(data.boardId, 'idle');
+            if (!freshlySeated) {
+              worldScene.unseatPlayer();
+              if (data.boardId) {
+                worldScene.updateBoardStatus(data.boardId, 'idle');
+              }
             }
           }
         }

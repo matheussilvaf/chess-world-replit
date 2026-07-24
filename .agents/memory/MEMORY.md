@@ -1,1 +1,1 @@
-- [ChessWorld MMO port](chessworld-port.md) — Colyseus/Supabase quirks: single-coordinator rule + foreign-server fingerprints, DB CHECK vocab, silent PostgREST errors, /api base normalization, client pinning.
+- [ChessWorld MMO port](chessworld-port.md) — Colyseus/Supabase quirks: stale cloud deploy + engine-ownership gate + decoy trap, presence=world-rooms, DB CHECK vocab, silent PostgREST/NULLS-FIRST traps, client pinning.

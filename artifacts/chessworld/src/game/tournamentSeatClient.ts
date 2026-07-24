@@ -18,11 +18,15 @@ export function seatTournamentPlayerWhenReady(
     }
 
     if (scene.currentSeatInfo?.tableId === boardId && scene.currentSeatInfo?.seat === seat) {
+      (window as any).__tournamentSeatAt = Date.now();
       return;
     }
 
     if (scene.tableRegistry?.tables?.has(boardId)) {
       scene.seatPlayer(boardId, 'player', seat, color);
+      // Marker read by GameCanvas' delayed match_finished teardown: a fresh
+      // tournament seat must not be undone by the previous match's cleanup.
+      (window as any).__tournamentSeatAt = Date.now();
       return;
     }
 

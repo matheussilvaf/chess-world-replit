@@ -5,7 +5,7 @@ import type {
   RoundMode, TournamentStatus, GameResultDetail,
 } from './types.js';
 import { calculateRounds, calculateMaxRounds, calculateAutoNormalRounds, calculateAutoFastRounds } from './rounds.js';
-import { serializeTournamentToTRF, parsePairingOutput } from './trf.js';
+import { serializeTournamentToTRF, parsePairingOutput, type ParsedPairingResult } from './trf.js';
 import { generatePairing, getEngineStatus } from './engine.js';
 import { validatePairing, validateAllResults } from './validation.js';
 import { computeStandings, computeAllHistories } from './tiebreaks.js';
@@ -55,6 +55,13 @@ export async function deleteTournament(id: string): Promise<boolean> {
   tournaments.delete(id);
   try { await deleteTournamentFromDb(id); } catch { /* best effort */ }
   return true;
+}
+
+// Drop only the in-memory copy (keeps the DB row). Used when this process
+// loses or takes over engine ownership: the next getTournament() must reload
+// the authoritative DB state instead of trusting a stale local copy.
+export function evictTournament(id: string): void {
+  tournaments.delete(id);
 }
 
 export async function createTournament(name: string, createdBy?: string): Promise<Tournament> {
@@ -226,11 +233,25 @@ export async function startTournament(tournamentId: string): Promise<StartResult
 }
 
 export async function generateNextRound(tournamentId: string): Promise<StartResult> {
-  const t = tournaments.get(tournamentId);
+  // Load-on-miss: after an ownership takeover the new owner's cache is empty;
+  // a bare map lookup here returned 'Tournament not found', which the
+  // coordinator classifies as TERMINAL and would finalize the tournament early.
+  const t = await getTournament(tournamentId);
   if (!t) return { success: false, error: 'Tournament not found' };
   if (t.status !== 'active') return { success: false, error: 'Tournament not active' };
 
   const finalizedCount = t.rounds.filter(r => r.finalized).length;
+  const nextRoundNumber = finalizedCount + 1;
+
+  // Idempotency FIRST: if the next round already exists unfinalized (a
+  // concurrent caller generated it moments ago), converge on success. This
+  // check used to sit BELOW the 'Current round not yet finalized' error,
+  // making it unreachable for exactly this race — and the transient error
+  // bubbled up to the coordinator, which finalized the tournament early.
+  const existingUnfinalized = t.rounds.find(r => !r.finalized && r.number === nextRoundNumber);
+  if (existingUnfinalized) {
+    return { success: true };
+  }
 
   if (finalizedCount >= t.config.totalRounds) {
     t.status = 'finished';
@@ -253,29 +274,55 @@ export async function generateNextRound(tournamentId: string): Promise<StartResu
     return { success: false, error: 'Fewer than 2 active players' };
   }
 
-  const nextRoundNumber = finalizedCount + 1;
-
-  const existingUnfinalized = t.rounds.find(r => !r.finalized && r.number === nextRoundNumber);
-  if (existingUnfinalized) {
-    return { success: true };
-  }
-
   const trfContent = serializeTournamentToTRF(t);
   const response = await generatePairing({ trfContent, roundNumber: nextRoundNumber });
-  if (!response.success || !response.result) {
-    return { success: false, error: response.diagnostics.errors.join('; '), diagnostics: response.diagnostics };
+
+  let pairingResult: ParsedPairingResult;
+  const diagnostics = response.diagnostics;
+
+  if (response.success && response.result) {
+    pairingResult = response.result;
+
+    const validation = validatePairing(t, pairingResult, nextRoundNumber);
+    if (!validation.valid) {
+      // An invalid engine pairing would either finalize the tournament early
+      // or retry forever (the engine reproduces the same output). Treat it
+      // like a refusal: let the manual fallback act as arbiter.
+      const fallback = buildFallbackPairing(t, nextRoundNumber);
+      if (!fallback) {
+        diagnostics.violations = validation.errors;
+        return { success: false, error: `no pairing possible: ${validation.errors.join('; ')}`, diagnostics };
+      }
+      console.warn(`[Tournament] Engine pairing invalid for round ${nextRoundNumber} (${validation.errors.join('; ')}); using manual fallback pairing`);
+      pairingResult = fallback;
+      diagnostics.colorWarnings.push(`Manual fallback pairing used for round ${nextRoundNumber}: engine pairing invalid: ${validation.errors.join('; ')}`);
+    } else if (validation.warnings.length > 0) {
+      diagnostics.colorWarnings.push(...validation.warnings);
+    }
+  } else {
+    // bbpPairings can legitimately refuse a round. Concrete case: 3 players,
+    // one had a bye in R1, another in R2, the third scored a forfeit win —
+    // FIDE C.04.1.d blocks all of them from receiving the next bye, so
+    // "No valid pairing exists". A human arbiter would override; do the same
+    // with a relaxed manual pairing instead of killing the tournament early.
+    const engineError = diagnostics.errors.join('; ') || 'engine refused';
+    const fallback = buildFallbackPairing(t, nextRoundNumber);
+    if (!fallback) {
+      return { success: false, error: `no pairing possible: ${engineError}`, diagnostics };
+    }
+    console.warn(`[Tournament] Engine refused round ${nextRoundNumber} (${engineError}); using manual fallback pairing`);
+    pairingResult = fallback;
+    diagnostics.errors = [];
+    diagnostics.success = true;
+    diagnostics.colorWarnings.push(`Manual fallback pairing used for round ${nextRoundNumber}: ${engineError}`);
+    const validation = validatePairing(t, pairingResult, nextRoundNumber);
+    if (!validation.valid) {
+      // Expected under relaxation (repeated bye etc.) — record, don't reject.
+      diagnostics.colorWarnings.push(...validation.errors.map(e => `fallback: ${e}`));
+    }
   }
 
-  const validation = validatePairing(t, response.result, nextRoundNumber);
-  if (!validation.valid) {
-    response.diagnostics.violations = validation.errors;
-    return { success: false, error: validation.errors.join('; '), diagnostics: response.diagnostics };
-  }
-  if (validation.warnings.length > 0) {
-    response.diagnostics.colorWarnings.push(...validation.warnings);
-  }
-
-  const pairings = orderBoards(t, response.result.pairings.map(p => ({
+  const pairings = orderBoards(t, pairingResult.pairings.map(p => ({
     whiteTpn: p.whiteTpn,
     blackTpn: p.blackTpn,
     result: null,
@@ -286,7 +333,7 @@ export async function generateNextRound(tournamentId: string): Promise<StartResu
   const round: Round = {
     number: nextRoundNumber,
     pairings,
-    bye: response.result.bye ? { tpn: response.result.bye, points: 1.0 } : null,
+    bye: pairingResult.bye ? { tpn: pairingResult.bye, points: 1.0 } : null,
     finalized: false,
   };
 
@@ -323,6 +370,107 @@ function orderBoards(tournament: Tournament, pairings: Pairing[]): Pairing[] {
     .map((item, index) => ({ ...item.pairing, board: index + 1 }));
 }
 
+/**
+ * Emergency pairing when bbpPairings refuses (arbiter override). Relaxation
+ * ladder: bye goes to the least-blocked player (fewest byes, then fewest
+ * forfeit wins, then lowest score, lowest rank); pairs avoid repeating PLAYED
+ * games first, then repeating any scheduled game, then allow anything.
+ */
+function buildFallbackPairing(t: Tournament, _roundNumber: number): ParsedPairingResult | null {
+  const active = t.players.filter(p => p.status === 'active' && p.tpn !== null);
+  if (active.length < 2) return null;
+
+  const histories = computeAllHistories(t);
+  const points = (tpn: TPN) => histories.get(tpn)?.points ?? 0;
+
+  const byeCounts = new Map<TPN, number>();
+  const forfeitWins = new Map<TPN, number>();
+  const playedSet = new Map<TPN, Set<TPN>>();
+  const metSet = new Map<TPN, Set<TPN>>();
+  const whiteCounts = new Map<TPN, number>();
+
+  for (const p of active) {
+    const tpn = p.tpn!;
+    byeCounts.set(tpn, 0);
+    forfeitWins.set(tpn, 0);
+    playedSet.set(tpn, new Set());
+    metSet.set(tpn, new Set());
+    whiteCounts.set(tpn, 0);
+  }
+
+  for (const round of t.rounds) {
+    if (!round.finalized) continue;
+    if (round.bye && byeCounts.has(round.bye.tpn)) {
+      byeCounts.set(round.bye.tpn, (byeCounts.get(round.bye.tpn) || 0) + 1);
+    }
+    for (const pairing of round.pairings) {
+      const w = pairing.whiteTpn;
+      const b = pairing.blackTpn;
+      metSet.get(w)?.add(b);
+      metSet.get(b)?.add(w);
+      if (whiteCounts.has(w)) whiteCounts.set(w, (whiteCounts.get(w) || 0) + 1);
+      if (pairing.isPlayed) {
+        playedSet.get(w)?.add(b);
+        playedSet.get(b)?.add(w);
+      } else {
+        if (pairing.result === '+/-') forfeitWins.set(w, (forfeitWins.get(w) || 0) + 1);
+        if (pairing.result === '-/+') forfeitWins.set(b, (forfeitWins.get(b) || 0) + 1);
+      }
+    }
+  }
+
+  const sorted = active.map(p => p.tpn!).sort((a, b) => points(b) - points(a) || a - b);
+
+  let bye: TPN | null = null;
+  let toPair = sorted;
+  if (sorted.length % 2 === 1) {
+    const blockScore = (tpn: TPN) => (byeCounts.get(tpn) || 0) * 100 + (forfeitWins.get(tpn) || 0) * 10;
+    const byeOrder = [...sorted].sort((a, b) =>
+      blockScore(a) - blockScore(b) || points(a) - points(b) || b - a);
+    bye = byeOrder[0];
+    toPair = sorted.filter(tpn => tpn !== bye);
+  }
+
+  const pairs = solvePairs(toPair, playedSet, metSet, points, false)
+    ?? solvePairs(toPair, playedSet, metSet, points, true);
+  if (!pairs) return null;
+
+  const pairings = pairs.map(([a, b]) => {
+    const aWhites = whiteCounts.get(a) || 0;
+    const bWhites = whiteCounts.get(b) || 0;
+    const aIsWhite = aWhites !== bWhites ? aWhites < bWhites : a < b;
+    return aIsWhite ? { whiteTpn: a, blackTpn: b } : { whiteTpn: b, blackTpn: a };
+  });
+
+  return { pairings, bye };
+}
+
+function solvePairs(
+  tpns: TPN[],
+  playedSet: Map<TPN, Set<TPN>>,
+  metSet: Map<TPN, Set<TPN>>,
+  points: (tpn: TPN) => number,
+  allowRematch: boolean,
+): Array<[TPN, TPN]> | null {
+  if (tpns.length === 0) return [];
+  const [first, ...rest] = tpns;
+  const candidates = rest
+    .filter(o => allowRematch || !playedSet.get(first)?.has(o))
+    .sort((a, b) => {
+      const aMet = metSet.get(first)?.has(a) ? 1 : 0;
+      const bMet = metSet.get(first)?.has(b) ? 1 : 0;
+      if (aMet !== bMet) return aMet - bMet;
+      const aDiff = Math.abs(points(a) - points(first));
+      const bDiff = Math.abs(points(b) - points(first));
+      return aDiff - bDiff || a - b;
+    });
+  for (const opp of candidates) {
+    const sub = solvePairs(rest.filter(x => x !== opp), playedSet, metSet, points, allowRematch);
+    if (sub) return [[first, opp] as [TPN, TPN], ...sub];
+  }
+  return null;
+}
+
 export async function setResult(
   tournamentId: string,
   roundNumber: number,
@@ -330,7 +478,7 @@ export async function setResult(
   result: GameResult,
   isPlayed: boolean
 ): Promise<void> {
-  const t = tournaments.get(tournamentId);
+  const t = await getTournament(tournamentId); // load-on-miss (fresh owner cache)
   if (!t) throw new Error('Tournament not found');
   const round = t.rounds.find(r => r.number === roundNumber);
   if (!round) throw new Error('Round not found');
@@ -350,7 +498,7 @@ export interface FinalizeResult {
 }
 
 export async function finalizeRound(tournamentId: string, roundNumber: number): Promise<FinalizeResult> {
-  const t = tournaments.get(tournamentId);
+  const t = await getTournament(tournamentId); // load-on-miss (fresh owner cache)
   if (!t) return { success: false, error: 'Tournament not found' };
   const round = t.rounds.find(r => r.number === roundNumber);
   if (!round) return { success: false, error: 'Round not found' };

@@ -62,8 +62,18 @@ export function TournamentRegistryPanel({ state, userId, onRegister, onUnregiste
     const { data } = await supabase.auth.getUser();
     const user = data.user;
     if (!user) { setRegistering(false); return; }
-    const username = user.user_metadata?.username || user.email?.split('@')[0] || 'Player';
-    onRegister(username, 1200);
+    // Prefer the in-game nickname + real rating from the profile (the server
+    // re-validates against profiles anyway; this is just a sane default).
+    let username = user.user_metadata?.username || user.email?.split('@')[0] || 'Player';
+    let rating = 1200;
+    const { data: profile } = await supabase
+      .from('profiles')
+      .select('username, rating')
+      .eq('user_id', user.id)
+      .maybeSingle();
+    if (profile?.username) username = profile.username;
+    if (typeof profile?.rating === 'number') rating = profile.rating;
+    onRegister(username, rating);
     setRegistering(false);
   }, [onRegister]);
 

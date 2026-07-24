@@ -22,9 +22,21 @@ async function notifyRoomSync(): Promise<void> {
 }
 
 // Reference to WorldRoom for checking if match is already active
+export interface ForceStartPairing {
+  boardId: string;
+  whitePlayerId: string;
+  blackPlayerId: string;
+  baseTimeSeconds: number;
+  incrementSeconds: number;
+  timeCategory: string;
+  timeLabel: string;
+}
 export interface WorldRoomLike {
+  roomName?: string;
   isBoardPlaying(boardId: string): boolean;
+  hasPlayerById?(playerId: string): boolean;
   teleportTournamentPlayersToReception(tournamentId: string): void;
+  tryForceStartTournamentMatch?(pairing: ForceStartPairing): 'started' | 'already' | 'missing' | 'busy';
 }
 // Registry instead of a single instance: the 'world' and 'arena' rooms are
 // both WorldRoom and used to overwrite each other here (and dispose set null),
@@ -185,10 +197,16 @@ async function tick(): Promise<void> {
 async function processTransitions(): Promise<void> {
   const db = getClient();
 
+  // Skip decoy instances (config_snapshot.decoy = true). A decoy is an inert
+  // round_active row with an ancient starts_at: coordinators WITHOUT this
+  // filter (stale deployments running old code against the same DB) pick it
+  // as "the oldest active instance" every tick and idle on it harmlessly,
+  // instead of corrupting live tournaments they no longer understand.
   const { data: active } = await db
     .from('tournament_instances')
     .select('*')
     .not('status', 'in', '("completed","cancelled_insufficient_players")')
+    .is('config_snapshot->decoy', null)
     .order('starts_at', { ascending: true })
     .limit(1)
     .maybeSingle();
@@ -213,15 +231,19 @@ async function processTransitions(): Promise<void> {
       break;
 
     case 'round_active':
+      if (!(await ensureEngineOwnership(instance))) break;
       await checkRoundCompletion(instance);
+      await ensureMatchesStarted(instance);
       await checkPresenceDeadlines(instance);
       break;
 
     case 'between_rounds':
+      if (!(await ensureEngineOwnership(instance))) break;
       await transitionToNextRound(instance);
       break;
 
     case 'finalizing':
+      if (!(await ensureEngineOwnership(instance))) break;
       await transitionToCompleted(instance);
       break;
   }
@@ -321,6 +343,26 @@ async function transitionToRoundActive(instance: TournamentInstance): Promise<vo
     return;
   }
 
+  // Claim priority: the coordinator that HOSTS the registered players should
+  // own the engine. Presence (W.O.) and force-start are local knowledge of
+  // the server whose rooms hold the players; when a player-less coordinator
+  // claims the engine, W.O. deadlocks — the owner sees nobody (presence
+  // unknown → skip) while the hosting server is gated out of the sweep.
+  // A coordinator hosting none of the registrants defers for a grace period;
+  // if nobody claimed by then (all registrants offline), it proceeds anyway.
+  if (!instance.swissTournamentId) {
+    const hosted = regs.filter((r: any) => hostsPlayer(r.player_id ?? r.user_id)).length;
+    if (hosted === 0) {
+      const startingSince = instance.transitionLock ? new Date(instance.transitionLock).getTime() : 0;
+      const wait = Date.now() - startingSince;
+      if (wait < CLAIM_GRACE_MS) {
+        console.log(`[Coordinator] Deferring engine claim for ${instance.id}: hosting 0/${regs.length} registrants (${Math.round(wait / 1000)}s/${CLAIM_GRACE_MS / 1000}s grace)`);
+        return;
+      }
+      console.warn(`[Coordinator] Claiming ${instance.id} despite hosting 0/${regs.length} registrants — grace expired`);
+    }
+  }
+
   let swissId = instance.swissTournamentId;
 
   if (!swissId) {
@@ -367,6 +409,10 @@ async function transitionToRoundActive(instance: TournamentInstance): Promise<vo
           total_rounds: swissT2.config.totalRounds,
           current_round: 1,
           arena_layout: layout,
+          // Claiming the engine also takes the ownership lease: identity in
+          // config_snapshot.engine_owner, liveness in transition_lock.
+          transition_lock: new Date().toISOString(),
+          config_snapshot: { ...(instance.configSnapshot ?? {}), engine_owner: COORDINATOR_ID },
         })
         .eq('id', instance.id)
         .is('swiss_tournament_id', null)
@@ -377,6 +423,7 @@ async function transitionToRoundActive(instance: TournamentInstance): Promise<vo
         await service.deleteTournament(swissId);
         return;
       }
+      ownedEngines.add(swissId);
 
       await createRoundRecords(instance.id, swissId, swissT2, 1, layout, regs);
       await atomicTransition(instance.id, 'starting', 'round_active');
@@ -393,6 +440,81 @@ async function transitionToRoundActive(instance: TournamentInstance): Promise<vo
 
 async function checkRoundCompletion(instance: TournamentInstance): Promise<void> {
   await lockedAdvanceRound(instance.id);
+}
+
+// Server-side guarantee that paired matches actually start. The client-side
+// auto-seat flow can silently die (tab throttled, hook race, dropped message);
+// when a pairing sits unstarted while both players are online, the arena room
+// starts the match itself — clients follow via the match_started broadcast.
+const FORCE_START_GRACE_MS = 12_000;
+const unstartedSince = new Map<string, number>();
+let unstartedTournamentId: string | null = null;
+
+async function ensureMatchesStarted(instance: TournamentInstance): Promise<void> {
+  const db = getClient();
+
+  if (unstartedTournamentId !== instance.id) {
+    unstartedSince.clear();
+    unstartedTournamentId = instance.id;
+  }
+
+  const { data: pending } = await db
+    .from('tournament_pairings')
+    .select('*')
+    .eq('tournament_id', instance.id)
+    .eq('round_number', instance.currentRound)
+    .is('result', null)
+    .is('started_at', null)
+    .eq('is_bye', false);
+
+  const pendingList = pending || [];
+  const pendingIds = new Set<string>(pendingList.map((p: any) => p.id));
+  for (const key of Array.from(unstartedSince.keys())) {
+    if (!pendingIds.has(key)) unstartedSince.delete(key);
+  }
+  if (pendingList.length === 0) return;
+
+  const now = Date.now();
+  const tc = instance.configSnapshot?.timeControl
+    || { category: 'blitz', baseTimeSeconds: 300, incrementSeconds: 0, displayLabel: '5+0' };
+
+  for (const p of pendingList) {
+    if (!p.runtime_table_id || !p.white_player_id || !p.black_player_id) continue;
+
+    const firstSeen = unstartedSince.get(p.id);
+    if (!firstSeen) {
+      unstartedSince.set(p.id, now);
+      continue;
+    }
+    if (now - firstSeen < FORCE_START_GRACE_MS) continue;
+    if (anyWorldRoomPlaying(p.runtime_table_id)) {
+      unstartedSince.delete(p.id);
+      continue;
+    }
+
+    for (const room of worldRooms) {
+      if (room.roomName !== 'arena' || !room.tryForceStartTournamentMatch) continue;
+      let outcome: string | undefined;
+      try {
+        outcome = room.tryForceStartTournamentMatch({
+          boardId: p.runtime_table_id,
+          whitePlayerId: p.white_player_id,
+          blackPlayerId: p.black_player_id,
+          baseTimeSeconds: tc.baseTimeSeconds,
+          incrementSeconds: tc.incrementSeconds,
+          timeCategory: tc.category,
+          timeLabel: tc.displayLabel,
+        });
+      } catch (e) {
+        console.error('[Coordinator] Force-start dispatch error:', (e as Error).message);
+      }
+      if (outcome === 'started' || outcome === 'already') {
+        console.log(`[Coordinator] Force-started board ${p.board_number} (${outcome}): clients did not seat within ${FORCE_START_GRACE_MS / 1000}s`);
+        unstartedSince.delete(p.id);
+        break;
+      }
+    }
+  }
 }
 
 async function checkPresenceDeadlines(instance: TournamentInstance): Promise<void> {
@@ -416,9 +538,15 @@ async function checkPresenceDeadlines(instance: TournamentInstance): Promise<voi
     if (p.is_bye || p.result) continue;
 
     if (p.runtime_table_id && anyWorldRoomPlaying(p.runtime_table_id)) {
+      // Board is actively playing: push the deadline forward instead of
+      // clearing it. A null deadline drops the pairing out of this sweep
+      // FOREVER (`presence_deadline is null` never matches again), so a
+      // crash after clearing left rounds stuck in round_active with no
+      // result and no watchdog. Re-arming is equally W.O.-safe while the
+      // game runs and self-heals if the game dies without reporting.
       await db
         .from('tournament_pairings')
-        .update({ presence_deadline: null })
+        .update({ presence_deadline: new Date(Date.now() + 120_000).toISOString() })
         .eq('id', p.id)
         .is('result', null);
       continue;
@@ -427,8 +555,18 @@ async function checkPresenceDeadlines(instance: TournamentInstance): Promise<voi
     let result: string;
     let reason: string;
 
-    const whitePresent = p.white_player_id && await isPlayerPresent(p.white_player_id);
-    const blackPresent = p.black_player_id && await isPlayerPresent(p.black_player_id);
+    const whitePresence = p.white_player_id ? await isPlayerPresent(p.white_player_id) : false;
+    const blackPresence = p.black_player_id ? await isPlayerPresent(p.black_player_id) : false;
+
+    if (whitePresence === null || blackPresence === null) {
+      // This coordinator cannot observe presence (no room instance). Leave
+      // the expired deadline untouched — a coordinator that actually hosts
+      // the players will forfeit or re-arm on its own tick.
+      continue;
+    }
+
+    const whitePresent = whitePresence === true;
+    const blackPresent = blackPresence === true;
 
     if (whitePresent && blackPresent) {
       // Both present but the board hasn't started (the playing case is
@@ -476,15 +614,57 @@ async function checkPresenceDeadlines(instance: TournamentInstance): Promise<voi
   }
 }
 
+// Round generation must be serialized per tournament: the tick path and the
+// inline advance path (result report -> lockedAdvanceRound -> inline call)
+// used to run generateNextRound concurrently; the loser saw the freshly
+// pushed unfinalized round, got 'Current round not yet finalized', and the
+// failure branch finalized the tournament mid-event (the premature-completion
+// bug reproduced by the 3-player e2e, same mechanism as the production R3 case).
+const roundGenLocks = new Map<string, Promise<void>>();
+
 async function transitionToNextRound(instance: TournamentInstance): Promise<void> {
+  const prev = roundGenLocks.get(instance.id) ?? Promise.resolve();
+  const p = prev.then(async () => {
+    try {
+      await transitionToNextRoundInner(instance);
+    } catch (err: any) {
+      console.error('[Coordinator] transitionToNextRound error:', err.message);
+    }
+  });
+  roundGenLocks.set(instance.id, p);
+  await p;
+  if (roundGenLocks.get(instance.id) === p) roundGenLocks.delete(instance.id);
+}
+
+async function transitionToNextRoundInner(instance: TournamentInstance): Promise<void> {
   const db = getClient();
 
   if (!instance.swissTournamentId) return;
 
+  // Re-read the live status: a queued caller may find the round already
+  // advanced (or the tournament finalized) by the previous lock holder.
+  const { data: liveRow } = await db
+    .from('tournament_instances')
+    .select('status, current_round')
+    .eq('id', instance.id)
+    .maybeSingle();
+  if (!liveRow || liveRow.status !== 'between_rounds') return;
+  if (liveRow.current_round !== instance.currentRound) return;
+
   const nextRoundResult = await service.generateNextRound(instance.swissTournamentId);
   if (!nextRoundResult.success) {
-    console.error('[Coordinator] Generate next round failed:', nextRoundResult.error);
-    await atomicTransition(instance.id, 'between_rounds', 'finalizing');
+    const errMsg = nextRoundResult.error || 'unknown';
+    // Only finalize on TERMINAL conditions. Transient failures (races,
+    // engine hiccups) must leave the instance in between_rounds so the next
+    // tick retries — finalizing here is what ended tournaments at R2 with
+    // rounds still owed to the players.
+    const terminal = /all rounds completed|fewer than 2 active players|tournament not active|tournament not found|no pairing possible/i.test(errMsg);
+    if (terminal) {
+      console.log(`[Coordinator] No further rounds for ${instance.id} (${errMsg}); finalizing`);
+      await atomicTransition(instance.id, 'between_rounds', 'finalizing');
+    } else {
+      console.error('[Coordinator] Generate next round failed (transient, will retry):', errMsg);
+    }
     return;
   }
 
@@ -507,24 +687,31 @@ async function transitionToNextRound(instance: TournamentInstance): Promise<void
     .update({ current_round: nextRound })
     .eq('id', instance.id);
 
-  await atomicTransition(instance.id, 'between_rounds', 'round_active');
-  console.log(`[Coordinator] Round ${nextRound} started for tournament ${instance.id}`);
+  const wonRoundStart = await atomicTransition(instance.id, 'between_rounds', 'round_active');
+  if (wonRoundStart) {
+    console.log(`[Coordinator] Round ${nextRound} started for tournament ${instance.id}`);
+  } else {
+    console.warn(`[Coordinator] Round ${nextRound} records created for ${instance.id} but the round_active transition was lost (status changed concurrently)`);
+  }
 }
 
 async function transitionToCompleted(instance: TournamentInstance): Promise<void> {
   const db = getClient();
 
-  if (instance.swissTournamentId) {
-    await saveStandings(instance.id, instance.swissTournamentId);
-  }
-
-  await db
-    .from('tournament_instances')
-    .update({ completed_at: new Date().toISOString() })
-    .eq('id', instance.id);
-
   const wonTransition = await atomicTransition(instance.id, 'finalizing', 'completed');
   if (wonTransition) {
+    // Only the CAS winner writes the final artifacts. Standings/completed_at
+    // used to be written unconditionally BEFORE the CAS, so a losing (or
+    // foreign, stale-engine) coordinator could overwrite them afterwards.
+    // Standings rows already exist from each round's finalize; this save is
+    // the final refresh.
+    if (instance.swissTournamentId) {
+      await saveStandings(instance.id, instance.swissTournamentId);
+    }
+    await db
+      .from('tournament_instances')
+      .update({ completed_at: new Date().toISOString() })
+      .eq('id', instance.id);
     console.log(`[Coordinator] Tournament ${instance.id} completed`);
     // Move any players still inside the arena modules back to the reception
     // before the client removes the modules from the map. Only the tick that
@@ -560,6 +747,14 @@ async function tryAdvanceRound(tournamentId: string): Promise<void> {
   if (!allComplete) return;
 
   if (!instance.swissTournamentId) return;
+
+  if (!isEngineOwned(instance.swissTournamentId)) {
+    // This server may host the players (results are already in the DB), but
+    // another coordinator owns the swiss engine. Applying results to a second
+    // in-memory engine copy loses updates (last-write-wins persistence), so
+    // leave the advance to the owner's next tick.
+    return;
+  }
   const swissT = await service.getTournament(instance.swissTournamentId);
   if (!swissT) return;
 
@@ -624,11 +819,15 @@ async function tryAdvanceRound(tournamentId: string): Promise<void> {
   const isFinished = swissT2 && swissT2.status === 'finished';
 
   if (isFinished) {
-    await atomicTransition(instance.id, 'round_active', 'finalizing');
-    await transitionToCompleted({ ...instance, status: 'finalizing' } as TournamentInstance);
+    const wonFinalize = await atomicTransition(instance.id, 'round_active', 'finalizing');
+    if (wonFinalize) {
+      await transitionToCompleted({ ...instance, status: 'finalizing' } as TournamentInstance);
+    }
   } else {
-    await atomicTransition(instance.id, 'round_active', 'between_rounds');
-    await transitionToNextRound({ ...instance, status: 'between_rounds' } as TournamentInstance);
+    const wonBetween = await atomicTransition(instance.id, 'round_active', 'between_rounds');
+    if (wonBetween) {
+      await transitionToNextRound({ ...instance, status: 'between_rounds' } as TournamentInstance);
+    }
   }
 
   await notifyRoomSync();
@@ -1095,6 +1294,7 @@ export async function getCurrentInstance(): Promise<TournamentInstance | null> {
     .from('tournament_instances')
     .select('*')
     .not('status', 'in', '("completed","cancelled_insufficient_players")')
+    .is('config_snapshot->decoy', null) // never surface decoy traps (see processTransitions)
     .order('starts_at', { ascending: true })
     .limit(1)
     .maybeSingle();
@@ -1105,11 +1305,15 @@ export async function getCurrentInstance(): Promise<TournamentInstance | null> {
 
 export async function getLatestCompletedInstance(): Promise<TournamentInstance | null> {
   const db = getClient();
+  // completed_at IS NULL rows (e.g. manually completed orphans) sort FIRST
+  // on a plain DESC order in Postgres and would shadow every real tournament
+  // here forever — exclude them and pin nullsFirst off.
   const { data } = await db
     .from('tournament_instances')
     .select('*')
     .eq('status', 'completed')
-    .order('completed_at', { ascending: false })
+    .not('completed_at', 'is', null)
+    .order('completed_at', { ascending: false, nullsFirst: false })
     .limit(1)
     .maybeSingle();
 
@@ -1123,7 +1327,8 @@ export async function getLatestCancelledInstance(): Promise<TournamentInstance |
     .from('tournament_instances')
     .select('*')
     .eq('status', 'cancelled_insufficient_players')
-    .order('completed_at', { ascending: false })
+    .not('completed_at', 'is', null)
+    .order('completed_at', { ascending: false, nullsFirst: false })
     .limit(1)
     .maybeSingle();
 
@@ -1162,13 +1367,26 @@ export async function registerPlayer(tournamentId: string, playerId: string, use
     return { success: false, error: 'Inscrições encerradas' };
   }
 
+  // Authoritative identity: use the in-game nickname and real rating from
+  // profiles. Client-supplied values used to be the email prefix + a
+  // hardcoded 1200 and leaked into pairings/standings.
+  let finalUsername = username;
+  let finalRating = rating;
+  const { data: profile } = await db
+    .from('profiles')
+    .select('username, rating')
+    .eq('user_id', playerId)
+    .maybeSingle();
+  if (profile?.username) finalUsername = profile.username;
+  if (typeof profile?.rating === 'number') finalRating = profile.rating;
+
   const { error } = await db
     .from('tournament_registrations')
     .insert({
       tournament_id: tournamentId,
       player_id: playerId,
-      username,
-      rating,
+      username: finalUsername,
+      rating: finalRating,
     });
 
   if (error) {
@@ -1350,13 +1568,125 @@ export async function reportMatchResultByRuntimeTableId(
   };
 }
 
-async function isPlayerPresent(playerId: string): Promise<boolean> {
-  const room = getTournamentRoomInstance();
-  if (!room) {
-    // If room reference not available, assume present (don't auto-forfeit)
+// --- Engine ownership -------------------------------------------------------
+// Only the coordinator that CREATED (claimed) the swiss engine may run the
+// active-phase state machine for an instance. Two coordinators sharing one DB
+// (e.g. cloud + local dev) each held an in-memory engine copy and persisted
+// whole-JSON snapshots last-write-wins, silently swallowing round results and
+// bye points. Ownership is process-local; a takeover is allowed only when the
+// owner's heartbeat (transition_lock, refreshed every tick) has gone stale.
+const ownedEngines = new Set<string>();
+const OWNER_HEARTBEAT_STALE_MS = 60_000;
+
+// Stable identity of THIS coordinator process for the engine-ownership lease
+// (stored in config_snapshot.engine_owner; transitions never touch it, so the
+// heartbeat can CAS on it without racing our own transition_lock writes).
+const COORDINATOR_ID = crypto.randomUUID();
+
+function isEngineOwned(swissId: string | null): boolean {
+  return !!swissId && ownedEngines.has(swissId);
+}
+
+// How long a coordinator hosting NONE of the registered players defers the
+// engine claim, giving the coordinator that actually hosts them time to claim.
+const CLAIM_GRACE_MS = 15_000;
+
+function hostsPlayer(playerId: string): boolean {
+  for (const room of worldRooms) {
+    try {
+      if (room.hasPlayerById?.(playerId)) return true;
+    } catch { /* disposed */ }
+  }
+  const lobby = getTournamentRoomInstance();
+  try {
+    if (lobby?.isPlayerPresent?.(playerId)) return true;
+  } catch { /* disposed */ }
+  return false;
+}
+
+async function ensureEngineOwnership(instance: TournamentInstance): Promise<boolean> {
+  // No engine attached: nothing to own; let the normal (terminal) paths run.
+  if (!instance.swissTournamentId) return true;
+  const db = getClient();
+
+  if (ownedEngines.has(instance.swissTournamentId)) {
+    // Lease heartbeat: refresh liveness ONLY while the DB still records this
+    // process as the engine owner. If another coordinator took over during a
+    // long stall (suspend/partition), this CAS matches 0 rows and we demote
+    // ourselves instead of resurrecting as a second owner — dual owners mean
+    // two in-memory engine copies whose last-write-wins persists silently eat
+    // results.
+    const { data: kept, error } = await db
+      .from('tournament_instances')
+      .update({ transition_lock: new Date().toISOString() })
+      .eq('id', instance.id)
+      .eq('config_snapshot->>engine_owner', COORDINATOR_ID)
+      .select('id');
+    if (error) {
+      console.error(`[Coordinator] Ownership heartbeat failed for ${instance.id}: ${error.message}`);
+      return false; // unknown lease state — fail closed this tick
+    }
+    if (!kept || kept.length === 0) {
+      console.warn(
+        `[Coordinator] Lost engine lease for ${instance.id} — another coordinator took over; demoting and evicting local engine copy`
+      );
+      ownedEngines.delete(instance.swissTournamentId);
+      service.evictTournament(instance.swissTournamentId);
+      return false;
+    }
     return true;
   }
-  return room.isPlayerPresent(playerId);
+
+  const hb = instance.transitionLock ? new Date(instance.transitionLock).getTime() : 0;
+  const age = Date.now() - hb;
+  if (age < OWNER_HEARTBEAT_STALE_MS) return false; // live owner elsewhere — hands off
+
+  // Owner heartbeat is stale (crashed/restarted server). Take over atomically:
+  // only one coordinator wins this CAS; the lease identity moves to us and the
+  // engine is re-loaded fresh from its persisted snapshot (never trust a
+  // cached copy from a previous ownership).
+  const staleIso = new Date(Date.now() - OWNER_HEARTBEAT_STALE_MS).toISOString();
+  const { data: won, error: takeoverErr } = await db
+    .from('tournament_instances')
+    .update({
+      transition_lock: new Date().toISOString(),
+      config_snapshot: { ...(instance.configSnapshot ?? {}), engine_owner: COORDINATOR_ID },
+    })
+    .eq('id', instance.id)
+    .or(`transition_lock.is.null,transition_lock.lt.${staleIso}`)
+    .select('id');
+  if (takeoverErr) {
+    console.error(`[Coordinator] Takeover CAS failed for ${instance.id}: ${takeoverErr.message}`);
+    return false;
+  }
+  if (!won || won.length === 0) return false;
+  console.warn(
+    `[Coordinator] Took over instance ${instance.id} (owner heartbeat stale ${Math.round(age / 1000)}s); engine ${instance.swissTournamentId} re-loaded from DB`
+  );
+  service.evictTournament(instance.swissTournamentId);
+  ownedEngines.add(instance.swissTournamentId);
+  return true;
+}
+
+async function isPlayerPresent(playerId: string): Promise<boolean | null> {
+  // Presence for W.O. purposes means "inside a WORLD room", i.e. the player
+  // can actually be seated (force-start included). The registration lobby
+  // (TournamentRoom) does NOT count: a player parked only in the lobby can
+  // never be force-started, and counting them as present re-armed the
+  // presence deadline forever, leaving the round stuck in round_active.
+  if (worldRooms.size === 0) {
+    // No world rooms on this process: no view of who is online, so make no
+    // presence decision at all. Returning "present" here made a room-less
+    // coordinator (e.g. the cloud instance during local testing) re-arm
+    // deadlines forever, blocking the W.O. the hosting server would apply.
+    return null;
+  }
+  for (const room of worldRooms) {
+    try {
+      if (room.hasPlayerById?.(playerId)) return true;
+    } catch { /* disposed */ }
+  }
+  return false;
 }
 
 function mapInstance(row: any): TournamentInstance {
@@ -1401,11 +1731,16 @@ function mapPairing(row: any): PairingRecord {
 
 export async function markPairingStarted(tournamentId: string, runtimeTableId: string): Promise<void> {
   const db = getClient();
+  // Re-arm the deadline instead of nulling it: the presence sweep only sees
+  // pairings with a non-null deadline, so null would make a match that dies
+  // without reporting a result (crash/restart) invisible forever. While the
+  // board is genuinely playing, the sweep keeps re-arming; if the board
+  // vanishes, the deadline expires and normal W.O./presence rules recover.
   await db
     .from('tournament_pairings')
     .update({
       started_at: new Date().toISOString(),
-      presence_deadline: null,
+      presence_deadline: new Date(Date.now() + 180_000).toISOString(),
     })
     .eq('tournament_id', tournamentId)
     .eq('runtime_table_id', runtimeTableId)

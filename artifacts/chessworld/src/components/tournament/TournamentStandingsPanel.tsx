@@ -1,12 +1,13 @@
 import { useState, useEffect, useMemo } from 'react';
-import { Trophy, Crown, Medal, Award, Swords, Clock, Check } from 'lucide-react';
+import { Trophy, Crown, Medal, Award, Swords, Clock, Check, X, ChevronRight } from 'lucide-react';
 import type { TournamentState } from '../../hooks/useTournamentRoom';
 
 interface TournamentStandingsPanelProps {
   state: TournamentState;
+  onExpandStandings?: () => void;
 }
 
-export function TournamentStandingsPanel({ state }: TournamentStandingsPanelProps) {
+export function TournamentStandingsPanel({ state, onExpandStandings }: TournamentStandingsPanelProps) {
   const isRegistrationOpen = state.status === 'registration_open';
   const isActive = ['starting', 'round_active', 'between_rounds', 'finalizing'].includes(state.status);
   const isCompleted = state.status === 'completed' || state.lastStatus === 'completed';
@@ -80,14 +81,21 @@ export function TournamentStandingsPanel({ state }: TournamentStandingsPanelProp
   if (showPreviousStandings) {
     return (
       <div className="w-full h-full flex flex-col">
-        <div className="p-4 border-b border-slate-700/50 flex items-center gap-2">
+        <div
+          className={`p-4 border-b border-slate-700/50 flex items-center gap-2 ${onExpandStandings ? 'cursor-pointer hover:bg-slate-800/40' : ''}`}
+          onClick={onExpandStandings}
+        >
           <Trophy className="w-4 h-4 text-amber-400" />
           <h3 className="text-sm font-semibold text-slate-300 tracking-wide uppercase">
             Ultimo Torneio
           </h3>
+          {onExpandStandings && <ChevronRight className="w-3.5 h-3.5 text-slate-500 ml-auto" />}
         </div>
-        <div className="flex-1 overflow-y-auto">
-          <CompactStandingsList standings={state.standings} />
+        <div
+          className={`flex-1 overflow-y-auto ${onExpandStandings ? 'cursor-pointer' : ''}`}
+          onClick={onExpandStandings}
+        >
+          <StandingsTable standings={state.standings} limit={4} onExpand={onExpandStandings} />
         </div>
       </div>
     );
@@ -102,7 +110,7 @@ export function TournamentStandingsPanel({ state }: TournamentStandingsPanelProp
   }
 
   if (isActive || isCompleted) {
-    return <ActiveTournamentView state={state} isCompleted={isCompleted} isActive={isActive} />;
+    return <ActiveTournamentView state={state} isCompleted={isCompleted} isActive={isActive} onExpandStandings={onExpandStandings} />;
   }
 
   return (
@@ -112,7 +120,7 @@ export function TournamentStandingsPanel({ state }: TournamentStandingsPanelProp
   );
 }
 
-function ActiveTournamentView({ state, isCompleted, isActive }: { state: TournamentState; isCompleted: boolean; isActive: boolean }) {
+function ActiveTournamentView({ state, isCompleted, isActive, onExpandStandings }: { state: TournamentState; isCompleted: boolean; isActive: boolean; onExpandStandings?: () => void }) {
   const title = isCompleted ? 'Classificacao Final' : 'Standings';
 
   const roundsGrouped = useMemo(() => {
@@ -161,7 +169,12 @@ function ActiveTournamentView({ state, isCompleted, isActive }: { state: Tournam
               {state.status === 'starting' ? 'Calculando pareamentos...' : 'Aguardando resultados'}
             </p>
           ) : (
-            <CompactStandingsList standings={state.standings} />
+            <div
+              className={onExpandStandings ? 'cursor-pointer' : ''}
+              onClick={onExpandStandings}
+            >
+              <StandingsTable standings={state.standings} limit={4} onExpand={onExpandStandings} />
+            </div>
           )}
         </div>
       </div>
@@ -243,38 +256,108 @@ function StatusBadge({ result, startedAt, isBye }: { result: string; startedAt: 
   );
 }
 
-function CompactStandingsList({ standings }: { standings: TournamentState['standings'] }) {
+function formatPts(n: number): string {
+  return Number.isInteger(n) ? String(n) : n.toFixed(1);
+}
+
+const STANDINGS_GRID = 'grid grid-cols-[24px_minmax(0,1fr)_38px_52px_30px] items-center gap-1';
+
+function RankBadge({ position }: { position: number }) {
+  if (position === 1) return <Crown className="w-3.5 h-3.5 text-amber-400" />;
+  if (position === 2) return <Medal className="w-3 h-3 text-slate-300" />;
+  if (position === 3) return <Award className="w-3 h-3 text-amber-700" />;
+  return <span className="text-[10px] text-slate-500 font-mono">{position}</span>;
+}
+
+export function StandingsTable({
+  standings,
+  limit,
+  onExpand,
+}: {
+  standings: TournamentState['standings'];
+  limit?: number;
+  onExpand?: () => void;
+}) {
+  const visible = limit ? standings.slice(0, limit) : standings;
+  const hiddenCount = standings.length - visible.length;
+
   return (
-    <div className="divide-y divide-slate-800/50">
-      {standings.map((s) => (
-        <div
-          key={s.playerId}
-          className={`flex items-center gap-2 px-3 py-1.5 min-w-0 ${
-            s.isChampion ? 'bg-amber-500/5' : 'hover:bg-slate-800/30'
-          }`}
-        >
-          <div className="w-5 flex items-center justify-center shrink-0">
-            {s.position === 1 ? (
-              <Crown className="w-3.5 h-3.5 text-amber-400" />
-            ) : s.position === 2 ? (
-              <Medal className="w-3 h-3 text-slate-300" />
-            ) : s.position === 3 ? (
-              <Award className="w-3 h-3 text-amber-700" />
-            ) : (
-              <span className="text-[10px] text-slate-500">{s.position}</span>
-            )}
+    <div className="flex flex-col">
+      <div className={`${STANDINGS_GRID} px-3 py-1.5 border-b border-slate-800 text-[9px] font-semibold uppercase tracking-wider text-slate-500`}>
+        <span className="text-center">#</span>
+        <span>Player</span>
+        <span className="text-right">Elo</span>
+        <span className="text-center">W-D-L</span>
+        <span className="text-right">Pts</span>
+      </div>
+      <div className="divide-y divide-slate-800/50">
+        {visible.map((s) => (
+          <div
+            key={s.playerId}
+            className={`${STANDINGS_GRID} px-3 py-1.5 ${s.isChampion ? 'bg-amber-500/5' : 'hover:bg-slate-800/30'}`}
+          >
+            <div className="flex items-center justify-center">
+              <RankBadge position={s.position} />
+            </div>
+            <span className={`text-xs truncate ${s.isChampion ? 'text-amber-200 font-medium' : 'text-slate-200'}`}>
+              {s.username}
+            </span>
+            <span className="text-[10px] text-slate-400 font-mono text-right">{s.rating}</span>
+            <span className="text-[10px] font-mono text-center whitespace-nowrap">
+              <span className="text-emerald-400">{s.wins}</span>
+              <span className="text-slate-600">-</span>
+              <span className="text-slate-400">{s.draws}</span>
+              <span className="text-slate-600">-</span>
+              <span className="text-rose-400">{s.losses}</span>
+            </span>
+            <span className="text-xs font-semibold text-white font-mono text-right">{formatPts(s.points)}</span>
           </div>
-          <span className={`text-xs flex-1 truncate ${s.isChampion ? 'text-amber-200 font-medium' : 'text-slate-200'}`}>
-            {s.username}
-          </span>
-          <span className="text-xs font-medium text-white font-mono w-6 text-right shrink-0">
-            {s.points}
-          </span>
-          <span className="text-[10px] text-slate-500 font-mono w-14 text-right shrink-0">
-            {s.wins}W {s.draws}D {s.losses}L
-          </span>
+        ))}
+      </div>
+      {hiddenCount > 0 && onExpand && (
+        <button
+          onClick={(e) => { e.stopPropagation(); onExpand(); }}
+          className="mx-3 my-2 py-1.5 rounded-md border border-slate-700 bg-slate-800/60 text-[10px] text-slate-300 hover:bg-slate-700/60 hover:text-white transition-colors"
+        >
+          Ver todos ({standings.length})
+        </button>
+      )}
+    </div>
+  );
+}
+
+export function TournamentStandingsModal({
+  title,
+  standings,
+  onClose,
+}: {
+  title: string;
+  standings: TournamentState['standings'];
+  onClose: () => void;
+}) {
+  return (
+    <div className="fixed inset-0 z-[700] flex items-center justify-center p-4" onClick={onClose}>
+      <div className="absolute inset-0 bg-black/70 backdrop-blur-sm" />
+      <div
+        className="relative w-full max-w-md max-h-[80vh] flex flex-col rounded-xl border border-slate-700 bg-slate-900 shadow-2xl shadow-black/60"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-center gap-2 p-4 border-b border-slate-700/70">
+          <Trophy className="w-4 h-4 text-amber-400" />
+          <h3 className="text-sm font-semibold text-slate-200 uppercase tracking-wide flex-1 truncate">{title}</h3>
+          <span className="text-xs text-slate-500 shrink-0">{standings.length} jogadores</span>
+          <button
+            onClick={onClose}
+            className="p-1 rounded-md hover:bg-slate-800 text-slate-400 hover:text-white transition-colors"
+            aria-label="Fechar"
+          >
+            <X className="w-4 h-4" />
+          </button>
         </div>
-      ))}
+        <div className="flex-1 overflow-y-auto min-h-0">
+          <StandingsTable standings={standings} />
+        </div>
+      </div>
     </div>
   );
 }

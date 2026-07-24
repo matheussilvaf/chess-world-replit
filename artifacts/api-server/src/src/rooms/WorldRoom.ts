@@ -578,6 +578,83 @@ export class WorldRoom extends Room<WorldState> {
     console.log(`[WorldRoom] Tournament ${tournamentId} ended: teleported ${moved} player(s) to reception, removed ${staleIds.length} board(s)`);
   }
 
+  // Coordinator-driven safety net: start a paired tournament match even if
+  // the clients never sent tournament_seat. Colors come from the pairing
+  // (authoritative), the visual seating follows via match_started/
+  // tournament_seated on the clients.
+  tryForceStartTournamentMatch(opts: {
+    boardId: string;
+    whitePlayerId: string;
+    blackPlayerId: string;
+    baseTimeSeconds: number;
+    incrementSeconds: number;
+    timeCategory: string;
+    timeLabel: string;
+  }): 'started' | 'already' | 'missing' | 'busy' {
+    if (this.roomName !== 'arena') return 'missing';
+
+    const whiteSession = this.findSessionByPlayerId(opts.whitePlayerId);
+    const blackSession = this.findSessionByPlayerId(opts.blackPlayerId);
+    const whitePlayer = whiteSession ? this.state.players.get(whiteSession) : undefined;
+    const blackPlayer = blackSession ? this.state.players.get(blackSession) : undefined;
+    const whiteClient = whiteSession ? this.clients.find(c => c.sessionId === whiteSession) : undefined;
+    const blackClient = blackSession ? this.clients.find(c => c.sessionId === blackSession) : undefined;
+    if (!whitePlayer || !blackPlayer || !whiteClient || !blackClient) return 'missing';
+
+    let board = this.state.boards.get(opts.boardId);
+    if (!board) {
+      board = new BoardState();
+      board.id = opts.boardId;
+      board.name = `Tournament Board ${opts.boardId}`;
+      board.x = 0;
+      board.y = 0;
+      board.width = 80;
+      board.height = 80;
+      board.status = 'idle';
+      this.state.boards.set(opts.boardId, board);
+    }
+
+    if (board.status === 'playing' && board.matchId) {
+      const match = this.state.matches.get(board.matchId);
+      if (match && match.status === 'playing') {
+        const samePlayers =
+          (match.whitePlayerId === opts.whitePlayerId && match.blackPlayerId === opts.blackPlayerId)
+          || (match.whitePlayerId === opts.blackPlayerId && match.blackPlayerId === opts.whitePlayerId);
+        return samePlayers ? 'already' : 'busy';
+      }
+      // Stale board: it says 'playing' but the match is gone or finished
+      // (e.g. a client crashed without unseating). Self-heal so the next
+      // round is never blocked by a ghost game.
+      this.resetBoard(board);
+    }
+
+    if (board.status === 'waiting' && board.waitingPlayerId
+      && board.waitingPlayerId !== opts.whitePlayerId
+      && board.waitingPlayerId !== opts.blackPlayerId) {
+      // Stray waiter on a tournament board — clear it, the pairing wins.
+      this.resetBoard(board);
+    }
+
+    // Configure the board as if white had seated first, then join black.
+    board.status = 'waiting';
+    board.waitingPlayerId = opts.whitePlayerId;
+    board.waitingPlayerName = whitePlayer.username;
+    board.timeCategory = opts.timeCategory;
+    board.baseMinutes = opts.baseTimeSeconds / 60;
+    board.incrementSeconds = opts.incrementSeconds;
+    board.timeLabel = opts.timeLabel;
+    board.whitePlayerId = opts.whitePlayerId;
+    board.blackPlayerId = '';
+    whitePlayer.currentBoardId = opts.boardId;
+
+    whiteClient.send('tournament_seated', { boardId: opts.boardId, color: 'w', seat: 'bottom' });
+    blackClient.send('tournament_seated', { boardId: opts.boardId, color: 'b', seat: 'top' });
+
+    this.startMatch(board, blackPlayer, blackClient);
+    console.log(`[WorldRoom] Force-started tournament match on ${opts.boardId}: ${whitePlayer.username} vs ${blackPlayer.username}`);
+    return 'started';
+  }
+
   private async tick() {
     const now = Date.now();
     const timedOutMatches: MatchState[] = [];
@@ -627,6 +704,13 @@ export class WorldRoom extends Room<WorldState> {
     board.whitePlayerId = '';
     board.blackPlayerId = '';
     board.matchId = '';
+  }
+
+  hasPlayerById(playerId: string): boolean {
+    for (const p of this.state.players.values()) {
+      if (p.id === playerId) return true;
+    }
+    return false;
   }
 
   private cleanupMatchBoard(match: MatchState) {
