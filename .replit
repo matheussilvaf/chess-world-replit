@@ -23,3 +23,15 @@ timeoutMs = 20000
 
 [userenv.development]
 VITE_COLYSEUS_LOCAL = "1"
+
+[[ports]]
+localPort = 8080
+externalPort = 8080
+
+[[ports]]
+localPort = 8081
+externalPort = 80
+
+[[ports]]
+localPort = 25961
+externalPort = 3000
