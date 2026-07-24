@@ -1,6 +1,6 @@
-# [Project name]
+# ChessWorld MMO
 
-_Replace the heading above with the project's name, and this line with one sentence describing what this app does for users._
+Multiplayer chess world: players walk around a 2D world (Phaser), challenge each other, and play automated Swiss tournaments — real-time layer runs on a Colyseus server, persistent data on Supabase.
 
 ## Run & Operate
 
@@ -22,11 +22,16 @@ _Replace the heading above with the project's name, and this line with one sente
 
 ## Where things live
 
-_Populate as you build — short repo map plus pointers to the source-of-truth file for DB schema, API contracts, theme files, etc._
+- **`server/` — A pasta oficial do servidor Colyseus.** Pacote npm standalone (npm puro, `package-lock.json`, `ecosystem.config.cjs`, binário bbpPairings). É o **app root do deploy no Colyseus Cloud** (`/server/`) — multiplayer em tempo real, salas (WorldRoom, TournamentRoom), torneio suíço, coordenador. Nunca apagar nem mover.
+- `artifacts/api-server/src/src/` — espelho byte a byte de `server/src/` para rodar o servidor localmente dentro do monorepo. **Toda mudança de código Colyseus deve ser aplicada nas DUAS pastas** (`diff -rq server/src artifacts/api-server/src/src` deve sair vazio antes do commit).
+- `artifacts/chessworld/` — cliente web (React + Phaser), conecta no Colyseus via `VITE_COLYSEUS_URL`.
+- Dados persistentes (contas, ratings, histórico, config de torneio) — Supabase (Postgres), acessado pelo servidor Colyseus e pelo cliente.
 
 ## Architecture decisions
 
-_Populate as you build — non-obvious choices a reader couldn't infer from the code (3-5 bullets)._
+- **Tempo real = Colyseus, sempre.** Movimento de jogadores, partidas, torneio suíço e bbpPairings rodam no servidor Colyseus (produção: Colyseus Cloud). Supabase é só armazenamento persistente — nunca substituir o Colyseus por polling de banco.
+- Duas cópias do código do servidor por necessidade de deploy: o Colyseus Cloud precisa de um pacote npm standalone na raiz (`server/`), o monorepo pnpm usa `workspace:*` que o npm da nuvem não resolve. Por isso o espelho.
+- Colyseus Cloud faz deploy automático quando novos commits chegam ao GitHub (por isso a regra de sempre dar push).
 
 ## Product
 

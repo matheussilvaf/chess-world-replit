@@ -105,3 +105,9 @@ The Bolt-era `reportResult` client message (any authed user could falsify result
 The tester's headless browser has no WebGL context; Phaser 4 is WebGL-only (no Canvas fallback), so login/region-select works but "Enter World" crashes with "Cannot create WebGL context, aborting" — every in-world HUD feature (chat, voice, balloons, drag) is unreachable for it.
 **Why:** burned a tester run on a chat-panel plan that died at world load; this is an environment limit, not an app bug.
 **How to apply:** use the tester only for non-Phaser routes (/admin, login, region select); verify in-world UI via tsc + targeted logic review + real-device testing by the user. Related pattern: distinguishing live chat messages from history loads must use an explicit store signal (`liveChatMessage`, set only in addChatMessage, cleared in enterRegion) — length-diff heuristics ghost-fire on region re-entry because loadChat bulk-replaces the array.
+
+## Colyseus folder standard (user-mandated, Jul 24 2026)
+- `/server` is THE official Colyseus folder: standalone npm package, Colyseus Cloud app root (`/server/`), auto-deploys when commits land on GitHub (see replit.md push rule).
+- `artifacts/api-server/src/src` is a byte-for-byte mirror of `server/src`, used only to run the server locally in the monorepo.
+- RULE: every Colyseus server change must land in BOTH trees before commit — `diff -rq server/src artifacts/api-server/src/src` must be empty. Entry/outer layers (server/index.ts, api-server app.ts/routes) are layout-specific and stay separate.
+- Jul 24 2026: synced ~1264 lines api-server→server (coordinator hardening, WorldRoom/TournamentRoom, draw handling, app.config /api rewrite — harmless on cloud); `npx tsc --noEmit` passes standalone in server/.
