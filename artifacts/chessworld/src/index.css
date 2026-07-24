@@ -1,0 +1,75 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer components {
+  .card {
+    @apply bg-slate-900/80 border border-slate-700/50 rounded-xl overflow-hidden;
+  }
+  .card-header {
+    @apply flex items-center gap-2 px-4 py-3 border-b border-slate-700/50;
+  }
+  .btn-sm {
+    @apply flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-colors;
+  }
+  .btn-primary {
+    @apply bg-blue-600/80 text-blue-100 hover:bg-blue-500/80 border border-blue-500/30;
+  }
+  .btn-ghost {
+    @apply bg-slate-800/60 text-slate-400 hover:text-slate-200 border border-slate-700/50;
+  }
+  .btn-danger {
+    @apply bg-red-900/40 text-red-400 hover:text-red-200 border border-red-700/40;
+  }
+  .input {
+    @apply bg-slate-800 border border-slate-700 rounded-lg px-3 py-1.5 text-sm text-slate-200 placeholder-slate-500 focus:outline-none focus:border-blue-500/50 transition-colors;
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html, body, #root {
+  margin: 0;
+  padding: 0;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+}
+
+body {
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+canvas {
+  image-rendering: pixelated;
+  image-rendering: crisp-edges;
+  -ms-interpolation-mode: nearest-neighbor;
+  display: block;
+}
+
+::-webkit-scrollbar {
+  width: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: rgba(30, 41, 59, 0.5);
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(100, 116, 139, 0.5);
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(100, 116, 139, 0.8);
+}
+
+@layer utilities {
+  .touch-none {
+    touch-action: none;
+  }
+}

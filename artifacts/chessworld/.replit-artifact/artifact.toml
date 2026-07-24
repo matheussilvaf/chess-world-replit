@@ -1,0 +1,27 @@
+kind = "web"
+previewPath = "/"
+title = "ChessWorld MMO"
+version = "1.0.0"
+id = "artifacts/chessworld"
+router = "path"
+
+[[services]]
+name = "web"
+paths = [ "/" ]
+localPort = 25961
+
+[services.development]
+run = "pnpm --filter @workspace/chessworld run dev"
+
+[services.production]
+build = [ "pnpm", "--filter", "@workspace/chessworld", "run", "build" ]
+serve = "static"
+publicDir = "artifacts/chessworld/dist/public"
+
+[[services.production.rewrites]]
+from = "/*"
+to = "/index.html"
+
+[services.env]
+PORT = "25961"
+BASE_PATH = "/"

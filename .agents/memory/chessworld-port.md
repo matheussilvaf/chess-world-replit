@@ -1,0 +1,72 @@
+---
+name: ChessWorld MMO port
+description: Durable decisions and quirks from porting the Bolt.new ChessWorld MMO (Phaser + Colyseus + Supabase + LiveKit) into the Replit pnpm workspace.
+---
+
+# ChessWorld MMO port — decisions & quirks
+
+## Colyseus version mismatch (0.15 code on 0.17 types)
+Server code was written for Colyseus 0.15 but the workspace resolves 0.17 typings.
+**Why:** downgrading broke other deps; runtime behavior is compatible, only types clash.
+**How to apply:** keep the `@ts-ignore` pattern on `this.state.*.forEach(...)` and `setState`; `onLeave` uses the 0.17 signature `(client, code?: number)` — do not "fix" it back to `consented: boolean`.
+
+## Client colyseus.js MUST stay pinned to ^0.15 (protocol match with user's cloud server)
+The user's Colyseus Cloud server (br-sao, south_america) runs the ORIGINAL Bolt server code = Colyseus 0.15 / schema 2.x wire protocol. Bolt shipped the frontend with colyseus.js 0.16 (schema 3.x) — incompatible wire protocol → `"refId" not found` / `definition mismatch` decode errors, state never syncs ("Colyseus state invalid" overlay). Client is now pinned to colyseus.js ^0.15.28; client code was written for the 0.15 inline-callback API (`state.players.onAdd`) so no code changes were needed.
+**Why:** schema 2.x (0.15) and 3.x (0.16) are wire-incompatible; the cloud server is outside this repo, so the client must match IT, not our api-server (0.17).
+**How to apply:** never bump colyseus.js/@colyseus/schema in chessworld "to latest". If the user redeploys their cloud server from this repo's api-server (0.17/schema 4.x), the client must be upgraded in lockstep (colyseus.js 0.16+ uses `getStateCallbacks` API — code changes required). Diagnosis technique that settled it: temp-dir node scripts joining the live cloud server with candidate colyseus.js versions and checking whether `state.players` decodes (0.15 → clean, 0.16 → refId errors). Matchmake HTTP joins need no auth token.
+
+## Multiplayer requires an external Colyseus server in dev
+Colyseus websockets connect at the server root, but the Replit proxy routes `/` to the frontend artifact, so an in-repl Colyseus server is unreachable by WS in dev.
+**Why:** path-based artifact routing owns `/`; WS upgrade at root can't be forwarded to the API artifact.
+**How to apply:** `VITE_COLYSEUS_URL` (Replit Secret) must point at an external server (user runs Colyseus Cloud, br-sao region). Client config auto-normalizes `https://` → `wss://`.
+
+## Supabase kept as the database/auth layer
+**Why:** extensive existing migrations + RLS policies made replacement out of scope.
+**How to apply:** do not migrate to a Replit database unless the user asks; auth flows and profiles live in Supabase.
+
+## Dev-mode "white page / loads forever" — root cause was an optimizeDeps.exclude
+The dominant cause: the Bolt template shipped `optimizeDeps: { exclude: ['lucide-react'] }`, forcing a cold dev load to fetch the icon barrel + ~1,640 individual icon modules. Near-instant inside the container (masked the bug for agent tests, ~8s) but minutes over a real connection → users saw "loading forever". Removing the exclude collapsed the load to ~26 requests, login in ~1.2s.
+**Why:** Bolt/StackBlitz WebContainers exclude lucide-react because pre-bundling is slow *in-browser*; on a real server the exclude is purely harmful. Vite dev serves excluded deps unbundled, module by module.
+**How to apply:** never carry `optimizeDeps.exclude` over from Bolt/StackBlitz imports; keep 'lucide-react' in `optimizeDeps.include`. Secondary mitigations kept: static boot splash in index.html (hidden via MutationObserver when React mounts) and `React.lazy(GameScene)` so Phaser (5.5MB)/Colyseus/LiveKit only load after sign-in + region select. Don't add eager imports of game/network modules to anything reachable from main.tsx. Watch for symptom: agent-side tests fast but user reports endless loading → count dev-mode network requests.
+
+## Debugging lesson: localhost screenshots mask proxy-only symptoms
+Agent appPreview screenshots hit localhost inside the container (near-zero latency) and rendered fine while the user saw white through the proxy domain.
+**Why:** the user always loads via the proxied `$REPLIT_DEV_DOMAIN` iframe with real network latency.
+**How to apply:** to reproduce what the user sees, screenshot the external URL (`https://$REPLIT_DEV_DOMAIN/...`) or use the testing subagent — it surfaces load-timing issues invisible from localhost.
+
+## Phaser 4 typing quirks
+Phaser 4 union types (`TilemapGPULayer`) break some 3.x-era code paths; `@ts-ignore` used at the few affected lines in WorldScene / ArenaModuleManager.
+
+## Tournament results: DB CHECK vocabulary ≠ engine vocabulary; PostgREST errors are silent
+`tournament_pairings.result_reason` has a CHECK allowing ONLY `checkmate, resignation, timeout, disconnect, forfeit, draw, stalemate`. The game engine produces `resign, abandon, repetition, insufficient, ...` — writing those violated the constraint and supabase-js returned the error in `{ error }` which nobody checked, so pairings stayed unresolved and tournaments hung in round_active forever (checkmate worked, resign never did — deterministic).
+**Why:** the constraint was added in a migration applied directly on Supabase (not in the repo backup), so code and schema drifted; PostgREST never throws, it only fills `{ error }`.
+**How to apply:** map reasons at the single write boundary (`toDbReason` in the coordinator) and ALWAYS capture `{ error }` on Supabase writes in lifecycle paths — log it, and throw before state transitions so the 5s tick retries (round/pairing creation is idempotent). To discover a CHECK's allowed values without DDL access: probe-insert candidates on a completed tournament's round and delete them.
+
+## Exactly ONE coordinator may point at the Supabase DB (split-brain deadlock)
+Two api-servers (old Bolt deploy on Colyseus Cloud + local) sharing the DB race each other: the foreign one has no TournamentRoom/WorldRoom instances, `isPlayerPresent` defaults to true, so it clears `presence_deadline` on pairings it can't see and reports nothing — tournaments deadlock; duplicate `swiss_tournaments` rows ms apart are the fingerprint.
+**Why:** the coordinator assumes it owns the DB; presence checks default open.
+**How to apply:** before debugging "stuck tournament", verify only one server is running (user's Colyseus Cloud dashboard). If redeploying to the cloud, ship this repo's api-server build and use the service-role key (the old deploy had the anon key), then stop the Replit one or vice versa. More fingerprints (confirmed July 2026 — foreign server still alive): `tournament_instances` rows created ms apart, or rows with NO matching "[Coordinator] Next tournament scheduled" line in the local log; rows with `config_snapshot=null` while randomize is ON are foreign (only current code snapshots at creation). Duplicate pending cycles also silently break registration (room and tests disagree on which instance is "current"). `ensureNextCycleExists` is serialized in-process with a duplicate-tolerant pending check — that guards ONE process; cross-process duplicates persist until the foreign server is shut down.
+Worst confirmed damage: **inverted champion**. Each coordinator creates its own swiss engine and each rolls `initialColor` independently ('random' resolves per engine); whoever writes `swiss_tournament_id` last attaches THEIR engine, so a color-relative result ('0-1') applied to an engine whose colors differ from the published pairing row credits the LOSER. Fingerprint: two `swiss_tournaments` rows with the same `Tournament-<instanceId>` name, different `config.initialColor`. Hardened in coordinator: (1) engine attach is a CAS (`.is('swiss_tournament_id', null)`; claim loser deletes its engine and backs off), (2) before `setResult`, engine white (TPN→name) is compared against the pairing row's `white_username` — the PUBLISHED pairing is the source of truth for colors — and the result is flipped if the engine is inverted. Registration split fingerprint: two instances created in the same second, players' registrations land on one while tests/UI track the other → "timeout waiting for registrations" with bots visibly joined.
+
+## Supabase/PostgREST + esbuild quirks (this DB specifically)
+- `matches.colyseus_match_id` has NO unique constraint → `upsert(onConflict)` errors; use check-then-insert. Optional hardening: user can run `CREATE UNIQUE INDEX` in the SQL editor.
+- uuid columns reject `.like()` filters → use `.eq()` (a `.like` once produced a false "row deleted" diagnosis).
+- SELECTing a nonexistent column ALSO fails silently (`data=null`, error only in `{error}`) — burned twice: once produced a false "standings deleted" diagnosis. `tournament_standings` has `updated_at`, NOT `created_at`. Check `{error}` on READS too, not just writes.
+- esbuild bundles to `dist/` so `__dirname`-relative binary paths break; `getBinaryPath()` tries candidates + `BBP_PAIRINGS_PATH` env. bbpPairings binary lives in `src/bin/`, needs chmod +x.
+- `tournament_config.interval_seconds` is set to 120 for TESTING; production value ~10800 (3h). Restore before going live.
+- Protocol-level E2E exists: `artifacts/api-server/scripts/e2e-tournament.mjs` (2 chained tournaments, checkmate + resign, teleport + standings asserts; test accounts e2e-bot-a/b@chessworld.test).
+
+## Coordinator REST from the client: /api double-prefix hid the admin section
+`getColyseusHttpUrl()` ends with `/api` in local-proxy mode but typically NOT in cloud mode (`VITE_COLYSEUS_URL`), so appending `/api/...` produced `/api/api/...` → 404; TournamentConfigSection then hit `if (!config) return null` and vanished — user reported the section "didn't exist".
+**Why:** two URL shapes for the same server + silent null-render on fetch failure.
+**How to apply:** normalize once (append `/api` only if the base doesn't already end with it) before `${apiBase}/coordinator/...`; admin sections must render a visible error + retry instead of returning null. Related decision: the tournament `randomize` flag persists INSIDE the `swiss_config` JSONB (no DDL access for a new column); loadConfig strips it before the swissConfig reaches the pairing engine, and each cycle's rolled settings freeze in `config_snapshot` at creation (instance snapshot beats live config everywhere downstream).
+
+## Client: seat exit tween uses a {t} proxy target — killTweensOf(player) does NOT stop it
+`unseatPlayer()` animates a plain `{t:0..1}` object whose onUpdate drags the physics body toward the table exit anchor, so a server teleport got overridden mid-flight.
+**Why:** Phaser kill-by-target only matches the tween's target object, not what onUpdate mutates.
+**How to apply:** any forced reposition must stop `this.seatTween` explicitly, clear `currentSeatInfo`/path targets, and restore physics (`teleportLocalPlayer` does this now — reuse it; don't call `unseatPlayer()` before it).
+
+## Results are server-authoritative only
+The Bolt-era `reportResult` client message (any authed user could falsify results) was removed from TournamentRoom and the client hook.
+**Why:** WorldRoom already reports every end condition (checkmate/resign/timeout/disconnect) and the coordinator sweeps forfeits; a client path is purely a cheat vector.
+**How to apply:** never reintroduce client-sent results; new end conditions belong in WorldRoom/coordinator.

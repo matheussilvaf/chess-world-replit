@@ -1,0 +1,98 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>ChessWorld MMO</title>
+    <meta name="twitter:card" content="summary_large_image" />
+    <style>
+      /* Instant boot splash — shown while JS modules download, replaced by React on mount */
+      #root:empty ~ #boot-splash,
+      #boot-splash {
+        position: fixed;
+        inset: 0;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 16px;
+        background: linear-gradient(135deg, #064e3b 0%, #065f46 50%, #064e3b 100%);
+        z-index: 9999;
+        transition: opacity 0.3s ease;
+        font-family: system-ui, -apple-system, sans-serif;
+      }
+      #boot-splash.hidden {
+        opacity: 0;
+        pointer-events: none;
+      }
+      #boot-splash .crown {
+        width: 64px;
+        height: 64px;
+        border-radius: 14px;
+        background: rgba(245, 158, 11, 0.15);
+        border: 1px solid rgba(245, 158, 11, 0.4);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 32px;
+      }
+      #boot-splash h1 {
+        color: #fff;
+        font-size: 28px;
+        font-weight: 800;
+        margin: 0;
+      }
+      #boot-splash p {
+        color: #6ee7b7;
+        margin: 0;
+        font-size: 14px;
+      }
+      #boot-splash .spinner {
+        width: 28px;
+        height: 28px;
+        border: 3px solid rgba(245, 158, 11, 0.2);
+        border-top-color: #f59e0b;
+        border-radius: 50%;
+        animation: boot-spin 0.8s linear infinite;
+      }
+      @keyframes boot-spin {
+        to { transform: rotate(360deg); }
+      }
+    </style>
+  </head>
+  <body>
+    <div id="root"></div>
+    <div id="boot-splash">
+      <div class="crown">👑</div>
+      <h1>ChessWorld</h1>
+      <p>MMO Chess Arena</p>
+      <div class="spinner"></div>
+    </div>
+    <script>
+      // Hide the splash as soon as React mounts content into #root
+      (function () {
+        function hideSplash() {
+          var splash = document.getElementById('boot-splash');
+          if (splash) {
+            splash.classList.add('hidden');
+            setTimeout(function () { splash.remove(); }, 350);
+          }
+        }
+        var root = document.getElementById('root');
+        // Immediate check in case root is already populated when this runs
+        if (root.childNodes.length > 0) {
+          hideSplash();
+          return;
+        }
+        new MutationObserver(function (_, obs) {
+          if (root.childNodes.length > 0) {
+            hideSplash();
+            obs.disconnect();
+          }
+        }).observe(root, { childList: true });
+      })();
+    </script>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

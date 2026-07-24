@@ -1,6 +1,12 @@
 {
   "extends": "../../tsconfig.base.json",
   "compilerOptions": {
+    "noImplicitReturns": false,
+    // CRITICAL for @colyseus/schema 2.x: class fields must use assignment
+    // semantics, or they shadow the getters/setters defineTypes() installs
+    // and state changes are never encoded (client sees empty state).
+    // esbuild reads this from tsconfig at build time.
+    "useDefineForClassFields": false,
     "incremental": true,
     "tsBuildInfoFile": ".tsbuildinfo",
     "outDir": "dist",
