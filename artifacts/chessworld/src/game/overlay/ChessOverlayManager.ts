@@ -50,6 +50,9 @@ export class ChessOverlayManager {
   private assetsLoaded = false;
   private activeTableId: string | null = null;
   private pendingFens = new Map<string, string>();
+  // tableId -> rotation applied to preview pieces/banners so they read upright
+  // when the local camera is rotated (e.g. black challenge creator waiting).
+  private previewRotations = new Map<string, number>();
 
   constructor(scene: Phaser.Scene) {
     this.scene = scene;
@@ -136,6 +139,7 @@ export class ChessOverlayManager {
     const cx = config.x + config.width / 2;
     const bannerY = config.y - 16;
     const banner = this.scene.add.container(cx, bannerY).setDepth(160);
+    banner.setRotation(this.previewRotations.get(tableId) ?? 0);
 
     const bannerW = Math.max(config.width + 8, 110);
     const bannerH = 22;
@@ -177,6 +181,7 @@ export class ChessOverlayManager {
     const cx = config.x + config.width / 2;
     const bannerY = config.y - 10;
     const banner = this.scene.add.container(cx, bannerY).setDepth(160);
+    banner.setRotation(this.previewRotations.get(tableId) ?? 0);
 
     const bannerW = 80;
     const bannerH = 14;
@@ -256,6 +261,18 @@ export class ChessOverlayManager {
     }
   }
 
+  /** Counter-rotate preview pieces/banners for a table so they read upright
+   *  when the local camera is rotated 180° (black player's perspective). */
+  setPreviewRotation(tableId: string, rotation: number) {
+    if (rotation === 0) this.previewRotations.delete(tableId);
+    else this.previewRotations.set(tableId, rotation);
+    const overlay = this.overlays.get(tableId);
+    if (overlay) {
+      for (const p of overlay.pieces) p.setRotation(rotation);
+      overlay.banner?.setRotation(rotation);
+    }
+  }
+
   destroy() {
     for (const [, overlay] of this.overlays) {
       if (overlay.banner) overlay.banner.destroy();
@@ -331,6 +348,7 @@ export class ChessOverlayManager {
               textureKey,
             );
             img.setDisplaySize(sqW * 0.85, sqH * 0.85);
+            img.setRotation(this.previewRotations.get(tableId) ?? 0);
             container.add(img);
             overlay.pieces.push(img);
           }

@@ -26,6 +26,8 @@ export class WorldRoom extends Room<WorldState> {
   private disconnectTimers = new Map<string, ReturnType<typeof setTimeout>>();
   /** Tracks how many draw offers each player has made per match: matchId → {white: n, black: n} */
   private drawOfferCounts = new Map<string, { white: number; black: number }>();
+  // matchId -> color of the player whose draw offer is currently awaiting an answer
+  private pendingDrawOffers = new Map<string, 'w' | 'b'>();
 
   onCreate(options: any) {
     this.setState(new WorldState());
@@ -229,6 +231,9 @@ export class WorldRoom extends Room<WorldState> {
       match.lastMoveFrom = moveResult.from;
       match.lastMoveTo = moveResult.to;
 
+      // A move on the board voids any outstanding draw offer
+      this.pendingDrawOffers.delete(matchId);
+
       if (game.isGameOver()) {
         this.endMatch(matchId, game);
       }
@@ -280,9 +285,27 @@ export class WorldRoom extends Room<WorldState> {
       const isBlack = match.blackPlayerId === player.id;
       if (!isWhite && !isBlack) return;
 
+      // An offer is already awaiting an answer — tell the sender explicitly so
+      // their client can clear its optimistic "offered" flag (they likely have
+      // an incoming offer to answer instead).
+      if (this.pendingDrawOffers.has(matchId)) {
+        client.send('draw_offer_rejected', { reason: 'pending_exists' });
+        return;
+      }
+
       // Check max draw offers per match
       const config = await coordinator.loadConfig().catch(() => null);
       const maxOffers = config?.maxDrawOffers ?? 2;
+
+      // Re-validate after the async config load: the match may have ended or a
+      // concurrent offer may have landed while we awaited.
+      const freshMatch = this.state.matches.get(matchId);
+      if (!freshMatch || freshMatch.status !== 'playing') return;
+      if (this.pendingDrawOffers.has(matchId)) {
+        client.send('draw_offer_rejected', { reason: 'pending_exists' });
+        return;
+      }
+
       const counts = this.drawOfferCounts.get(matchId) ?? { white: 0, black: 0 };
       const myCount = isWhite ? counts.white : counts.black;
       if (myCount >= maxOffers) {
@@ -294,6 +317,8 @@ export class WorldRoom extends Room<WorldState> {
       if (isWhite) counts.white++;
       else counts.black++;
       this.drawOfferCounts.set(matchId, counts);
+
+      this.pendingDrawOffers.set(matchId, isWhite ? 'w' : 'b');
 
       const opponentId = isWhite ? match.blackPlayerId : match.whitePlayerId;
       const opponentSession = this.findSessionByPlayerId(opponentId);
@@ -315,6 +340,12 @@ export class WorldRoom extends Room<WorldState> {
       const isBlack = match.blackPlayerId === player.id;
       if (!isWhite && !isBlack) return;
 
+      // Only valid while an offer from the OPPONENT is pending
+      const pendingFrom = this.pendingDrawOffers.get(matchId);
+      const myColor: 'w' | 'b' = isWhite ? 'w' : 'b';
+      if (!pendingFrom || pendingFrom === myColor) return;
+      this.pendingDrawOffers.delete(matchId);
+
       // Notify the opponent (the one who offered) that draw was declined
       const offererId = isWhite ? match.blackPlayerId : match.whitePlayerId;
       const offererSession = this.findSessionByPlayerId(offererId);
@@ -335,6 +366,13 @@ export class WorldRoom extends Room<WorldState> {
       const isWhite = match.whitePlayerId === player.id;
       const isBlack = match.blackPlayerId === player.id;
       if (!isWhite && !isBlack) return;
+
+      // Only valid while an offer from the OPPONENT is pending — prevents
+      // forcing a draw without an offer and stale accepts after a decline/move.
+      const pendingFrom = this.pendingDrawOffers.get(matchId);
+      const myColor: 'w' | 'b' = isWhite ? 'w' : 'b';
+      if (!pendingFrom || pendingFrom === myColor) return;
+      this.pendingDrawOffers.delete(matchId);
 
       match.status = 'finished';
       match.result = 'draw';
@@ -839,6 +877,7 @@ export class WorldRoom extends Room<WorldState> {
 
     // Clear draw offer counters for this match
     this.drawOfferCounts.delete(match.id);
+    this.pendingDrawOffers.delete(match.id);
   }
 
   private async broadcastMatchEnd(match: MatchState): Promise<void> {

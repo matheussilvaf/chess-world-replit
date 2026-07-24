@@ -1587,6 +1587,25 @@ export class WorldScene extends Phaser.Scene {
       };
     }
     (window as any).__tableScreenRects = rects;
+
+    // Publish the active table's camera_focus_area rect (screen-space AABB +
+    // its world width) so the DOM MatchHUD can anchor time boxes / buttons to
+    // the board through zoom, pan and camera rotation.
+    const activeId = this.activeOverlayTableId;
+    const focus = activeId ? this.tableRegistry.tables.get(activeId)?.cameraFocus : null;
+    if (focus && focus.width > 0) {
+      const ftl = toScreen(focus.x, focus.y);
+      const fbr = toScreen(focus.x + focus.width, focus.y + focus.height);
+      (window as any).__activeCameraFocusRect = {
+        x: Math.min(ftl.x, fbr.x),
+        y: Math.min(ftl.y, fbr.y),
+        width: Math.abs(fbr.x - ftl.x),
+        height: Math.abs(fbr.y - ftl.y),
+        worldWidth: focus.width,
+      };
+    } else {
+      (window as any).__activeCameraFocusRect = null;
+    }
   }
 
   public movePlayerToBoard(arenaId: string, side: 'left' | 'right') {
@@ -1809,6 +1828,18 @@ export class WorldScene extends Phaser.Scene {
       this.cameraTargetY = anchors.overlayArea.y + anchors.overlayArea.height / 2;
       this.targetZoom = this.boardZoom;
     }
+
+    // Seating as a PLAYER with a known color: orient the camera immediately so
+    // a black challenge creator sees the board from their side while waiting
+    // (same look as in-match). White explicitly resets to 0.
+    if (role === 'player' && playerColor) {
+      const rot = playerColor === 'b' ? Math.PI : 0;
+      this.targetRotation = rot;
+      this.currentCameraRotation = rot;
+      this.cameras.main.setRotation(rot);
+      // Counter-rotate the Phaser board preview pieces so they read upright
+      this.chessOverlay?.setPreviewRotation(tableId, rot);
+    }
   }
 
   public unseatPlayer() {
@@ -1821,6 +1852,10 @@ export class WorldScene extends Phaser.Scene {
     const { tableId, role, seat } = this.currentSeatInfo;
     const anchors = this.tableRegistry?.tables.get(tableId);
     this.currentSeatInfo = null;
+
+    // Restore camera orientation (challenge-as-black rotates it 180°)
+    this.targetRotation = 0;
+    this.chessOverlay?.setPreviewRotation(tableId, 0);
 
     console.log('[WorldScene] unseatPlayer:', tableId, role, seat);
 

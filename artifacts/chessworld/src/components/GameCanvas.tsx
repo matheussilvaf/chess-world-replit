@@ -523,10 +523,16 @@ export function GameCanvas() {
 
     room.onMessage('draw_declined', (_data: any) => {
       useChessStore.getState().setDrawOfferedByUs(false);
+      useChessStore.getState().setDrawNotice({ kind: 'declined' });
     });
 
-    room.onMessage('draw_offer_rejected', (_data: any) => {
+    room.onMessage('draw_offer_rejected', (data: any) => {
       useChessStore.getState().setDrawOfferedByUs(false);
+      // 'pending_exists' is a harmless race (both offered at once) — no toast;
+      // the incoming offer toast is already on screen to be answered.
+      if (data?.reason !== 'pending_exists') {
+        useChessStore.getState().setDrawNotice({ kind: 'limit', max: data?.max });
+      }
     });
 
     room.onMessage('match_finished', (data: any) => {
@@ -564,7 +570,9 @@ export function GameCanvas() {
       if (gameRef.current && data.boardId) {
         const worldScene = getWorldScene(gameRef.current);
         if (worldScene) {
-          worldScene.seatPlayer(data.boardId, 'player', data.seat || 'bottom');
+          // Pass the chosen color so a black creator gets the rotated camera
+          // + correct sitting sprite immediately (same look as in-match).
+          worldScene.seatPlayer(data.boardId, 'player', data.seat || 'bottom', data.color === 'b' ? 'b' : 'w');
         }
       }
     });

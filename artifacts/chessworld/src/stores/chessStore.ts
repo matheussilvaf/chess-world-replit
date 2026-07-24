@@ -38,6 +38,7 @@ interface ChessState {
   lastMove: { from: string; to: string } | null;
   drawOfferPending: boolean;
   drawOfferedByUs: boolean;
+  drawNotice: { kind: 'declined' | 'limit'; max?: number } | null;
 
   // Move history for navigation
   moveHistory: MoveRecord[];
@@ -56,6 +57,7 @@ interface ChessState {
   declineDraw: () => void;
   setDrawOfferPending: (pending: boolean) => void;
   setDrawOfferedByUs: (offered: boolean) => void;
+  setDrawNotice: (notice: { kind: 'declined' | 'limit'; max?: number } | null) => void;
   closeBoard: () => void;
   reopenBoard: () => void;
   tickTimer: () => void;
@@ -146,6 +148,7 @@ export const useChessStore = create<ChessState>((set, get) => ({
   blackPlayerElo: 1200,
   drawOfferPending: false,
   drawOfferedByUs: false,
+  drawNotice: null,
   whitePlayerId: '',
   blackPlayerId: '',
   showBoard: false,
@@ -364,6 +367,14 @@ export const useChessStore = create<ChessState>((set, get) => ({
       moveHistory: updatedHistory,
       viewIndex: -1, // Snap to live when new move arrives
     });
+
+    // Any move on the board voids outstanding draw offers (server enforces the same)
+    if (newMoveRecord && (opponentJustMoved || spectatorSync)) {
+      const { drawOfferPending, drawOfferedByUs } = get();
+      if (drawOfferPending || drawOfferedByUs) {
+        set({ drawOfferPending: false, drawOfferedByUs: false });
+      }
+    }
   },
 
   selectSquare: (square) => {
@@ -414,6 +425,9 @@ export const useChessStore = create<ChessState>((set, get) => ({
       lastMove: { from, to },
       moveHistory: updatedHistory,
       viewIndex: -1,
+      // Moving voids outstanding draw offers (server enforces the same)
+      drawOfferPending: false,
+      drawOfferedByUs: false,
     });
 
     sendChessMove(matchId, from, to, actualPromotion);
@@ -454,8 +468,11 @@ export const useChessStore = create<ChessState>((set, get) => ({
   },
 
   sendDrawOffer: () => {
-    const { matchId } = get();
-    if (!matchId) return;
+    const { matchId, drawOfferPending, drawOfferedByUs, gameOver, isSpectating } = get();
+    if (!matchId || gameOver || isSpectating) return;
+    // If an incoming offer is pending, it must be answered (Accept/Decline)
+    // instead of sending a new one; if we already offered, wait for the reply.
+    if (drawOfferPending || drawOfferedByUs) return;
     getActiveRoom()?.send('chess_draw_offer', { matchId });
     set({ drawOfferedByUs: true });
   },
@@ -480,6 +497,10 @@ export const useChessStore = create<ChessState>((set, get) => ({
 
   setDrawOfferedByUs: (offered: boolean) => {
     set({ drawOfferedByUs: offered });
+  },
+
+  setDrawNotice: (notice: { kind: 'declined' | 'limit'; max?: number } | null) => {
+    set({ drawNotice: notice });
   },
 
   closeBoard: () => {
@@ -535,7 +556,7 @@ export const useChessStore = create<ChessState>((set, get) => ({
       matchId: null, boardId: null, game: null, playerColor: null,
       selectedSquare: null, validMoves: [], isMyTurn: false, gameOver: false,
       result: null, winnerId: null, isSpectating: false, showBoard: false,
-      drawOfferPending: false, drawOfferedByUs: false,
+      drawOfferPending: false, drawOfferedByUs: false, drawNotice: null,
       whiteTimeMs: 600000, blackTimeMs: 600000, lastMoveAt: Date.now(),
       incrementMs: 0, turn: 'w', whitePlayerName: '', blackPlayerName: '',
       whitePlayerId: '', blackPlayerId: '', lastMove: null,

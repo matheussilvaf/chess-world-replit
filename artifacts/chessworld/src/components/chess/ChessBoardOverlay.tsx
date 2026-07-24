@@ -487,22 +487,29 @@ export function ChessBoardOverlay() {
         </div>
       )}
 
-      {/* Move navigation buttons — fixed at the very bottom of the screen */}
+      {/* Move navigation — floating pill, bottom-center.
+          Height budget: 36px buttons + 12px padding + 2px border = 50px,
+          + bottom-2 (8px) => top edge 58px from the viewport bottom.
+          MatchHUD clamps its board-anchored boxes to >= 68px from the bottom
+          (NAV_CLEARANCE_PX), so the HUD can never touch this pill. */}
       {showNav && (
-        <div className="fixed z-[200] pointer-events-auto bottom-0 left-0 right-0">
-          <div className="flex items-center bg-slate-900/92 backdrop-blur-md border-t border-slate-700/60 px-2 py-1.5 gap-1.5">
+        <div className="fixed z-[205] pointer-events-auto bottom-2 left-1/2 -translate-x-1/2">
+          <div className="flex items-center gap-1 px-1.5 py-1.5 rounded-2xl bg-gradient-to-b from-slate-800/95 to-slate-950/95 border border-slate-600/50 shadow-[0_8px_30px_rgba(0,0,0,0.55)] backdrop-blur-md">
             <NavButton onClick={goToStart} disabled={isViewingHistory && viewIndex === 0} title="Start">
               <ChevronsLeft className="w-4 h-4" />
             </NavButton>
             <NavButton onClick={goBack} disabled={!canGoBack} title="Previous">
               <ChevronLeft className="w-4 h-4" />
             </NavButton>
-            {isViewingHistory && (
-              <span className="flex-1 text-center text-[10px] font-mono text-amber-400 select-none">
-                {viewIndex}/{moveHistory.length}
-              </span>
-            )}
-            {!isViewingHistory && <span className="flex-1" />}
+            <div
+              className={`h-9 min-w-[3.25rem] px-2 mx-0.5 rounded-xl flex items-center justify-center font-mono text-[11px] font-bold select-none border transition-colors ${
+                isViewingHistory
+                  ? 'text-amber-300 border-amber-500/40 bg-amber-500/10'
+                  : 'text-slate-400 border-slate-700/60 bg-slate-900/60'
+              }`}
+            >
+              {isViewingHistory ? `${viewIndex}/${moveHistory.length}` : moveHistory.length}
+            </div>
             <NavButton onClick={goForward} disabled={!canGoForward} title="Next">
               <ChevronRight className="w-4 h-4" />
             </NavButton>
@@ -523,11 +530,11 @@ function NavButton({ children, onClick, disabled, title }: { children: React.Rea
       disabled={disabled}
       title={title}
       className={`
-        flex items-center justify-center flex-1 h-8 rounded-lg
-        transition-all duration-150 shadow-md
+        flex items-center justify-center w-9 h-9 rounded-xl
+        transition-all duration-150
         ${disabled
-          ? 'bg-gradient-to-b from-slate-800/70 to-slate-900/70 text-slate-600 cursor-not-allowed'
-          : 'bg-gradient-to-b from-slate-700/90 to-slate-900/90 text-slate-300 hover:from-slate-600/90 hover:to-slate-800/90 hover:text-white active:scale-95 border border-slate-600/40'
+          ? 'text-slate-600 cursor-not-allowed'
+          : 'bg-slate-700/50 text-slate-200 hover:bg-slate-600/70 hover:text-white active:scale-90 border border-slate-600/40 shadow-md'
         }
       `}
     >

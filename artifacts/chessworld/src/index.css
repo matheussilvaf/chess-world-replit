@@ -73,3 +73,9 @@ canvas {
     touch-action: none;
   }
 }
+
+/* MatchHUD toast slide-up */
+@keyframes hud-toast-in {
+  from { transform: translateY(18px); opacity: 0; }
+  to   { transform: translateY(0);    opacity: 1; }
+}

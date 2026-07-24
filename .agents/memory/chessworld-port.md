@@ -75,6 +75,11 @@ The Colyseus Cloud server was found running MONTHS-stale code: GitHub pushes "su
 **Why:** two URL shapes for the same server + silent null-render on fetch failure.
 **How to apply:** normalize once (append `/api` only if the base doesn't already end with it) before `${apiBase}/coordinator/...`; admin sections must render a visible error + retry instead of returning null. Related decision: the tournament `randomize` flag persists INSIDE the `swiss_config` JSONB (no DDL access for a new column); loadConfig strips it before the swissConfig reaches the pairing engine, and each cycle's rolled settings freeze in `config_snapshot` at creation (instance snapshot beats live config everywhere downstream).
 
+## Local api-server workflow runs a ONE-SHOT build (stale-dist trap)
+The api-server dev script is `build && start` (esbuild → dist), NOT watch mode. Server source edits change nothing until the workflow restarts; meanwhile clients hit "missing" handlers that clearly exist in source.
+**Why:** burned a debugging session on "draw decline exits the match" that was just a stale running dist — the old build lacked the draw handlers entirely. Giveaway in api-server logs: `onMessage for "chess_draw_decline" not registered`.
+**How to apply:** after ANY edit under artifacts/api-server, restart the `artifacts/api-server: API Server` workflow (build runs on start). Treat `onMessage ... not registered` warnings as "stale running build", not missing code. Only the Vite client hot-reloads.
+
 ## Client: seat exit tween uses a {t} proxy target — killTweensOf(player) does NOT stop it
 `unseatPlayer()` animates a plain `{t:0..1}` object whose onUpdate drags the physics body toward the table exit anchor, so a server teleport got overridden mid-flight.
 **Why:** Phaser kill-by-target only matches the tween's target object, not what onUpdate mutates.

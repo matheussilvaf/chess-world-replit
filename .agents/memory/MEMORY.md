@@ -1,2 +1,2 @@
-- [ChessWorld MMO port](chessworld-port.md) — Colyseus/Supabase quirks: stale cloud deploy + engine-ownership gate + decoy trap, presence=world-rooms, DB CHECK vocab, silent PostgREST/NULLS-FIRST traps, client pinning.
+- [ChessWorld MMO port](chessworld-port.md) — Colyseus/Supabase quirks: stale deploys (cloud + local one-shot dist), engine ownership, decoy trap, presence=world-rooms, DB CHECK vocab, PostgREST traps, client pinning.
 - [gitPush provider](gitpush-provider.md) — sempre usar `gitPush({ provider: "github" })`, sem o parâmetro vai pro backup interno.
