@@ -431,9 +431,13 @@ async function checkPresenceDeadlines(instance: TournamentInstance): Promise<voi
     const blackPresent = p.black_player_id && await isPlayerPresent(p.black_player_id);
 
     if (whitePresent && blackPresent) {
+      // Both present but the board hasn't started (the playing case is
+      // handled above). Re-arm the deadline instead of clearing it: players
+      // who register, stay in the room, but never seat would otherwise leave
+      // the round stuck in round_active forever (no deadline, no result).
       await db
         .from('tournament_pairings')
-        .update({ presence_deadline: null })
+        .update({ presence_deadline: new Date(Date.now() + 120_000).toISOString() })
         .eq('id', p.id)
         .is('result', null);
       continue;
