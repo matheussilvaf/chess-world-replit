@@ -34,7 +34,7 @@ _Describe the high-level user-facing capabilities of this app once they exist._
 
 ## User preferences
 
-_Populate as you build — explicit user instructions worth remembering across sessions._
+- **Sempre dar push para o GitHub após qualquer mudança no projeto.** Qualquer edição em qualquer pasta (incluindo `server/`, `artifacts/`, raiz) deve ser seguida imediatamente de `gitPush({})`. O Colyseus Cloud monitora o repositório e faz deploy automático quando detecta novos commits — sem push, o servidor de produção não atualiza.
 
 ## Gotchas
 
