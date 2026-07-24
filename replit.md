@@ -34,7 +34,7 @@ _Describe the high-level user-facing capabilities of this app once they exist._
 
 ## User preferences
 
-- **Sempre dar push para o GitHub após qualquer mudança no projeto.** Qualquer edição em qualquer pasta (incluindo `server/`, `artifacts/`, raiz) deve ser seguida imediatamente de `gitPush({})`. O Colyseus Cloud monitora o repositório e faz deploy automático quando detecta novos commits — sem push, o servidor de produção não atualiza.
+- **Sempre dar push para o GitHub após qualquer mudança no projeto.** Qualquer edição em qualquer pasta (incluindo `server/`, `artifacts/`, raiz) deve ser seguida imediatamente de `gitPush({ provider: "github" })`. **Sempre use `provider: "github"` explicitamente** — sem ele, o `gitPush` manda para o backup interno do Replit e não para o repositório real. O Colyseus Cloud monitora o repositório e faz deploy automático quando detecta novos commits — sem push, o servidor de produção não atualiza.
 
 ## Gotchas
 
