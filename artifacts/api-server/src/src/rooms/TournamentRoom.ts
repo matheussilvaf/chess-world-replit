@@ -123,6 +123,8 @@ export class TournamentArenaState extends Schema {
   pairings: ArraySchema<PairingState> = new ArraySchema<PairingState>();
   registrations: ArraySchema<RegistrationState> = new ArraySchema<RegistrationState>();
   standings: ArraySchema<StandingState> = new ArraySchema<StandingState>();
+  /** ISO timestamp when the next round becomes active (5-second countdown). Empty string when not counting down. */
+  nextRoundAt: string = '';
 }
 defineTypes(TournamentArenaState, {
   status: 'string',
@@ -140,6 +142,7 @@ defineTypes(TournamentArenaState, {
   practiceTablesLocked: 'boolean',
   doorOpen: 'boolean',
   lastStatus: 'string',
+  nextRoundAt: 'string',
   modules: [ModuleState],
   tables: [TableState],
   pairings: [PairingState],
@@ -273,6 +276,7 @@ export class TournamentRoom extends Room<TournamentArenaState> {
         this.state.status = current.status;
         this.state.startsAt = current.startsAt || '';
         this.state.currentRound = current.currentRound;
+        this.state.nextRoundAt = (current.configSnapshot as Record<string, unknown> | null)?.next_round_at as string || '';
         this.state.totalRounds = current.totalRounds;
         this.state.playerCount = current.playerCount;
 
@@ -317,6 +321,7 @@ export class TournamentRoom extends Room<TournamentArenaState> {
       } else {
         this.state.status = 'idle';
         this.state.tournamentId = '';
+        this.state.nextRoundAt = '';
         this.state.modules.clear();
         this.state.tables.clear();
         this.state.pairings.clear();

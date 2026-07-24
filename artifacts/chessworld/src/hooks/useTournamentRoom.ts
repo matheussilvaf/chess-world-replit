@@ -19,6 +19,8 @@ export interface TournamentState {
   practiceTablesLocked: boolean;
   doorOpen: boolean;
   lastStatus: string;
+  /** ISO timestamp when the next round becomes active (5-second countdown). Empty string when not counting down. */
+  nextRoundAt: string;
   modules: Array<{ instanceId: string; moduleType: string; order: number }>;
   tables: Array<{ runtimeTableId: string; tableNumber: number; moduleInstanceId: string; localSlotId: string }>;
   pairings: Array<{
@@ -69,6 +71,7 @@ const EMPTY_STATE: TournamentState = {
   practiceTablesLocked: false,
   doorOpen: false,
   lastStatus: '',
+  nextRoundAt: '',
   modules: [],
   tables: [],
   pairings: [],
@@ -182,6 +185,7 @@ export function useTournamentRoom() {
           practiceTablesLocked: newState.practiceTablesLocked || false,
           doorOpen: newState.doorOpen || false,
           lastStatus: newState.lastStatus || '',
+          nextRoundAt: newState.nextRoundAt || '',
           modules,
           tables,
           pairings,

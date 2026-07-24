@@ -22,6 +22,8 @@ const activeGames = new Map<string, Chess>();
 
 export class WorldRoom extends Room<WorldState> {
   private readonly TICK_RATE = 20;
+  /** Timer per matchId for the tournament disconnect grace period. */
+  private disconnectTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
   onCreate(options: any) {
     this.setState(new WorldState());
@@ -384,6 +386,10 @@ export class WorldRoom extends Room<WorldState> {
           client.send('match_started', { matchId: board.matchId, boardId, color: myColor });
           return;
         }
+        // Board is in 'playing' but this player is not in that match — stale state.
+        // Don't fall through to the idle/waiting branches (none handle 'playing').
+        console.warn(`[WorldRoom] tournament_seat: board ${boardId} playing but ${player.id} not in match ${board.matchId}`);
+        return;
       }
 
       // First player: set up as waiting
@@ -480,6 +486,22 @@ export class WorldRoom extends Room<WorldState> {
         client.send('match_started', { matchId, boardId: match.boardId, color: 'b' });
       }
     });
+
+    // Cancel any active disconnect grace timer (player reconnected in time)
+    this.state.matches.forEach((match, matchId) => {
+      if (match.status !== 'playing') return;
+      if (match.whitePlayerId !== playerId && match.blackPlayerId !== playerId) return;
+      const timer = this.disconnectTimers.get(matchId);
+      if (!timer) return;
+      clearTimeout(timer);
+      this.disconnectTimers.delete(matchId);
+      console.log(`[WorldRoom] ${playerId} reconnected to match ${matchId}, grace timer cancelled`);
+      // Notify opponent of reconnection
+      const opponentId = match.whitePlayerId === playerId ? match.blackPlayerId : match.whitePlayerId;
+      const opponentSession = this.findSessionByPlayerId(opponentId);
+      const opponentClient = this.clients.find(c => c.sessionId === opponentSession);
+      opponentClient?.send('opponent_reconnected', { matchId, boardId: match.boardId });
+    });
   }
 
   async onLeave(client: Client, consented: boolean) {
@@ -496,11 +518,59 @@ export class WorldRoom extends Room<WorldState> {
       const abandonedMatches: MatchState[] = [];
       const matchEntries: [string, MatchState][] = [];
       this.state.matches.forEach((match, matchId) => matchEntries.push([matchId, match]));
+
+      // Load WO grace period from config (default 30s)
+      let woGraceMs = 30_000;
+      try {
+        const cfg = await coordinator.loadConfig();
+        woGraceMs = ((cfg.woTimeoutSeconds ?? 30)) * 1_000;
+      } catch { /* use default */ }
+
       for (const [matchId, match] of matchEntries) {
         if (match.status === 'playing') {
           const isWhite = match.whitePlayerId === player.id;
           const isBlack = match.blackPlayerId === player.id;
-          if (isWhite || isBlack) {
+          if (!(isWhite || isBlack)) continue;
+
+          const isTournamentMatch = match.boardId.includes('_table_');
+
+          if (isTournamentMatch) {
+            // Tournament match: give the player a reconnect grace window instead
+            // of immediately forfeiting. Cancel any existing timer for safety.
+            if (this.disconnectTimers.has(matchId)) clearTimeout(this.disconnectTimers.get(matchId)!);
+
+            const opponentId = isWhite ? match.blackPlayerId : match.whitePlayerId;
+            const opponentSession = this.findSessionByPlayerId(opponentId);
+            const opponentClient = opponentSession ? this.clients.find(c => c.sessionId === opponentSession) : null;
+            const reconnectDeadline = new Date(Date.now() + woGraceMs).toISOString();
+
+            opponentClient?.send('opponent_disconnected', {
+              matchId,
+              boardId: match.boardId,
+              reconnectDeadline,
+              disconnectedPlayerId: player.id,
+            });
+
+            const timer = setTimeout(async () => {
+              this.disconnectTimers.delete(matchId);
+              const m = this.state.matches.get(matchId);
+              if (!m || m.status !== 'playing') return;
+              // Player didn't reconnect in time → forfeit
+              m.status = 'finished';
+              m.result = 'abandon';
+              m.winnerId = isWhite ? m.blackPlayerId : m.whitePlayerId;
+              activeGames.delete(matchId);
+              await this.broadcastMatchEnd(m);
+              this.cleanupMatchBoard(m);
+              this.state.matches.delete(matchId);
+              opponentClient?.send('opponent_forfeited', { matchId, reason: 'disconnect_timeout' });
+              console.log(`[WorldRoom] W.O. awarded: ${player.id} did not reconnect to match ${matchId}`);
+            }, woGraceMs);
+
+            this.disconnectTimers.set(matchId, timer);
+            console.log(`[WorldRoom] Disconnect grace timer started for ${player.id} in match ${matchId} (${woGraceMs / 1000}s)`);
+          } else {
+            // Non-tournament match: immediate abandon (existing behaviour)
             match.status = 'finished';
             match.result = 'abandon';
             match.winnerId = isWhite ? match.blackPlayerId : match.whitePlayerId;
@@ -523,6 +593,9 @@ export class WorldRoom extends Room<WorldState> {
   }
 
   onDispose() {
+    // Clear all disconnect grace timers so they don't fire after room disposal.
+    this.disconnectTimers.forEach((timer) => clearTimeout(timer));
+    this.disconnectTimers.clear();
     // Only drop games belonging to THIS room — activeGames is module-level
     // and shared between the 'world' and 'arena' rooms; clearing everything
     // here used to kill the other room's live matches.

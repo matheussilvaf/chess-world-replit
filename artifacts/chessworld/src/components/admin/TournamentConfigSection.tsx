@@ -19,6 +19,7 @@ interface TournamentConfig {
     tiebreaks: string[];
   };
   randomize?: boolean;
+  woTimeoutSeconds?: number;
 }
 
 interface EngineStatus {
@@ -348,6 +349,30 @@ export function TournamentConfigSection({ serverUrl }: { serverUrl: string }) {
             />
           </div>
         )}
+
+        {/* WO Timeout */}
+        <div>
+          <label className="flex items-center gap-2 text-sm font-medium text-slate-300 mb-2">
+            <Clock className="w-3.5 h-3.5 text-slate-400" />
+            Tempo de W.O. (segundos)
+          </label>
+          <input
+            type="number"
+            min={10}
+            max={300}
+            step={5}
+            value={config.woTimeoutSeconds ?? 30}
+            onChange={(e) => {
+              const updated = { ...config, woTimeoutSeconds: Number(e.target.value) || 30 };
+              setConfig(updated);
+              saveConfig(updated);
+            }}
+            className="w-full bg-slate-800 border border-slate-700 rounded-lg px-4 py-2.5 text-sm text-white focus:border-emerald-500 focus:outline-none"
+          />
+          <p className="text-xs text-slate-500 mt-1">
+            Tempo para o adversário chegar ao tabuleiro antes de W.O., e para reconexão após desconexão
+          </p>
+        </div>
 
         {/* Info display */}
         <div className="p-3 rounded-lg bg-slate-800/50 space-y-1.5">

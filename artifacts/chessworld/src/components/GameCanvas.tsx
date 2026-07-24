@@ -498,6 +498,25 @@ export function GameCanvas() {
       }
     });
 
+    room.onMessage('opponent_disconnected', (data: any) => {
+      useGameStore.getState().setLastEvent('opponent_disconnected');
+      useGameStore.getState().setOpponentDisconnected({
+        reconnectDeadline: data.reconnectDeadline,
+        matchId: data.matchId,
+        boardId: data.boardId,
+      });
+    });
+
+    room.onMessage('opponent_reconnected', (_data: any) => {
+      useGameStore.getState().setLastEvent('opponent_reconnected');
+      useGameStore.getState().setOpponentDisconnected(null);
+    });
+
+    room.onMessage('opponent_forfeited', (_data: any) => {
+      useGameStore.getState().setLastEvent('opponent_forfeited');
+      useGameStore.getState().setOpponentDisconnected(null);
+    });
+
     room.onMessage('match_finished', (data: any) => {
       useGameStore.getState().setLastEvent(`match_finished: ${data.result}`);
       useChessStore.getState().finishMatchFromServer(data);

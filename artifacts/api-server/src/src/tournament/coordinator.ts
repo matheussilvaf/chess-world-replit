@@ -85,6 +85,12 @@ export interface TournamentConfig {
   };
   /** When true, each new tournament cycle rolls random settings. Persisted inside swiss_config JSONB (no DDL access to add a column). */
   randomize?: boolean;
+  /**
+   * Seconds a player has to reconnect (or arrive) before a W.O. is awarded.
+   * Persisted inside swiss_config JSONB (no DDL access to add a column).
+   * Default: 30.
+   */
+  woTimeoutSeconds?: number;
 }
 
 export interface TournamentInstance {
@@ -239,6 +245,12 @@ async function processTransitions(): Promise<void> {
 
     case 'between_rounds':
       if (!(await ensureEngineOwnership(instance))) break;
+      {
+        // Skip if the round countdown is still ticking — clients show the
+        // pill, coordinator holds off until the deadline passes.
+        const nextRoundAt = (instance.configSnapshot as Record<string, unknown> | null)?.next_round_at as string | undefined;
+        if (nextRoundAt && Date.now() < new Date(nextRoundAt).getTime()) break;
+      }
       await transitionToNextRound(instance);
       break;
 
@@ -641,15 +653,36 @@ async function transitionToNextRoundInner(instance: TournamentInstance): Promise
 
   if (!instance.swissTournamentId) return;
 
-  // Re-read the live status: a queued caller may find the round already
-  // advanced (or the tournament finalized) by the previous lock holder.
+  // Re-read the live status with config_snapshot so we can inspect the
+  // round countdown flag written on the previous tick.
   const { data: liveRow } = await db
     .from('tournament_instances')
-    .select('status, current_round')
+    .select('status, current_round, config_snapshot')
     .eq('id', instance.id)
     .maybeSingle();
   if (!liveRow || liveRow.status !== 'between_rounds') return;
   if (liveRow.current_round !== instance.currentRound) return;
+
+  // ── ROUND COUNTDOWN ──────────────────────────────────────────────────────
+  // If next_round_at is already set (pairings were generated on a previous
+  // tick), either keep waiting or fire the transition once the clock expires.
+  const snap = liveRow.config_snapshot as Record<string, unknown> | null ?? {};
+  const existingNextRoundAt = snap.next_round_at as string | undefined;
+  if (existingNextRoundAt) {
+    if (Date.now() < new Date(existingNextRoundAt).getTime()) {
+      return; // Still counting down — clients show the timer, coordinator waits
+    }
+    // Countdown expired → clear the flag, then flip to round_active
+    const cleared: Record<string, unknown> = { ...snap, engine_owner: COORDINATOR_ID };
+    delete cleared.next_round_at;
+    await db.from('tournament_instances').update({ config_snapshot: cleared }).eq('id', instance.id);
+    const won = await atomicTransition(instance.id, 'between_rounds', 'round_active');
+    if (won) {
+      console.log(`[Coordinator] Round ${liveRow.current_round as number} started for tournament ${instance.id}`);
+    }
+    return;
+  }
+  // ─────────────────────────────────────────────────────────────────────────
 
   const nextRoundResult = await service.generateNextRound(instance.swissTournamentId);
   if (!nextRoundResult.success) {
@@ -682,17 +715,19 @@ async function transitionToNextRoundInner(instance: TournamentInstance): Promise
 
   await createRoundRecords(instance.id, instance.swissTournamentId, swissT, nextRound, layout, regs || []);
 
+  // ── SET COUNTDOWN ─────────────────────────────────────────────────────────
+  // Write next_round_at into config_snapshot so TournamentRoom can surface a
+  // 5-second countdown pill on the client. We do NOT call atomicTransition
+  // yet; the next tick's existingNextRoundAt branch fires round_active once
+  // the deadline passes.
+  const nextRoundAt = new Date(Date.now() + 5_000).toISOString();
+  const updatedSnap = { ...snap, engine_owner: COORDINATOR_ID, next_round_at: nextRoundAt };
   await db
     .from('tournament_instances')
-    .update({ current_round: nextRound })
+    .update({ current_round: nextRound, config_snapshot: updatedSnap })
     .eq('id', instance.id);
 
-  const wonRoundStart = await atomicTransition(instance.id, 'between_rounds', 'round_active');
-  if (wonRoundStart) {
-    console.log(`[Coordinator] Round ${nextRound} started for tournament ${instance.id}`);
-  } else {
-    console.warn(`[Coordinator] Round ${nextRound} records created for ${instance.id} but the round_active transition was lost (status changed concurrently)`);
-  }
+  console.log(`[Coordinator] Round ${nextRound} pairings ready for ${instance.id}, starting in 5 s`);
 }
 
 async function transitionToCompleted(instance: TournamentInstance): Promise<void> {
@@ -1217,17 +1252,21 @@ export async function loadConfig(): Promise<TournamentConfig> {
     };
   }
 
-  // randomize lives inside the swiss_config JSONB (no DDL access to add a
-  // dedicated column); strip it out so swissConfig stays clean for the engine.
+  // randomize and woTimeoutSeconds live inside the swiss_config JSONB (no DDL
+  // access to add dedicated columns); strip them out so swissConfig stays
+  // clean for the engine.
   const rawSwiss = { ...(data.swiss_config || {}) };
   const randomize = !!rawSwiss.randomize;
+  const woTimeoutSeconds = typeof rawSwiss.woTimeoutSeconds === 'number' ? rawSwiss.woTimeoutSeconds : 30;
   delete rawSwiss.randomize;
+  delete rawSwiss.woTimeoutSeconds;
 
   return {
     intervalSeconds: data.interval_seconds,
     timeControl: data.time_control,
     swissConfig: rawSwiss,
     randomize,
+    woTimeoutSeconds,
   };
 }
 
@@ -1240,7 +1279,11 @@ export async function saveConfig(config: TournamentConfig, userId?: string): Pro
       id: 'default',
       interval_seconds: config.intervalSeconds,
       time_control: config.timeControl,
-      swiss_config: { ...config.swissConfig, randomize: !!config.randomize },
+      swiss_config: {
+        ...config.swissConfig,
+        randomize: !!config.randomize,
+        woTimeoutSeconds: config.woTimeoutSeconds ?? 30,
+      },
       updated_at: new Date().toISOString(),
       updated_by: userId || null,
     }, { onConflict: 'id' });

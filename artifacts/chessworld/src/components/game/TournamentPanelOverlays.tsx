@@ -4,6 +4,75 @@ import { useTournamentAutoSeat } from '../../hooks/useTournamentAutoSeat';
 import { TournamentRegistryPanel } from '../tournament/TournamentRegistryPanel';
 import { TournamentStandingsPanel, TournamentStandingsModal } from '../tournament/TournamentStandingsPanel';
 import { useAuthStore } from '../../stores/authStore';
+import { useGameStore } from '../../stores/gameStore';
+
+// ── Countdown hook ──────────────────────────────────────────────────────────
+function useSecondsUntil(isoTarget: string): number {
+  const [secs, setSecs] = useState(() => Math.max(0, Math.ceil((new Date(isoTarget).getTime() - Date.now()) / 1000)));
+  useEffect(() => {
+    const tick = () => setSecs(Math.max(0, Math.ceil((new Date(isoTarget).getTime() - Date.now()) / 1000)));
+    tick();
+    const id = setInterval(tick, 250);
+    return () => clearInterval(id);
+  }, [isoTarget]);
+  return secs;
+}
+
+// ── Round countdown pill ────────────────────────────────────────────────────
+function RoundCountdown({ nextRoundAt, round }: { nextRoundAt: string; round: number }) {
+  const secs = useSecondsUntil(nextRoundAt);
+  if (secs <= 0) return null;
+  return (
+    <div className="fixed bottom-8 left-1/2 -translate-x-1/2 z-[700] pointer-events-none">
+      <div className="flex items-center gap-2.5 px-5 py-2.5 rounded-full bg-slate-900/95 border border-emerald-500/40 shadow-xl shadow-black/50 backdrop-blur-sm">
+        <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
+        <span className="text-sm font-medium text-slate-200">
+          Round {round} começa em{' '}
+          <span className="tabular-nums font-bold text-emerald-400">{secs}s</span>
+        </span>
+      </div>
+    </div>
+  );
+}
+
+// ── Waiting-for-opponent pill ───────────────────────────────────────────────
+function WaitingForOpponentPill({ deadline }: { deadline: string }) {
+  const secs = useSecondsUntil(deadline);
+  return (
+    <div className="fixed bottom-8 left-1/2 -translate-x-1/2 z-[700] pointer-events-none">
+      <div className="flex items-center gap-2.5 px-5 py-2.5 rounded-full bg-slate-900/95 border border-amber-500/40 shadow-xl shadow-black/50 backdrop-blur-sm">
+        <span className="w-2 h-2 rounded-full bg-amber-400 animate-pulse" />
+        <span className="text-sm font-medium text-slate-200">
+          Aguardando adversário…
+          {secs > 0 && (
+            <> W.O. em <span className="tabular-nums font-bold text-amber-400">{secs}s</span></>
+          )}
+        </span>
+      </div>
+    </div>
+  );
+}
+
+// ── Opponent disconnected overlay ───────────────────────────────────────────
+function OpponentDisconnectedOverlay({ reconnectDeadline }: { reconnectDeadline: string }) {
+  const secs = useSecondsUntil(reconnectDeadline);
+  return (
+    <div className="fixed inset-0 z-[800] flex items-center justify-center pointer-events-none">
+      <div className="flex flex-col items-center gap-3 px-8 py-6 rounded-2xl bg-slate-900/95 border border-amber-500/30 shadow-2xl shadow-black/60 backdrop-blur-sm max-w-xs text-center">
+        <span className="w-3 h-3 rounded-full bg-amber-400 animate-pulse" />
+        <p className="text-sm font-semibold text-white">Aguardando o jogador se conectar novamente</p>
+        {secs > 0 ? (
+          <p className="text-xs text-slate-400">
+            W.O. automático em{' '}
+            <span className="tabular-nums font-bold text-amber-400">{secs}s</span>
+          </p>
+        ) : (
+          <p className="text-xs text-slate-400">Processando resultado…</p>
+        )}
+      </div>
+    </div>
+  );
+}
 
 interface PanelRect {
   x: number;
@@ -197,6 +266,25 @@ export function TournamentPanelOverlays() {
   const registryRect = panelRects.registry;
   const standingsRect = panelRects.standings;
 
+  // ── Overlay logic ─────────────────────────────────────────────────────────
+  const opponentDisconnected = useGameStore(s => s.opponentDisconnected);
+
+  // Round countdown: show when between_rounds and server wrote a nextRoundAt
+  const showRoundCountdown = state.status === 'between_rounds' && !!state.nextRoundAt;
+
+  // Waiting for opponent: current user has a pairing for this round with a
+  // presence deadline set but the match has not started yet.
+  const myPairing = state.currentRound > 0 ? state.pairings.find(p =>
+    p.roundNumber === state.currentRound &&
+    !p.isBye &&
+    (p.whitePlayerId === user?.id || p.blackPlayerId === user?.id) &&
+    !!p.presenceDeadline &&
+    !p.startedAt
+  ) : undefined;
+  const showWaitingForOpponent =
+    state.status === 'round_active' && !!myPairing && !opponentDisconnected;
+  // ─────────────────────────────────────────────────────────────────────────
+
   return (
     <>
       {registryRect && registryRect.width > 20 && registryRect.height > 20 && (
@@ -231,6 +319,15 @@ export function TournamentPanelOverlays() {
           standings={state.standings}
           onClose={() => setStandingsModalOpen(false)}
         />
+      )}
+      {showRoundCountdown && (
+        <RoundCountdown nextRoundAt={state.nextRoundAt} round={state.currentRound} />
+      )}
+      {showWaitingForOpponent && myPairing && (
+        <WaitingForOpponentPill deadline={myPairing.presenceDeadline} />
+      )}
+      {opponentDisconnected && (
+        <OpponentDisconnectedOverlay reconnectDeadline={opponentDisconnected.reconnectDeadline} />
       )}
     </>
   );
