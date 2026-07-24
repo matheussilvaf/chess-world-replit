@@ -246,40 +246,43 @@ export function ChessBoardOverlay() {
   }, []);
 
   // Drag end handler
+  // NOTE: reads dragPiece/validMoves directly (deps below) instead of via
+  // setState updater functions — calling makeMove (a store set) inside an
+  // updater runs during React's render phase and triggers the
+  // "Cannot update a component while rendering" warning.
   const handleDragEnd = useCallback((e: MouseEvent | TouchEvent) => {
     const clientPos = 'changedTouches' in e
       ? { x: e.changedTouches[0].clientX, y: e.changedTouches[0].clientY }
       : { x: e.clientX, y: e.clientY };
 
     setIsDragging(false);
-    setDragPiece((currentDragPiece) => {
-      if (!currentDragPiece) return null;
+    if (!dragPiece) {
+      setDragPiece(null);
+      return;
+    }
 
-      const container = containerRef.current;
-      if (container) {
-        const rect = container.getBoundingClientRect();
-        const localX = clientPos.x - rect.left;
-        const localY = clientPos.y - rect.top;
-        const sqW = rect.width / 8;
-        const sqH = rect.height / 8;
-        const fileIdx = Math.floor(localX / sqW);
-        const rankIdx = Math.floor(localY / sqH);
+    const container = containerRef.current;
+    if (container) {
+      const rect = container.getBoundingClientRect();
+      const localX = clientPos.x - rect.left;
+      const localY = clientPos.y - rect.top;
+      const sqW = rect.width / 8;
+      const sqH = rect.height / 8;
+      const fileIdx = Math.floor(localX / sqW);
+      const rankIdx = Math.floor(localY / sqH);
 
-        if (fileIdx >= 0 && fileIdx < 8 && rankIdx >= 0 && rankIdx < 8) {
-          const targetSquare = filesRef.current[fileIdx] + ranksRef.current[rankIdx];
-          setValidMoves((currentValid) => {
-            if (currentValid.includes(targetSquare)) {
-              makeMove(currentDragPiece.square, targetSquare);
-            }
-            return [];
-          });
+      if (fileIdx >= 0 && fileIdx < 8 && rankIdx >= 0 && rankIdx < 8) {
+        const targetSquare = filesRef.current[fileIdx] + ranksRef.current[rankIdx];
+        if (validMoves.includes(targetSquare)) {
+          makeMove(dragPiece.square, targetSquare);
         }
       }
+    }
 
-      setSelectedSquare(null);
-      return null;
-    });
-  }, [makeMove]);
+    setValidMoves([]);
+    setSelectedSquare(null);
+    setDragPiece(null);
+  }, [makeMove, dragPiece, validMoves]);
 
   // Global event listeners for drag
   useEffect(() => {

@@ -2,57 +2,83 @@ import { useEffect, useState, useCallback } from 'react';
 import { supabase } from '../../lib/supabase';
 import { useInteractionStore } from '../../stores/interactionStore';
 import { getColyseusHttpUrl } from '../../config/colyseus';
-import { Settings, Gauge, ZoomIn, ArrowLeft, Crosshair, Bug, Waypoints } from 'lucide-react';
+import { Settings, Gauge, ZoomIn, ArrowLeft, Crosshair, Bug, Waypoints, Monitor, Smartphone } from 'lucide-react';
 import { TournamentConfigSection } from './TournamentConfigSection';
 
 interface GameSettings {
   default_zoom: number;
   player_speed: number;
   show_debug_visuals: boolean;
+  board_zoom_desktop: number;
+  board_zoom_mobile: number;
 }
 
+const BOARD_ZOOM_MIGRATION_SQL = `ALTER TABLE game_settings
+  ADD COLUMN IF NOT EXISTS board_zoom_desktop numeric NOT NULL DEFAULT 3,
+  ADD COLUMN IF NOT EXISTS board_zoom_mobile numeric NOT NULL DEFAULT 2.5;`;
+
 export function AdminPage() {
-  const [settings, setSettings] = useState<GameSettings>({ default_zoom: 2, player_speed: 3, show_debug_visuals: false });
+  const [settings, setSettings] = useState<GameSettings>({
+    default_zoom: 2,
+    player_speed: 3,
+    show_debug_visuals: false,
+    board_zoom_desktop: 3,
+    board_zoom_mobile: 2.5,
+  });
   const [saving, setSaving] = useState(false);
   const { debugEnabled, setDebugEnabled } = useInteractionStore();
   const [lastSaved, setLastSaved] = useState<string | null>(null);
+  // The board zoom columns may not exist yet (added via SQL editor migration)
+  const [boardZoomMissing, setBoardZoomMissing] = useState(false);
 
   useEffect(() => {
     loadSettings();
   }, []);
 
   const loadSettings = async () => {
+    // select('*') so the query still works before the board zoom migration
     const { data } = await supabase
       .from('game_settings')
-      .select('default_zoom, player_speed, show_debug_visuals')
+      .select('*')
       .eq('id', 1)
       .maybeSingle();
     if (data) {
+      const row = data as Record<string, unknown>;
+      const hasBoardZoom = row.board_zoom_desktop != null;
+      setBoardZoomMissing(!hasBoardZoom);
       setSettings({
-        default_zoom: Number(data.default_zoom),
-        player_speed: Number(data.player_speed),
-        show_debug_visuals: Boolean(data.show_debug_visuals),
+        default_zoom: Number(row.default_zoom),
+        player_speed: Number(row.player_speed),
+        show_debug_visuals: Boolean(row.show_debug_visuals),
+        board_zoom_desktop: hasBoardZoom ? Number(row.board_zoom_desktop) : 3,
+        board_zoom_mobile: row.board_zoom_mobile != null ? Number(row.board_zoom_mobile) : 2.5,
       });
     }
   };
 
   const saveSettings = useCallback(async (newSettings: GameSettings) => {
     setSaving(true);
+    const payload: Record<string, unknown> = {
+      default_zoom: newSettings.default_zoom,
+      player_speed: newSettings.player_speed,
+      show_debug_visuals: newSettings.show_debug_visuals,
+      updated_at: new Date().toISOString(),
+    };
+    // Only send board zoom columns once they exist in the DB
+    if (!boardZoomMissing) {
+      payload.board_zoom_desktop = newSettings.board_zoom_desktop;
+      payload.board_zoom_mobile = newSettings.board_zoom_mobile;
+    }
     const { error } = await supabase
       .from('game_settings')
-      .update({
-        default_zoom: newSettings.default_zoom,
-        player_speed: newSettings.player_speed,
-        show_debug_visuals: newSettings.show_debug_visuals,
-        updated_at: new Date().toISOString(),
-      })
+      .update(payload)
       .eq('id', 1);
 
     setSaving(false);
     if (!error) {
       setLastSaved(new Date().toLocaleTimeString());
     }
-  }, []);
+  }, [boardZoomMissing]);
 
   const handleZoomChange = (value: number) => {
     const clamped = Math.round(value * 4) / 4; // snap to 0.25 steps
@@ -66,6 +92,13 @@ export function AdminPage() {
     const newSettings = { ...settings, player_speed: clamped };
     setSettings(newSettings);
     saveSettings(newSettings);
+  };
+
+  const handleBoardZoomChange = (key: 'board_zoom_desktop' | 'board_zoom_mobile', value: number) => {
+    const clamped = Math.round(value * 4) / 4; // snap to 0.25 steps
+    const newSettings = { ...settings, [key]: clamped };
+    setSettings(newSettings);
+    if (!boardZoomMissing) saveSettings(newSettings);
   };
 
   return (
@@ -216,6 +249,131 @@ export function AdminPage() {
                   {s}
                 </button>
               ))}
+            </div>
+          </div>
+
+          {/* Game Mode (board) Zoom */}
+          <div className="bg-slate-900 rounded-xl border border-slate-800 p-6">
+            <div className="flex items-center gap-3 mb-4">
+              <div className="w-9 h-9 rounded-lg bg-purple-500/10 flex items-center justify-center">
+                <ZoomIn className="w-4 h-4 text-purple-400" />
+              </div>
+              <div>
+                <h2 className="text-base font-medium text-white">Game Mode Zoom</h2>
+                <p className="text-sm text-slate-400">Camera zoom while seated at a board, per device</p>
+              </div>
+            </div>
+
+            {boardZoomMissing && (
+              <div className="mb-5 px-4 py-3 rounded-lg bg-amber-500/10 border border-amber-500/30">
+                <p className="text-sm text-amber-300 font-medium mb-2">
+                  One-time setup: run this in the Supabase SQL editor, then click Re-check.
+                </p>
+                <pre className="text-[11px] text-amber-200/90 bg-slate-950/70 rounded-md p-3 overflow-x-auto whitespace-pre-wrap font-mono">
+                  {BOARD_ZOOM_MIGRATION_SQL}
+                </pre>
+                <div className="flex items-center gap-3 mt-2">
+                  <button
+                    onClick={loadSettings}
+                    className="px-3 py-1.5 rounded-md bg-amber-500/20 border border-amber-500/40 text-amber-300 text-xs font-medium hover:bg-amber-500/30 transition-colors"
+                  >
+                    Re-check
+                  </button>
+                  <p className="text-xs text-amber-200/70">
+                    Until then the game uses defaults: desktop 3x, mobile 2.5x.
+                  </p>
+                </div>
+              </div>
+            )}
+
+            <div className="space-y-6">
+              {/* Desktop */}
+              <div className="space-y-3">
+                <div className="flex items-center justify-between">
+                  <span className="flex items-center gap-2 text-xs text-slate-500 uppercase tracking-wide">
+                    <Monitor className="w-3.5 h-3.5" /> Desktop
+                  </span>
+                  <span className="text-lg font-mono font-semibold text-purple-400">
+                    {settings.board_zoom_desktop.toFixed(2)}x
+                  </span>
+                </div>
+                <input
+                  type="range"
+                  min="1"
+                  max="4"
+                  step="0.25"
+                  disabled={boardZoomMissing}
+                  value={settings.board_zoom_desktop}
+                  onChange={(e) => handleBoardZoomChange('board_zoom_desktop', parseFloat(e.target.value))}
+                  className="w-full h-2 rounded-full appearance-none bg-slate-700 cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed
+                    [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-5 [&::-webkit-slider-thumb]:h-5
+                    [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-purple-500
+                    [&::-webkit-slider-thumb]:shadow-lg [&::-webkit-slider-thumb]:cursor-grab
+                    [&::-moz-range-thumb]:w-5 [&::-moz-range-thumb]:h-5
+                    [&::-moz-range-thumb]:rounded-full [&::-moz-range-thumb]:bg-purple-500
+                    [&::-moz-range-thumb]:border-none [&::-moz-range-thumb]:cursor-grab"
+                />
+                <div className="flex gap-2">
+                  {[2, 2.5, 3, 3.5, 4].map((z) => (
+                    <button
+                      key={z}
+                      disabled={boardZoomMissing}
+                      onClick={() => handleBoardZoomChange('board_zoom_desktop', z)}
+                      className={`px-3 py-1.5 rounded-md text-xs font-medium transition-colors disabled:opacity-40 disabled:cursor-not-allowed ${
+                        settings.board_zoom_desktop === z
+                          ? 'bg-purple-500 text-white'
+                          : 'bg-slate-800 text-slate-300 hover:bg-slate-700'
+                      }`}
+                    >
+                      {z}x
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* Mobile */}
+              <div className="space-y-3">
+                <div className="flex items-center justify-between">
+                  <span className="flex items-center gap-2 text-xs text-slate-500 uppercase tracking-wide">
+                    <Smartphone className="w-3.5 h-3.5" /> Mobile
+                  </span>
+                  <span className="text-lg font-mono font-semibold text-purple-400">
+                    {settings.board_zoom_mobile.toFixed(2)}x
+                  </span>
+                </div>
+                <input
+                  type="range"
+                  min="1"
+                  max="4"
+                  step="0.25"
+                  disabled={boardZoomMissing}
+                  value={settings.board_zoom_mobile}
+                  onChange={(e) => handleBoardZoomChange('board_zoom_mobile', parseFloat(e.target.value))}
+                  className="w-full h-2 rounded-full appearance-none bg-slate-700 cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed
+                    [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-5 [&::-webkit-slider-thumb]:h-5
+                    [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-purple-500
+                    [&::-webkit-slider-thumb]:shadow-lg [&::-webkit-slider-thumb]:cursor-grab
+                    [&::-moz-range-thumb]:w-5 [&::-moz-range-thumb]:h-5
+                    [&::-moz-range-thumb]:rounded-full [&::-moz-range-thumb]:bg-purple-500
+                    [&::-moz-range-thumb]:border-none [&::-moz-range-thumb]:cursor-grab"
+                />
+                <div className="flex gap-2">
+                  {[1.75, 2, 2.25, 2.5, 2.75, 3].map((z) => (
+                    <button
+                      key={z}
+                      disabled={boardZoomMissing}
+                      onClick={() => handleBoardZoomChange('board_zoom_mobile', z)}
+                      className={`px-3 py-1.5 rounded-md text-xs font-medium transition-colors disabled:opacity-40 disabled:cursor-not-allowed ${
+                        settings.board_zoom_mobile === z
+                          ? 'bg-purple-500 text-white'
+                          : 'bg-slate-800 text-slate-300 hover:bg-slate-700'
+                      }`}
+                    >
+                      {z}x
+                    </button>
+                  ))}
+                </div>
+              </div>
             </div>
           </div>
 

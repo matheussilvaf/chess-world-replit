@@ -62,6 +62,16 @@ The Colyseus Cloud server was found running MONTHS-stale code: GitHub pushes "su
 - **Postgres DESC sorts NULLS FIRST**: `getLatestCompleted/CancelledInstance` must exclude `completed_at is null` (manually-completed orphans otherwise shadow real results forever — burned as "standings=0" in the last-tournament panel).
 - e2e: forfeit results use chess notation `+/-`/`-/+` (not `1-0`/`0-1`); engine standings count them as wins. 3p suite: `scripts/e2e-tournament-3p.mjs` (forcestart + fallback scenarios).
 
+## game_settings is a hard singleton; new global settings need user-run SQL
+`game_settings` has a CHECK constraint `singleton` (only id=1 allowed) — extra rows are impossible, and PostgREST has no DDL, so new global settings require the USER to run `ALTER TABLE ... ADD COLUMN` in the Supabase SQL editor.
+**Why:** tried inserting rows id=2/3 to piggyback board-zoom config; blocked by the CHECK (23514).
+**How to apply:** ship client code that works BEFORE the migration: `select('*')` (never enumerate maybe-missing columns — that fails the whole query), map with null-tolerant conditional spreads, keep code-side defaults, and omit missing columns from update payloads (AdminPage detects absence and shows the SQL + Re-check button). Board zoom columns: `board_zoom_desktop` (default 3) / `board_zoom_mobile` (default 2.5), consumed via WorldScene.setBoardZoom picked by viewport width < 768.
+
+## Colyseus message-vs-state race: room messages beat schema patches
+`match_started` (and likely other room messages) regularly arrives BEFORE the state patch that adds the match to `state.matches`, so lookups in state at message time come up empty (burned as timers showing the 'White'/'Black' fallbacks instead of nicks).
+**Why:** messages and schema sync are independent channels; ordering is not guaranteed.
+**How to apply:** any store hydrated from a room message must ALSO backfill from the schema later: call the sync handler immediately inside `matches.onAdd` (registering onChange alone waits for the NEXT field change, i.e. the first move) and make the sync handler update identity fields with truthy guards (Colyseus schema zero-values '' / 0 mean "unset" — never overwrite good data with them).
+
 ## Supabase/PostgREST + esbuild quirks (this DB specifically)
 - `matches.colyseus_match_id` has NO unique constraint → `upsert(onConflict)` errors; use check-then-insert. Optional hardening: user can run `CREATE UNIQUE INDEX` in the SQL editor.
 - uuid columns reject `.like()` filters → use `.eq()` (a `.like` once produced a false "row deleted" diagnosis).

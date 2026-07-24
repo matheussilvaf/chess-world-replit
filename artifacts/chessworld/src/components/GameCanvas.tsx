@@ -212,15 +212,20 @@ export function GameCanvas() {
     settingsStore.getState().load();
     const unsubRealtime = settingsStore.getState().subscribe();
 
-    const unsubStore = settingsStore.subscribe((state) => {
+    const applySettings = (state: ReturnType<typeof settingsStore.getState>) => {
       if (!gameRef.current) return;
       const scene = getWorldScene(gameRef.current);
       if (scene) {
         scene.setDefaultZoom(state.defaultZoom);
         scene.setPlayerSpeed(state.playerSpeed);
         scene.setShowDebugVisuals(state.showDebugVisuals);
+        // Game-mode (board) zoom: pick per device class
+        const isMobile = window.innerWidth < 768;
+        scene.setBoardZoom(isMobile ? state.boardZoomMobile : state.boardZoomDesktop);
       }
-    });
+    };
+
+    const unsubStore = settingsStore.subscribe(applySettings);
 
     return () => {
       unsubRealtime();
@@ -453,6 +458,10 @@ export function GameCanvas() {
             if (ws) ws.updateBoardFEN(match.boardId, match.fen);
           }
         });
+        // Sync immediately: if openMatch ran before this match appeared in
+        // state, player names/elos were unknown then — backfill them now
+        // instead of waiting for the first onChange (first move).
+        useChessStore.getState().syncFromColyseus(match);
       });
     }
 

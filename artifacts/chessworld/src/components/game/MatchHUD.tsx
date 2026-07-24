@@ -1,6 +1,107 @@
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { useChessStore } from '../../stores/chessStore';
 import { Flag, Handshake, X, ChevronsLeft, ChevronLeft, ChevronRight, ChevronsRight } from 'lucide-react';
+
+const INITIAL_FEN = 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1';
+
+const CAPTURE_PIECE_IMAGES: Record<string, string> = {
+  wp: '/assets/chesspieces/whitepawn.png',
+  wn: '/assets/chesspieces/whiteknight.png',
+  wb: '/assets/chesspieces/whitebishop.png',
+  wr: '/assets/chesspieces/whiterock.png',
+  wq: '/assets/chesspieces/whitequeen.png',
+  bp: '/assets/chesspieces/blackpawn.png',
+  bn: '/assets/chesspieces/blackknight.png',
+  bb: '/assets/chesspieces/blackbiship.png',
+  br: '/assets/chesspieces/blackrock.png',
+  bq: '/assets/chesspieces/blackqueen.png',
+};
+
+const PIECE_VALUES: Record<string, number> = { p: 1, n: 3, b: 3, r: 5, q: 9 };
+const INITIAL_COUNTS: Record<string, number> = { p: 8, n: 2, b: 2, r: 2, q: 1 };
+const PIECE_ORDER = ['p', 'n', 'b', 'r', 'q'] as const;
+
+interface CaptureInfo {
+  byWhite: string[]; // black piece types captured by White
+  byBlack: string[]; // white piece types captured by Black
+  whitePoints: number;
+  blackPoints: number;
+}
+
+/**
+ * Losses of one color = initial piece counts minus what remains on the board,
+ * with promotion compensation: each surplus non-pawn piece (e.g. a 2nd queen)
+ * is a promoted pawn still on the board — NOT a pawn captured by the opponent.
+ * If a promoted piece is later captured, it counts as the pawn it came from,
+ * which keeps the point totals material-accurate.
+ */
+function lossesFor(counts: Record<string, number>, color: 'w' | 'b') {
+  let promotionSurplus = 0;
+  for (const t of PIECE_ORDER) {
+    if (t === 'p') continue;
+    promotionSurplus += Math.max(0, (counts[color + t] || 0) - INITIAL_COUNTS[t]);
+  }
+  const pieces: string[] = [];
+  let points = 0;
+  for (const t of PIECE_ORDER) {
+    let missing = Math.max(0, INITIAL_COUNTS[t] - (counts[color + t] || 0));
+    if (t === 'p') missing = Math.max(0, missing - promotionSurplus);
+    for (let i = 0; i < missing; i++) pieces.push(t);
+    points += missing * PIECE_VALUES[t];
+  }
+  return { pieces, points };
+}
+
+/** Derive captured pieces by diffing FEN piece counts against the initial setup. */
+function computeCaptures(fen: string): CaptureInfo {
+  const placement = fen.split(' ')[0];
+  const counts: Record<string, number> = {};
+  for (const ch of placement) {
+    const lower = ch.toLowerCase();
+    if (PIECE_VALUES[lower] !== undefined) {
+      const key = (ch === lower ? 'b' : 'w') + lower;
+      counts[key] = (counts[key] || 0) + 1;
+    }
+  }
+  const blackLosses = lossesFor(counts, 'b'); // pieces White captured
+  const whiteLosses = lossesFor(counts, 'w'); // pieces Black captured
+  return {
+    byWhite: blackLosses.pieces,
+    byBlack: whiteLosses.pieces,
+    whitePoints: blackLosses.points,
+    blackPoints: whiteLosses.points,
+  };
+}
+
+function CapturedRow({
+  pieces,
+  colorPrefix,
+  points,
+}: {
+  pieces: readonly string[];
+  colorPrefix: 'w' | 'b';
+  points: number;
+}) {
+  if (pieces.length === 0) return null;
+  return (
+    <div className="flex items-center rounded-lg bg-slate-900/85 border border-slate-700/50 backdrop-blur-sm shadow-lg px-2 py-1 pointer-events-none">
+      {pieces.map((t, i) => (
+        <img
+          key={`${t}-${i}`}
+          src={CAPTURE_PIECE_IMAGES[colorPrefix + t]}
+          alt={t}
+          draggable={false}
+          className={`w-[18px] h-[18px] object-contain drop-shadow ${i > 0 ? '-ml-2' : ''}`}
+        />
+      ))}
+      {points > 0 && (
+        <span className="ml-1.5 text-[11px] font-bold text-slate-300 leading-none tabular-nums">
+          +{points}
+        </span>
+      )}
+    </div>
+  );
+}
 
 function formatTime(ms: number): string {
   if (ms <= 0) return '0:00';
@@ -125,6 +226,7 @@ function NavButton({
 export function MatchHUD() {
   const matchId = useChessStore(s => s.matchId);
   const playerColor = useChessStore(s => s.playerColor);
+  const game = useChessStore(s => s.game);
   const turn = useChessStore(s => s.turn);
   const gameOver = useChessStore(s => s.gameOver);
   const isSpectating = useChessStore(s => s.isSpectating);
@@ -195,6 +297,19 @@ export function MatchHUD() {
     sendDrawOffer();
   }, [gameOver, isSpectating, drawOfferedByUs, sendDrawOffer]);
 
+  // Captured pieces for the position being displayed (live or history view).
+  // `game` is mutated in place, so turn/moveHistory/gameOver act as the
+  // recompute triggers after each move sync.
+  const captures = useMemo(() => {
+    if (!game) return null;
+    let fen: string;
+    if (viewIndex === -1) fen = game.fen();
+    else if (viewIndex === 0) fen = INITIAL_FEN;
+    else fen = moveHistory[viewIndex - 1]?.fen ?? game.fen();
+    return computeCaptures(fen);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [game, viewIndex, moveHistory, turn, gameOver]);
+
   if (!matchId) return null;
 
   const elapsed = gameOver ? 0 : Math.max(0, now - lastMoveAt);
@@ -223,10 +338,18 @@ export function MatchHUD() {
   const canGoForward = isViewingHistory;
   const canShowActions = !isSpectating && !gameOver;
 
+  // Captured pieces from my perspective: I capture opponent-colored pieces.
+  const myCapturedPieces = captures ? (isBlack ? captures.byBlack : captures.byWhite) : [];
+  const myCapturedPrefix: 'w' | 'b' = isBlack ? 'w' : 'b';
+  const myCapturedPoints = captures ? (isBlack ? captures.blackPoints : captures.whitePoints) : 0;
+  const oppCapturedPieces = captures ? (isBlack ? captures.byWhite : captures.byBlack) : [];
+  const oppCapturedPrefix: 'w' | 'b' = isBlack ? 'b' : 'w';
+  const oppCapturedPoints = captures ? (isBlack ? captures.whitePoints : captures.blackPoints) : 0;
+
   return (
     <>
-      {/* ── Opponent timer — top-left, below the HUD bar ── */}
-      <div className="fixed top-20 left-4 z-[200] pointer-events-none">
+      {/* ── Opponent timer — snug in the top-left corner, captures below ── */}
+      <div className="fixed top-3 left-3 z-[200] flex flex-col items-start gap-1.5 pointer-events-none">
         <CompactTimer
           name={oppName}
           elo={oppElo}
@@ -236,10 +359,21 @@ export function MatchHUD() {
           isGameOver={gameOver}
           pieceColor={oppColor}
         />
+        <CapturedRow
+          pieces={oppCapturedPieces}
+          colorPrefix={oppCapturedPrefix}
+          points={oppCapturedPoints}
+        />
       </div>
 
-      {/* ── My timer + nav buttons — bottom-left ── */}
-      <div className="fixed bottom-4 left-4 z-[200] flex items-center gap-2 pointer-events-auto">
+      {/* ── My captures + timer + nav buttons — bottom-left ── */}
+      <div className="fixed bottom-4 left-4 z-[200] flex flex-col items-start gap-1.5 pointer-events-auto">
+        <CapturedRow
+          pieces={myCapturedPieces}
+          colorPrefix={myCapturedPrefix}
+          points={myCapturedPoints}
+        />
+        <div className="flex items-center gap-2">
         {/* Timer wrapper (contains popup + clickable timer) */}
         <div ref={actionsRef} className="relative">
           {/* Actions card — slides up above the timer */}
@@ -329,6 +463,7 @@ export function MatchHUD() {
             </NavButton>
           </div>
         )}
+        </div>
       </div>
 
       {/* ── Incoming draw offer toast ── */}

@@ -1673,6 +1673,16 @@ export class WorldScene extends Phaser.Scene {
     }
   }
 
+  /** Zoom used when the camera focuses a chess board (game mode). */
+  public setBoardZoom(zoom: number) {
+    if (zoom === this.boardZoom) return;
+    this.boardZoom = zoom;
+    // Camera not following = currently focused on a board; apply live.
+    if (!this.cameraFollowing) {
+      this.targetZoom = zoom;
+    }
+  }
+
   public setPlayerSpeed(speed: number) {
     this.playerSpeed = speed;
   }

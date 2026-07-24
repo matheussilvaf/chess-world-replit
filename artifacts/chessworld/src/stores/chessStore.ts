@@ -366,6 +366,17 @@ export const useChessStore = create<ChessState>((set, get) => ({
       lastMove: newLastMove,
       moveHistory: updatedHistory,
       viewIndex: -1, // Snap to live when new move arrives
+      // Player identity can be missing at openMatch time (match_started message
+      // often arrives before the state patch adds the match). Backfill whenever
+      // the server has real values. Truthy checks are intentional: Colyseus
+      // schema zero-values ('' for strings, 0 for numbers) mean "not set yet",
+      // so they must not overwrite existing data.
+      ...(matchData.whitePlayerName ? { whitePlayerName: matchData.whitePlayerName } : {}),
+      ...(matchData.blackPlayerName ? { blackPlayerName: matchData.blackPlayerName } : {}),
+      ...(matchData.whitePlayerElo ? { whitePlayerElo: matchData.whitePlayerElo } : {}),
+      ...(matchData.blackPlayerElo ? { blackPlayerElo: matchData.blackPlayerElo } : {}),
+      ...(matchData.whitePlayerId ? { whitePlayerId: matchData.whitePlayerId } : {}),
+      ...(matchData.blackPlayerId ? { blackPlayerId: matchData.blackPlayerId } : {}),
     });
 
     // Any move on the board voids outstanding draw offers (server enforces the same)
