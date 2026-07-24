@@ -13,7 +13,7 @@ export function PlayerProfile() {
     : 0;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60">
+    <div className="fixed inset-0 z-[500] flex items-center justify-center p-4 bg-black/60">
       <div className="bg-slate-900 rounded-2xl border border-slate-700 w-full max-w-md overflow-hidden shadow-2xl">
         {/* Header */}
         <div className="bg-gradient-to-r from-slate-800 to-slate-700 p-6 relative">

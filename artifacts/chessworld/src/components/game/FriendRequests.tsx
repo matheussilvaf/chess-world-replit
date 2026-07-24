@@ -79,7 +79,7 @@ export function FriendRequests() {
 
   if (loading) {
     return (
-      <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60">
+      <div className="fixed inset-0 z-[500] flex items-center justify-center p-4 bg-black/60">
         <div className="bg-slate-900 rounded-2xl border border-slate-700 w-full max-w-sm p-8 text-center">
           <p className="text-slate-400">Loading...</p>
         </div>
@@ -88,7 +88,7 @@ export function FriendRequests() {
   }
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60">
+    <div className="fixed inset-0 z-[500] flex items-center justify-center p-4 bg-black/60">
       <div className="bg-slate-900 rounded-2xl border border-slate-700 w-full max-w-sm overflow-hidden shadow-2xl max-h-[80vh] flex flex-col">
         <div className="flex items-center justify-between px-6 py-4 border-b border-slate-700">
           <h3 className="text-white font-bold flex items-center gap-2">

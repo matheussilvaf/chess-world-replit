@@ -1,26 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { useChessStore } from '../../stores/chessStore';
-import { Flag, Handshake } from 'lucide-react';
-
-/*
- * Board-anchored HUD.
- *
- * WorldScene publishes `window.__activeCameraFocusRect` every frame:
- *   { x, y, width, height, worldWidth } — the screen-space AABB of the active
- * table's camera_focus_area (~147.7 world px wide) plus its world width.
- * Scale factor s = rect.width / worldWidth converts world px -> screen px, so
- * every box keeps a fixed size and position RELATIVE TO THE BOARD through
- * zoom, pan and camera rotation. Each anchored wrapper gets fontSize = s px
- * and all inner sizing uses em, meaning 1em == 1 world pixel.
- *
- * NAV CLEARANCE MATH: the bottom nav pill is `bottom-2` (8px) + 50px tall
- * (36px buttons + 12px padding + 2px border) => its top edge sits 58px from
- * the viewport bottom. Board-anchored elements clamp their bottom edge to
- * >= NAV_CLEARANCE_PX (68px) above the viewport bottom, guaranteeing a
- * >= 10px gap to the nav pill at any zoom or pan position.
- */
-const NAV_CLEARANCE_PX = 68;
-const FOCUS_FALLBACK_WORLD_W = 147.721;
+import { Flag, Handshake, X, ChevronsLeft, ChevronLeft, ChevronRight, ChevronsRight } from 'lucide-react';
 
 function formatTime(ms: number): string {
   if (ms <= 0) return '0:00';
@@ -30,12 +10,12 @@ function formatTime(ms: number): string {
   return `${minutes}:${seconds.toString().padStart(2, '0')}`;
 }
 
+/** Truncate to 4 chars + '...' if longer */
 function truncNick(name: string): string {
-  if (name.length <= 7) return name;
-  return name.slice(0, 7) + '…';
+  return name.length > 4 ? name.slice(0, 4) + '...' : name;
 }
 
-interface PlayerBoxProps {
+interface CompactTimerProps {
   name: string;
   elo: number;
   timeMs: number;
@@ -43,64 +23,98 @@ interface PlayerBoxProps {
   isLow: boolean;
   isGameOver: boolean;
   pieceColor: 'white' | 'black';
+  clickable?: boolean;
+  onClick?: () => void;
 }
 
-/** Content of a time box. Sized entirely in em (1em == 1 world px). */
-function PlayerBox({ name, elo, timeMs, isActive, isLow, isGameOver, pieceColor }: PlayerBoxProps) {
+function CompactTimer({
+  name,
+  elo,
+  timeMs,
+  isActive,
+  isLow,
+  isGameOver,
+  pieceColor,
+  clickable,
+  onClick,
+}: CompactTimerProps) {
   const active = isActive && !isGameOver;
-  return (
-    <div
-      className={`rounded-[2em] border shadow-xl backdrop-blur-sm transition-colors duration-300 ${
-        active
-          ? 'bg-slate-800/95 border-emerald-500/70'
-          : 'bg-slate-900/85 border-slate-700/60'
-      }`}
-      style={{ width: '50em', padding: '2em 2.5em' }}
-    >
-      {/* Name + elo row */}
-      <div className="flex items-center" style={{ gap: '1.5em', marginBottom: '1.4em' }}>
-        <span
-          className={`rounded-full flex-shrink-0 ${
-            pieceColor === 'white'
-              ? 'bg-white border border-slate-300'
-              : 'bg-slate-950 border border-slate-500'
-          }`}
-          style={{ width: '3em', height: '3em' }}
-        />
-        <span
-          className="text-white font-semibold leading-none tracking-tight whitespace-nowrap overflow-hidden"
-          style={{ fontSize: '4.8em' }}
-        >
-          {truncNick(name)}
-        </span>
-        <span className="text-slate-400 leading-none whitespace-nowrap" style={{ fontSize: '3.6em' }}>
-          {elo}
-        </span>
-      </div>
+  const nick = truncNick(name);
 
-      {/* Clock row */}
+  return (
+    <button
+      type="button"
+      onClick={clickable ? onClick : undefined}
+      disabled={!clickable}
+      className={`flex items-center gap-2.5 rounded-xl backdrop-blur-sm shadow-xl border transition-all duration-300 px-3 py-2 select-none ${
+        active
+          ? 'bg-slate-800/95 border-emerald-500/60'
+          : 'bg-slate-900/90 border-slate-700/50'
+      } ${clickable ? 'cursor-pointer hover:border-slate-500/70 active:scale-[0.98]' : 'cursor-default'}`}
+    >
+      {/* Piece color dot */}
       <div
-        className={`flex items-center justify-center rounded-[1.5em] transition-colors duration-300 ${
-          active ? (isLow ? 'bg-red-900/50' : 'bg-emerald-900/40') : 'bg-slate-800/60'
+        className={`w-3 h-3 rounded-full flex-shrink-0 ${
+          pieceColor === 'white'
+            ? 'bg-white border border-slate-300'
+            : 'bg-slate-950 border border-slate-400'
         }`}
-        style={{ padding: '1.2em 0', gap: '1.5em' }}
+      />
+      {/* Name + elo */}
+      <span className="text-white font-semibold text-sm whitespace-nowrap leading-none">
+        {nick}{' '}
+        <span className="text-slate-400 font-normal text-xs">({elo})</span>
+      </span>
+      {/* Divider */}
+      <div className="w-px h-4 bg-slate-600/70 flex-shrink-0" />
+      {/* Clock */}
+      <span
+        className={`font-mono font-bold text-sm tabular-nums whitespace-nowrap leading-none ${
+          active
+            ? isLow
+              ? 'text-red-400 animate-pulse'
+              : 'text-emerald-400'
+            : 'text-slate-500'
+        }`}
       >
-        <span
-          className={`font-mono font-bold leading-none tabular-nums ${
-            active ? (isLow ? 'text-red-400 animate-pulse' : 'text-emerald-400') : 'text-slate-500'
+        {formatTime(timeMs)}
+      </span>
+      {/* Active pulse dot */}
+      {active && (
+        <div
+          className={`w-2 h-2 rounded-full flex-shrink-0 animate-pulse ${
+            isLow ? 'bg-red-400' : 'bg-emerald-400'
           }`}
-          style={{ fontSize: '7em' }}
-        >
-          {formatTime(timeMs)}
-        </span>
-        {active && (
-          <span
-            className={`rounded-full animate-pulse flex-shrink-0 ${isLow ? 'bg-red-400' : 'bg-emerald-400'}`}
-            style={{ width: '1.6em', height: '1.6em' }}
-          />
-        )}
-      </div>
-    </div>
+        />
+      )}
+    </button>
+  );
+}
+
+function NavButton({
+  children,
+  onClick,
+  disabled,
+  title,
+}: {
+  children: React.ReactNode;
+  onClick: () => void;
+  disabled: boolean;
+  title: string;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      disabled={disabled}
+      title={title}
+      className={`flex items-center justify-center w-8 h-8 rounded-lg transition-all duration-150 ${
+        disabled
+          ? 'text-slate-600 cursor-not-allowed'
+          : 'bg-slate-700/50 text-slate-200 hover:bg-slate-600/70 hover:text-white active:scale-90 border border-slate-600/40 shadow-md'
+      }`}
+    >
+      {children}
+    </button>
   );
 }
 
@@ -126,71 +140,37 @@ export function MatchHUD() {
   const sendDrawOffer = useChessStore(s => s.sendDrawOffer);
   const acceptDraw = useChessStore(s => s.acceptDraw);
   const declineDraw = useChessStore(s => s.declineDraw);
+  const moveHistory = useChessStore(s => s.moveHistory);
+  const viewIndex = useChessStore(s => s.viewIndex);
+  const goToStart = useChessStore(s => s.goToStart);
+  const goBack = useChessStore(s => s.goBack);
+  const goForward = useChessStore(s => s.goForward);
+  const goToLive = useChessStore(s => s.goToLive);
 
   const [now, setNow] = useState(Date.now());
+  const [showActions, setShowActions] = useState(false);
+  const actionsRef = useRef<HTMLDivElement>(null);
 
-  const oppRef = useRef<HTMLDivElement>(null);
-  const meRef = useRef<HTMLDivElement>(null);
-  const actRef = useRef<HTMLDivElement>(null);
-
+  // Tick the clock
   useEffect(() => {
     if (!matchId || gameOver) return;
     const interval = setInterval(() => setNow(Date.now()), 100);
     return () => clearInterval(interval);
   }, [matchId, gameOver]);
 
-  // Track the board's camera-focus rect each frame and pin the boxes to it.
+  // Close actions card when clicking outside
   useEffect(() => {
-    if (!matchId) return;
-    let raf = 0;
-    const tick = () => {
-      const rect = (window as any).__activeCameraFocusRect as
-        | { x: number; y: number; width: number; height: number; worldWidth?: number }
-        | null;
-      const opp = oppRef.current;
-      const me = meRef.current;
-      const act = actRef.current;
-      if (!rect || rect.width <= 0) {
-        if (opp) opp.style.visibility = 'hidden';
-        if (me) me.style.visibility = 'hidden';
-        if (act) act.style.visibility = 'hidden';
-      } else {
-        const s = rect.width / (rect.worldWidth || FOCUS_FALLBACK_WORLD_W);
-        const pad = 2.5 * s;
-        const rightX = rect.x + rect.width - pad;
-        const leftX = rect.x + pad;
-        const topY = Math.max(rect.y + pad, 4);
-        // Clamp so anchored elements can never touch the bottom nav pill.
-        const bottomY = Math.min(rect.y + rect.height - pad, window.innerHeight - NAV_CLEARANCE_PX);
-        if (opp) {
-          opp.style.visibility = 'visible';
-          opp.style.fontSize = `${s}px`;
-          opp.style.left = `${rightX}px`;
-          opp.style.top = `${topY}px`;
-          opp.style.transform = 'translateX(-100%)';
-        }
-        if (me) {
-          me.style.visibility = 'visible';
-          me.style.fontSize = `${s}px`;
-          me.style.left = `${rightX}px`;
-          me.style.top = `${bottomY}px`;
-          me.style.transform = 'translate(-100%, -100%)';
-        }
-        if (act) {
-          act.style.visibility = 'visible';
-          act.style.fontSize = `${s}px`;
-          act.style.left = `${leftX}px`;
-          act.style.top = `${bottomY}px`;
-          act.style.transform = 'translateY(-100%)';
-        }
+    if (!showActions) return;
+    const handler = (e: MouseEvent) => {
+      if (actionsRef.current && !actionsRef.current.contains(e.target as Node)) {
+        setShowActions(false);
       }
-      raf = requestAnimationFrame(tick);
     };
-    raf = requestAnimationFrame(tick);
-    return () => cancelAnimationFrame(raf);
-  }, [matchId, isSpectating, gameOver]);
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, [showActions]);
 
-  // Auto-dismiss informational draw notices.
+  // Auto-dismiss draw notices
   useEffect(() => {
     if (!drawNotice) return;
     const t = setTimeout(() => setDrawNotice(null), 4000);
@@ -198,6 +178,7 @@ export function MatchHUD() {
   }, [drawNotice, setDrawNotice]);
 
   const handleResign = useCallback(() => {
+    setShowActions(false);
     if (gameOver || isSpectating) return;
     if (window.confirm('Are you sure you want to resign?')) {
       resign();
@@ -205,6 +186,7 @@ export function MatchHUD() {
   }, [gameOver, isSpectating, resign]);
 
   const handleDrawOffer = useCallback(() => {
+    setShowActions(false);
     if (gameOver || isSpectating || drawOfferedByUs) return;
     sendDrawOffer();
   }, [gameOver, isSpectating, drawOfferedByUs, sendDrawOffer]);
@@ -218,89 +200,150 @@ export function MatchHUD() {
 
   const isBlack = playerColor === 'b';
 
-  const topName = isBlack ? whitePlayerName : blackPlayerName;
-  const topElo = isBlack ? whitePlayerElo : blackPlayerElo;
-  const topTime = isBlack ? displayWhite : displayBlack;
-  const topActive = isBlack ? turn === 'w' : turn === 'b';
-  const topColor: 'white' | 'black' = isBlack ? 'white' : 'black';
+  // From my perspective: opponent is on top, I am on the bottom
+  const oppName = isBlack ? whitePlayerName : blackPlayerName;
+  const oppElo = isBlack ? whitePlayerElo : blackPlayerElo;
+  const oppTime = isBlack ? displayWhite : displayBlack;
+  const oppActive = isBlack ? turn === 'w' : turn === 'b';
+  const oppColor: 'white' | 'black' = isBlack ? 'white' : 'black';
 
-  const bottomName = isBlack ? blackPlayerName : whitePlayerName;
-  const bottomElo = isBlack ? blackPlayerElo : whitePlayerElo;
-  const bottomTime = isBlack ? displayBlack : displayWhite;
-  const bottomActive = isBlack ? turn === 'b' : turn === 'w';
-  const bottomColor: 'white' | 'black' = isBlack ? 'black' : 'white';
+  const myName = isBlack ? blackPlayerName : whitePlayerName;
+  const myElo = isBlack ? blackPlayerElo : whitePlayerElo;
+  const myTime = isBlack ? displayBlack : displayWhite;
+  const myActive = isBlack ? turn === 'b' : turn === 'w';
+  const myColor: 'white' | 'black' = isBlack ? 'black' : 'white';
+
+  const isViewingHistory = viewIndex !== -1;
+  const showNav = moveHistory.length > 0;
+  const canGoBack = isViewingHistory ? viewIndex > 0 : moveHistory.length > 0;
+  const canGoForward = isViewingHistory;
+  const canShowActions = !isSpectating && !gameOver;
 
   return (
     <>
-      {/* Opponent time box — glued to the board's top-right corner */}
-      <div ref={oppRef} className="fixed z-[200] pointer-events-none" style={{ visibility: 'hidden' }}>
-        <PlayerBox
-          name={topName}
-          elo={topElo}
-          timeMs={topTime}
-          isActive={topActive}
-          isLow={isLow(topTime)}
+      {/* ── Opponent timer — top-left, below the HUD bar ── */}
+      <div className="fixed top-20 left-4 z-[200] pointer-events-none">
+        <CompactTimer
+          name={oppName}
+          elo={oppElo}
+          timeMs={oppTime}
+          isActive={oppActive}
+          isLow={isLow(oppTime)}
           isGameOver={gameOver}
-          pieceColor={topColor}
+          pieceColor={oppColor}
         />
       </div>
 
-      {/* My time box — glued to the board's bottom-right corner */}
-      <div ref={meRef} className="fixed z-[200] pointer-events-none" style={{ visibility: 'hidden' }}>
-        <PlayerBox
-          name={bottomName}
-          elo={bottomElo}
-          timeMs={bottomTime}
-          isActive={bottomActive}
-          isLow={isLow(bottomTime)}
-          isGameOver={gameOver}
-          pieceColor={bottomColor}
-        />
-      </div>
+      {/* ── My timer + nav buttons — bottom-left ── */}
+      <div className="fixed bottom-4 left-4 z-[200] flex items-center gap-2 pointer-events-auto">
+        {/* Timer wrapper (contains popup + clickable timer) */}
+        <div ref={actionsRef} className="relative">
+          {/* Actions card — slides up above the timer */}
+          {showActions && canShowActions && (
+            <div className="absolute bottom-full mb-2 left-0 animate-[hud-toast-in_0.2s_cubic-bezier(0.16,1,0.3,1)] z-10">
+              <div className="bg-slate-900/97 backdrop-blur-md rounded-2xl border border-slate-700/70 shadow-2xl overflow-hidden min-w-[160px]">
+                {/* Card header */}
+                <div className="flex items-center justify-between px-3 py-2 border-b border-slate-700/50">
+                  <span className="text-slate-400 text-xs font-medium uppercase tracking-wide">
+                    Options
+                  </span>
+                  <button
+                    onClick={() => setShowActions(false)}
+                    className="text-slate-500 hover:text-white transition-colors rounded p-0.5"
+                  >
+                    <X className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+                {/* Resign */}
+                <button
+                  onClick={handleResign}
+                  className="w-full flex items-center gap-3 px-4 py-3 text-red-300 hover:bg-red-500/15 active:bg-red-500/25 transition-colors text-sm font-medium border-b border-slate-800/60"
+                >
+                  <Flag className="w-4 h-4 flex-shrink-0" />
+                  Resign
+                </button>
+                {/* Draw */}
+                <button
+                  onClick={handleDrawOffer}
+                  disabled={drawOfferedByUs}
+                  className={`w-full flex items-center gap-3 px-4 py-3 text-sm font-medium transition-colors ${
+                    drawOfferedByUs
+                      ? 'text-slate-500 cursor-not-allowed'
+                      : 'text-blue-300 hover:bg-blue-500/15 active:bg-blue-500/25'
+                  }`}
+                >
+                  <Handshake className="w-4 h-4 flex-shrink-0" />
+                  {drawOfferedByUs ? 'Offered…' : 'Offer Draw'}
+                </button>
+              </div>
+            </div>
+          )}
 
-      {/* Resign / Draw — glued to the board's bottom-left corner */}
-      {!isSpectating && !gameOver && (
-        <div
-          ref={actRef}
-          className="fixed z-[200] pointer-events-auto flex flex-col"
-          style={{ visibility: 'hidden', gap: '2em' }}
-        >
-          <button
-            onClick={handleResign}
-            className="flex items-center justify-center rounded-[1.8em] bg-red-500/20 border border-red-500/50 text-red-300 font-semibold hover:bg-red-500/30 active:scale-95 transition-all shadow-lg backdrop-blur-sm"
-            style={{ width: '40em', padding: '1.6em 0', gap: '1.5em' }}
-          >
-            <Flag style={{ width: '4.2em', height: '4.2em' }} />
-            <span className="leading-none" style={{ fontSize: '4.2em' }}>Resign</span>
-          </button>
-          <button
-            onClick={handleDrawOffer}
-            disabled={drawOfferedByUs}
-            className={`flex items-center justify-center rounded-[1.8em] border font-semibold transition-all shadow-lg backdrop-blur-sm ${
-              drawOfferedByUs
-                ? 'bg-slate-800/60 border-slate-600/40 text-slate-500 cursor-not-allowed'
-                : 'bg-blue-500/20 border-blue-500/50 text-blue-300 hover:bg-blue-500/30 active:scale-95'
-            }`}
-            style={{ width: '40em', padding: '1.6em 0', gap: '1.5em' }}
-          >
-            <Handshake style={{ width: '4.2em', height: '4.2em' }} />
-            <span className="leading-none" style={{ fontSize: '4.2em' }}>
-              {drawOfferedByUs ? 'Offered…' : 'Draw'}
-            </span>
-          </button>
+          {/* My timer (tap to open actions) */}
+          <CompactTimer
+            name={myName}
+            elo={myElo}
+            timeMs={myTime}
+            isActive={myActive}
+            isLow={isLow(myTime)}
+            isGameOver={gameOver}
+            pieceColor={myColor}
+            clickable={canShowActions}
+            onClick={() => setShowActions(s => !s)}
+          />
         </div>
-      )}
 
-      {/* Incoming draw offer — non-invasive toast above the nav pill */}
+        {/* Navigation buttons */}
+        {showNav && (
+          <div className="flex items-center gap-1 rounded-xl bg-slate-900/90 border border-slate-700/50 backdrop-blur-sm shadow-xl px-1.5 py-1.5">
+            <NavButton
+              onClick={goToStart}
+              disabled={isViewingHistory && viewIndex === 0}
+              title="Start"
+            >
+              <ChevronsLeft className="w-3.5 h-3.5" />
+            </NavButton>
+            <NavButton onClick={goBack} disabled={!canGoBack} title="Previous">
+              <ChevronLeft className="w-3.5 h-3.5" />
+            </NavButton>
+            <div
+              className={`h-8 min-w-[2.75rem] px-1.5 rounded-lg flex items-center justify-center font-mono text-[10px] font-bold select-none border transition-colors ${
+                isViewingHistory
+                  ? 'text-amber-300 border-amber-500/40 bg-amber-500/10'
+                  : 'text-slate-400 border-slate-700/60 bg-slate-900/60'
+              }`}
+            >
+              {isViewingHistory
+                ? `${viewIndex}/${moveHistory.length}`
+                : moveHistory.length}
+            </div>
+            <NavButton onClick={goForward} disabled={!canGoForward} title="Next">
+              <ChevronRight className="w-3.5 h-3.5" />
+            </NavButton>
+            <NavButton onClick={goToLive} disabled={!isViewingHistory} title="Live">
+              <ChevronsRight className="w-3.5 h-3.5" />
+            </NavButton>
+          </div>
+        )}
+      </div>
+
+      {/* ── Incoming draw offer toast ── */}
       {drawOfferPending && !isSpectating && !gameOver && (
-        <div className="fixed left-1/2 -translate-x-1/2 z-[220] pointer-events-auto" style={{ bottom: 76 }}>
+        <div
+          className="fixed left-1/2 -translate-x-1/2 z-[220] pointer-events-auto"
+          style={{ bottom: 76 }}
+        >
           <div className="animate-[hud-toast-in_0.3s_cubic-bezier(0.16,1,0.3,1)] flex items-center gap-3 rounded-2xl bg-slate-900/95 border border-blue-500/50 shadow-2xl backdrop-blur-md px-4 py-3">
             <span className="w-8 h-8 rounded-full bg-blue-500/15 border border-blue-500/30 flex items-center justify-center flex-shrink-0">
               <Handshake className="w-4 h-4 text-blue-400" />
             </span>
             <div className="mr-1">
-              <p className="text-white text-xs font-semibold leading-tight whitespace-nowrap">Draw offered</p>
-              <p className="text-slate-400 text-[10px] leading-tight whitespace-nowrap">Your opponent offers a draw</p>
+              <p className="text-white text-xs font-semibold leading-tight whitespace-nowrap">
+                Draw offered
+              </p>
+              <p className="text-slate-400 text-[10px] leading-tight whitespace-nowrap">
+                Your opponent offers a draw
+              </p>
             </div>
             <button
               onClick={acceptDraw}
@@ -318,7 +361,7 @@ export function MatchHUD() {
         </div>
       )}
 
-      {/* Informational draw notice (declined / limit reached) */}
+      {/* ── Draw notice (declined / limit) ── */}
       {drawNotice && !gameOver && (
         <div
           className="fixed left-1/2 -translate-x-1/2 z-[215] pointer-events-none"
@@ -334,7 +377,7 @@ export function MatchHUD() {
         </div>
       )}
 
-      {/* Game over message */}
+      {/* ── Game over banner ── */}
       {gameOver && (
         <div className="fixed bottom-[5.5rem] left-1/2 -translate-x-1/2 z-[220] pointer-events-auto bg-slate-900/95 backdrop-blur-sm border border-amber-500/50 rounded-xl px-5 py-3 text-center shadow-xl">
           <p className="text-amber-400 font-bold text-sm">Game Over</p>

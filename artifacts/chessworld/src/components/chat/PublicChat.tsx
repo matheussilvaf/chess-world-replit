@@ -23,7 +23,7 @@ export function PublicChat() {
   if (!showChat) return null;
 
   return (
-    <div className="absolute bottom-4 left-4 z-40 w-80 sm:w-96 max-h-[400px] bg-slate-900/95 backdrop-blur-sm rounded-xl border border-slate-700/50 flex flex-col overflow-hidden shadow-2xl">
+    <div className="fixed bottom-4 right-4 z-[500] w-80 sm:w-96 max-h-[400px] bg-slate-900/95 backdrop-blur-sm rounded-xl border border-slate-700/50 flex flex-col overflow-hidden shadow-2xl">
       {/* Header */}
       <div className="flex items-center justify-between px-4 py-3 border-b border-slate-700/50">
         <h3 className="text-white font-medium text-sm">Public Chat</h3>

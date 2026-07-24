@@ -86,7 +86,7 @@ export function VoiceChatPanel() {
   const connecting = status === 'connecting';
 
   return (
-    <div className="absolute right-4 top-1/2 -translate-y-1/2 z-30 w-72">
+    <div className="fixed right-4 top-1/2 -translate-y-1/2 z-[500] w-72">
       <div className="bg-slate-900/95 backdrop-blur-sm rounded-xl border border-slate-700/60 overflow-hidden shadow-2xl">
         {/* Header */}
         <div className="flex items-center justify-between px-4 py-3 border-b border-slate-700/50">
