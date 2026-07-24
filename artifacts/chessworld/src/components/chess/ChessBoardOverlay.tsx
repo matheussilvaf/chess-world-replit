@@ -208,14 +208,29 @@ export function ChessBoardOverlay() {
       }
     };
 
+    // iOS Safari fires proprietary gesture* events for pinch; block them so
+    // the browser never zooms the page itself when the pinch starts on the board.
+    const blockGesture = (e: Event) => e.preventDefault();
+
     el.addEventListener('touchstart', onTouchStart, { passive: false, capture: true });
-    return () => el.removeEventListener('touchstart', onTouchStart, true);
+    el.addEventListener('gesturestart', blockGesture);
+    el.addEventListener('gesturechange', blockGesture);
+    el.addEventListener('gestureend', blockGesture);
+    return () => {
+      el.removeEventListener('touchstart', onTouchStart, true);
+      el.removeEventListener('gesturestart', blockGesture);
+      el.removeEventListener('gesturechange', blockGesture);
+      el.removeEventListener('gestureend', blockGesture);
+    };
   }, [matchId]);
 
-  // Forward pinch move/end globally while pinch started on board
+  // Forward pinch move/end globally while pinch started on board.
+  // NOT passive: without preventDefault, mobile Safari performs its native
+  // page pinch-zoom (zooming the whole site) instead of zooming the map.
   useEffect(() => {
     const onMove = (e: TouchEvent) => {
       if (!boardPinchActive.current || e.touches.length < 2) return;
+      e.preventDefault();
       (window as any).__worldScene?.handleBoardPinch?.(
         { x: e.touches[0].clientX, y: e.touches[0].clientY },
         { x: e.touches[1].clientX, y: e.touches[1].clientY },
@@ -229,11 +244,20 @@ export function ChessBoardOverlay() {
         (window as any).__worldScene?.handleBoardPinch?.({ x: 0, y: 0 }, { x: 0, y: 0 }, 'end');
       }
     };
-    window.addEventListener('touchmove', onMove, { passive: true });
+    // iOS can cancel a gesture mid-pinch (e.g. system overlay); always clean up
+    // or boardPinchActive would stay stuck until the next board touch.
+    const onCancel = () => {
+      if (!boardPinchActive.current) return;
+      boardPinchActive.current = false;
+      (window as any).__worldScene?.handleBoardPinch?.({ x: 0, y: 0 }, { x: 0, y: 0 }, 'end');
+    };
+    window.addEventListener('touchmove', onMove, { passive: false });
     window.addEventListener('touchend', onEnd);
+    window.addEventListener('touchcancel', onCancel);
     return () => {
       window.removeEventListener('touchmove', onMove);
       window.removeEventListener('touchend', onEnd);
+      window.removeEventListener('touchcancel', onCancel);
     };
   }, []);
 
@@ -379,6 +403,9 @@ export function ChessBoardOverlay() {
           width: screenRect.width,
           height: screenRect.height,
           pointerEvents: 'auto',
+          // Tell the browser to never handle gestures that start on the board
+          // (native pinch-zoom/scroll) — we forward pinches to the map ourselves.
+          touchAction: 'none',
         }}
       >
         <div className="w-full h-full grid grid-cols-8 grid-rows-8 rounded-sm overflow-hidden shadow-xl border border-amber-900/40">

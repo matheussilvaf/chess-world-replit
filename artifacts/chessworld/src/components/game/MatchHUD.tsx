@@ -24,8 +24,8 @@ const PIECE_ORDER = ['p', 'n', 'b', 'r', 'q'] as const;
 interface CaptureInfo {
   byWhite: string[]; // black piece types captured by White
   byBlack: string[]; // white piece types captured by Black
-  whitePoints: number;
-  blackPoints: number;
+  whiteAdvantage: number; // White's material lead in points (0 if not ahead)
+  blackAdvantage: number; // Black's material lead in points (0 if not ahead)
 }
 
 /**
@@ -42,14 +42,12 @@ function lossesFor(counts: Record<string, number>, color: 'w' | 'b') {
     promotionSurplus += Math.max(0, (counts[color + t] || 0) - INITIAL_COUNTS[t]);
   }
   const pieces: string[] = [];
-  let points = 0;
   for (const t of PIECE_ORDER) {
     let missing = Math.max(0, INITIAL_COUNTS[t] - (counts[color + t] || 0));
     if (t === 'p') missing = Math.max(0, missing - promotionSurplus);
     for (let i = 0; i < missing; i++) pieces.push(t);
-    points += missing * PIECE_VALUES[t];
   }
-  return { pieces, points };
+  return pieces;
 }
 
 /** Derive captured pieces by diffing FEN piece counts against the initial setup. */
@@ -63,28 +61,44 @@ function computeCaptures(fen: string): CaptureInfo {
       counts[key] = (counts[key] || 0) + 1;
     }
   }
-  const blackLosses = lossesFor(counts, 'b'); // pieces White captured
-  const whiteLosses = lossesFor(counts, 'w'); // pieces Black captured
+  // Advantage comes from TRUE board material (not capture totals): a promoted
+  // queen still on the board counts at queen value, matching real imbalance.
+  let whiteMaterial = 0;
+  let blackMaterial = 0;
+  for (const t of PIECE_ORDER) {
+    whiteMaterial += (counts['w' + t] || 0) * PIECE_VALUES[t];
+    blackMaterial += (counts['b' + t] || 0) * PIECE_VALUES[t];
+  }
   return {
-    byWhite: blackLosses.pieces,
-    byBlack: whiteLosses.pieces,
-    whitePoints: blackLosses.points,
-    blackPoints: whiteLosses.points,
+    byWhite: lossesFor(counts, 'b'), // pieces White captured
+    byBlack: lossesFor(counts, 'w'), // pieces Black captured
+    whiteAdvantage: Math.max(0, whiteMaterial - blackMaterial),
+    blackAdvantage: Math.max(0, blackMaterial - whiteMaterial),
   };
 }
 
 function CapturedRow({
   pieces,
   colorPrefix,
-  points,
+  advantage,
 }: {
   pieces: readonly string[];
   colorPrefix: 'w' | 'b';
-  points: number;
+  /** Material advantage (points ahead of the opponent); shown only when > 0. */
+  advantage: number;
 }) {
-  if (pieces.length === 0) return null;
+  // Still render with no captures if ahead on material (e.g. via promotion).
+  if (pieces.length === 0 && advantage <= 0) return null;
+  // Black minis vanish against the dark HUD chip — use a light background for them.
+  const darkPieces = colorPrefix === 'b';
   return (
-    <div className="flex items-center rounded-lg bg-slate-900/85 border border-slate-700/50 backdrop-blur-sm shadow-lg px-2 py-1 pointer-events-none">
+    <div
+      className={`flex items-center rounded-lg border backdrop-blur-sm shadow-lg px-2 py-1 pointer-events-none ${
+        darkPieces
+          ? 'bg-slate-200/95 border-slate-400/60'
+          : 'bg-slate-900/85 border-slate-700/50'
+      }`}
+    >
       {pieces.map((t, i) => (
         <img
           key={`${t}-${i}`}
@@ -94,9 +108,13 @@ function CapturedRow({
           className={`w-[18px] h-[18px] object-contain drop-shadow ${i > 0 ? '-ml-2' : ''}`}
         />
       ))}
-      {points > 0 && (
-        <span className="ml-1.5 text-[11px] font-bold text-slate-300 leading-none tabular-nums">
-          +{points}
+      {advantage > 0 && (
+        <span
+          className={`ml-1.5 text-[11px] font-bold leading-none tabular-nums ${
+            darkPieces ? 'text-slate-800' : 'text-slate-300'
+          }`}
+        >
+          +{advantage}
         </span>
       )}
     </div>
@@ -339,12 +357,13 @@ export function MatchHUD() {
   const canShowActions = !isSpectating && !gameOver;
 
   // Captured pieces from my perspective: I capture opponent-colored pieces.
+  // Advantage: only the materially-ahead player shows +N (equal = nothing).
   const myCapturedPieces = captures ? (isBlack ? captures.byBlack : captures.byWhite) : [];
   const myCapturedPrefix: 'w' | 'b' = isBlack ? 'w' : 'b';
-  const myCapturedPoints = captures ? (isBlack ? captures.blackPoints : captures.whitePoints) : 0;
+  const myAdvantage = captures ? (isBlack ? captures.blackAdvantage : captures.whiteAdvantage) : 0;
   const oppCapturedPieces = captures ? (isBlack ? captures.byWhite : captures.byBlack) : [];
   const oppCapturedPrefix: 'w' | 'b' = isBlack ? 'b' : 'w';
-  const oppCapturedPoints = captures ? (isBlack ? captures.whitePoints : captures.blackPoints) : 0;
+  const oppAdvantage = captures ? (isBlack ? captures.whiteAdvantage : captures.blackAdvantage) : 0;
 
   return (
     <>
@@ -362,7 +381,7 @@ export function MatchHUD() {
         <CapturedRow
           pieces={oppCapturedPieces}
           colorPrefix={oppCapturedPrefix}
-          points={oppCapturedPoints}
+          advantage={oppAdvantage}
         />
       </div>
 
@@ -371,7 +390,7 @@ export function MatchHUD() {
         <CapturedRow
           pieces={myCapturedPieces}
           colorPrefix={myCapturedPrefix}
-          points={myCapturedPoints}
+          advantage={myAdvantage}
         />
         <div className="flex items-center gap-2">
         {/* Timer wrapper (contains popup + clickable timer) */}
@@ -379,7 +398,7 @@ export function MatchHUD() {
           {/* Actions card — slides up above the timer */}
           {showActions && canShowActions && (
             <div className="absolute bottom-full mb-2 left-0 animate-[hud-toast-in_0.2s_cubic-bezier(0.16,1,0.3,1)] z-10">
-              <div className="bg-slate-900/97 backdrop-blur-md rounded-2xl border border-slate-700/70 shadow-2xl overflow-hidden min-w-[160px]">
+              <div className="bg-slate-900 rounded-2xl border border-slate-700/70 shadow-2xl overflow-hidden min-w-[170px]">
                 {/* Card header */}
                 <div className="flex items-center justify-between px-3 py-2 border-b border-slate-700/50">
                   <span className="text-slate-400 text-xs font-medium uppercase tracking-wide">
@@ -392,27 +411,29 @@ export function MatchHUD() {
                     <X className="w-3.5 h-3.5" />
                   </button>
                 </div>
-                {/* Resign */}
-                <button
-                  onClick={handleResign}
-                  className="w-full flex items-center gap-3 px-4 py-3 text-red-300 hover:bg-red-500/15 active:bg-red-500/25 transition-colors text-sm font-medium border-b border-slate-800/60"
-                >
-                  <Flag className="w-4 h-4 flex-shrink-0" />
-                  Resign
-                </button>
-                {/* Draw */}
-                <button
-                  onClick={handleDrawOffer}
-                  disabled={drawOfferedByUs}
-                  className={`w-full flex items-center gap-3 px-4 py-3 text-sm font-medium transition-colors ${
-                    drawOfferedByUs
-                      ? 'text-slate-500 cursor-not-allowed'
-                      : 'text-blue-300 hover:bg-blue-500/15 active:bg-blue-500/25'
-                  }`}
-                >
-                  <Handshake className="w-4 h-4 flex-shrink-0" />
-                  {drawOfferedByUs ? 'Offered…' : 'Offer Draw'}
-                </button>
+                <div className="p-2 flex flex-col gap-1.5">
+                  {/* Resign — solid red */}
+                  <button
+                    onClick={handleResign}
+                    className="w-full flex items-center gap-3 px-4 py-2.5 rounded-xl bg-red-600 hover:bg-red-500 active:bg-red-700 text-white transition-colors text-sm font-semibold shadow-md"
+                  >
+                    <Flag className="w-4 h-4 flex-shrink-0" />
+                    Resign
+                  </button>
+                  {/* Draw — solid blue */}
+                  <button
+                    onClick={handleDrawOffer}
+                    disabled={drawOfferedByUs}
+                    className={`w-full flex items-center gap-3 px-4 py-2.5 rounded-xl transition-colors text-sm font-semibold shadow-md ${
+                      drawOfferedByUs
+                        ? 'bg-slate-700 text-slate-400 cursor-not-allowed'
+                        : 'bg-blue-600 hover:bg-blue-500 active:bg-blue-700 text-white'
+                    }`}
+                  >
+                    <Handshake className="w-4 h-4 flex-shrink-0" />
+                    {drawOfferedByUs ? 'Offered…' : 'Offer Draw'}
+                  </button>
+                </div>
               </div>
             </div>
           )}

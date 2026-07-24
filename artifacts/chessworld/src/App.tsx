@@ -29,6 +29,38 @@ function App() {
     initialize();
   }, []);
 
+  // Mobile viewport guard: iOS scrolls the document to reveal a focused input
+  // (chat) even with overflow:hidden, and can leave the whole page offset after
+  // the keyboard closes — misaligning the board overlay with the Phaser canvas.
+  // Snap back to origin whenever no text field is focused.
+  useEffect(() => {
+    const isEditing = () => {
+      const el = document.activeElement as HTMLElement | null;
+      return !!el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.isContentEditable);
+    };
+    const reset = () => {
+      if (isEditing()) return;
+      window.scrollTo(0, 0);
+      document.documentElement.scrollTop = 0;
+      document.body.scrollTop = 0;
+    };
+    const onFocusOut = () => {
+      // Keyboard dismissal animates — reset a few times while it settles.
+      setTimeout(reset, 50);
+      setTimeout(reset, 250);
+      setTimeout(reset, 600);
+    };
+    window.addEventListener('scroll', reset, { passive: true });
+    window.addEventListener('focusout', onFocusOut);
+    const vv = window.visualViewport;
+    vv?.addEventListener('resize', reset);
+    return () => {
+      window.removeEventListener('scroll', reset);
+      window.removeEventListener('focusout', onFocusOut);
+      vv?.removeEventListener('resize', reset);
+    };
+  }, []);
+
   if (!initialized || loading) {
     return <LoadingScreen message="Loading ChessWorld..." />;
   }

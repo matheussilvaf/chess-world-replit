@@ -10,6 +10,11 @@ import {
   User, MessageSquare, Users, Settings, DoorOpen, Mic, Maximize, Minimize,
 } from 'lucide-react';
 
+// iPhone Safari has no Fullscreen API for arbitrary elements — hide the button there.
+const FULLSCREEN_SUPPORTED =
+  typeof document.documentElement.requestFullscreen === 'function' ||
+  typeof (document.documentElement as any).webkitRequestFullscreen === 'function';
+
 export function HUD() {
   const { profile } = useAuthStore();
   const { region, onlinePlayers, unreadChat, toggleChat, toggleProfile, toggleFriends, toggleSettings, toggleVoiceChat } = useGameStore();
@@ -21,16 +26,27 @@ export function HUD() {
   const inGame = !!matchId;
 
   useEffect(() => {
-    const handler = () => setIsFullscreen(!!document.fullscreenElement);
+    const handler = () =>
+      setIsFullscreen(!!document.fullscreenElement || !!(document as any).webkitFullscreenElement);
     document.addEventListener('fullscreenchange', handler);
-    return () => document.removeEventListener('fullscreenchange', handler);
+    document.addEventListener('webkitfullscreenchange', handler);
+    return () => {
+      document.removeEventListener('fullscreenchange', handler);
+      document.removeEventListener('webkitfullscreenchange', handler);
+    };
   }, []);
 
   const toggleFullscreen = useCallback(() => {
-    if (document.fullscreenElement) {
-      document.exitFullscreen();
-    } else {
-      document.documentElement.requestFullscreen().catch(() => {});
+    // iPhone Safari has no Fullscreen API for arbitrary elements — guard so
+    // tapping the button never throws (button is hidden there anyway).
+    const doc = document as any;
+    const el = document.documentElement as any;
+    if (document.fullscreenElement || doc.webkitFullscreenElement) {
+      (document.exitFullscreen ?? doc.webkitExitFullscreen)?.call(document);
+    } else if (typeof el.requestFullscreen === 'function') {
+      el.requestFullscreen().catch(() => {});
+    } else if (typeof el.webkitRequestFullscreen === 'function') {
+      el.webkitRequestFullscreen();
     }
   }, []);
 
@@ -101,11 +117,13 @@ export function HUD() {
           />
           <HUDButton icon={<Mic className="w-4 h-4" />} onClick={toggleVoiceChat} label="Voice" />
           <HUDButton icon={<Settings className="w-4 h-4" />} onClick={toggleSettings} label="Settings" />
-          <HUDButton
-            icon={isFullscreen ? <Minimize className="w-4 h-4" /> : <Maximize className="w-4 h-4" />}
-            onClick={toggleFullscreen}
-            label={isFullscreen ? 'Exit Fullscreen' : 'Fullscreen'}
-          />
+          {FULLSCREEN_SUPPORTED && (
+            <HUDButton
+              icon={isFullscreen ? <Minimize className="w-4 h-4" /> : <Maximize className="w-4 h-4" />}
+              onClick={toggleFullscreen}
+              label={isFullscreen ? 'Exit Fullscreen' : 'Fullscreen'}
+            />
+          )}
 
           {/* Extra buttons — hidden in game mode */}
           {!inGame && (
