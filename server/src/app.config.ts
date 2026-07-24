@@ -2,7 +2,7 @@ import type { ConfigOptions } from "@colyseus/tools";
 import { monitor } from "@colyseus/monitor";
 import { WorldRoom } from "./rooms/WorldRoom.js";
 import { TournamentRoom } from "./rooms/TournamentRoom.js";
-import type { Request, Response } from "express";
+import type { Request, Response, NextFunction } from "express";
 import express from "express";
 import cors from "cors";
 import { AccessToken } from "livekit-server-sdk";
@@ -25,23 +25,43 @@ const config: ConfigOptions = {
       'https://chessworld.app',
       /\.webcontainer-api\.io$/,
       /\.local-credentialless\.webcontainer-api\.io$/,
-    ].filter(Boolean);
+      /\.replit\.dev$/,
+      /\.replit\.app$/,
+      /\.repl\.co$/,
+    ].filter(Boolean) as (string | RegExp)[];
+
+    // Replit dev proxy serves this artifact under /api WITHOUT stripping the
+    // prefix, but Colyseus mounts its matchmake routes at the server root.
+    // Rewrite /api/matchmake/* -> /matchmake/* so the client can use
+    // wss://<domain>/api as its endpoint. Harmless on Colyseus Cloud.
+    app.use((req: Request, _res: Response, next: NextFunction) => {
+      if (req.url.startsWith('/api/matchmake/') || req.url.startsWith('/api/voice/')) {
+        req.url = req.url.slice(4);
+      }
+      next();
+    });
 
     app.use(cors({
       origin: (origin, callback) => {
+        // Allow same-origin and server-to-server requests (no origin header)
         if (!origin) return callback(null, true);
         const allowed = allowedOrigins.some(o => {
           if (typeof o === 'string') return o === origin;
           if (o instanceof RegExp) return o.test(origin);
           return false;
         });
-        callback(null, allowed || true);
+        callback(allowed ? null : new Error('Not allowed by CORS'), allowed);
       },
       credentials: true,
     }));
 
     app.get("/health", (_req: Request, res: Response) => {
       res.json({ ok: true, uptime: process.uptime() });
+    });
+
+    // Platform health probe endpoint expected by artifact config
+    app.get("/api/healthz", (_req: Request, res: Response) => {
+      res.json({ status: "ok", uptime: process.uptime() });
     });
 
     app.post("/voice/token", async (req: Request, res: Response) => {

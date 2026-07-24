@@ -12,7 +12,19 @@ const EXPECTED_VERSION = 'v6.0.0';
 const TIMEOUT_MS = 10_000;
 
 function getBinaryPath(): string {
-  return join(__dirname, '..', '..', 'bin', 'bbpPairings');
+  // Layouts differ between dev (tsx: src/src/tournament -> ../../bin) and the
+  // esbuild bundle (dist/index.mjs -> __dirname = dist, binary at ../src/bin).
+  const candidates = [
+    process.env.BBP_PAIRINGS_PATH,
+    join(__dirname, '..', '..', 'bin', 'bbpPairings'),
+    join(__dirname, '..', 'src', 'bin', 'bbpPairings'),
+    join(process.cwd(), 'src', 'bin', 'bbpPairings'),
+    join(process.cwd(), 'bin', 'bbpPairings'),
+  ].filter(Boolean) as string[];
+  for (const p of candidates) {
+    if (existsSync(p)) return p;
+  }
+  return candidates[1];
 }
 
 export interface EngineStatus {

@@ -22,13 +22,19 @@ const activeGames = new Map<string, Chess>();
 
 export class WorldRoom extends Room<WorldState> {
   private readonly TICK_RATE = 20;
+  /** Timer per matchId for the tournament disconnect grace period. */
+  private disconnectTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  /** Tracks how many draw offers each player has made per match: matchId → {white: n, black: n} */
+  private drawOfferCounts = new Map<string, { white: number; black: number }>();
+  // matchId -> color of the player whose draw offer is currently awaiting an answer
+  private pendingDrawOffers = new Map<string, 'w' | 'b'>();
 
   onCreate(options: any) {
     this.setState(new WorldState());
     this.setSimulationInterval(() => this.tick(), 1000 / this.TICK_RATE);
     this.maxClients = 100;
 
-    coordinator.setWorldRoomInstance(this);
+    coordinator.registerWorldRoom(this);
 
     console.log(`[WorldRoom] Created for region: ${options.region || 'unknown'} | roomId: ${this.roomId}`);
 
@@ -225,6 +231,9 @@ export class WorldRoom extends Room<WorldState> {
       match.lastMoveFrom = moveResult.from;
       match.lastMoveTo = moveResult.to;
 
+      // A move on the board voids any outstanding draw offer
+      this.pendingDrawOffers.delete(matchId);
+
       if (game.isGameOver()) {
         this.endMatch(matchId, game);
       }
@@ -264,7 +273,7 @@ export class WorldRoom extends Room<WorldState> {
       console.log(`[WorldRoom] chess_resign: match ${matchId} finished and removed from state`);
     });
 
-    this.onMessage('chess_draw_offer', (client, data) => {
+    this.onMessage('chess_draw_offer', async (client, data) => {
       const { matchId } = data as { matchId: string };
       const player = this.state.players.get(client.sessionId);
       if (!player) return;
@@ -276,11 +285,73 @@ export class WorldRoom extends Room<WorldState> {
       const isBlack = match.blackPlayerId === player.id;
       if (!isWhite && !isBlack) return;
 
+      // An offer is already awaiting an answer — tell the sender explicitly so
+      // their client can clear its optimistic "offered" flag (they likely have
+      // an incoming offer to answer instead).
+      if (this.pendingDrawOffers.has(matchId)) {
+        client.send('draw_offer_rejected', { reason: 'pending_exists' });
+        return;
+      }
+
+      // Check max draw offers per match
+      const config = await coordinator.loadConfig().catch(() => null);
+      const maxOffers = config?.maxDrawOffers ?? 2;
+
+      // Re-validate after the async config load: the match may have ended or a
+      // concurrent offer may have landed while we awaited.
+      const freshMatch = this.state.matches.get(matchId);
+      if (!freshMatch || freshMatch.status !== 'playing') return;
+      if (this.pendingDrawOffers.has(matchId)) {
+        client.send('draw_offer_rejected', { reason: 'pending_exists' });
+        return;
+      }
+
+      const counts = this.drawOfferCounts.get(matchId) ?? { white: 0, black: 0 };
+      const myCount = isWhite ? counts.white : counts.black;
+      if (myCount >= maxOffers) {
+        client.send('draw_offer_rejected', { reason: 'limit_reached', max: maxOffers });
+        return;
+      }
+
+      // Increment counter
+      if (isWhite) counts.white++;
+      else counts.black++;
+      this.drawOfferCounts.set(matchId, counts);
+
+      this.pendingDrawOffers.set(matchId, isWhite ? 'w' : 'b');
+
       const opponentId = isWhite ? match.blackPlayerId : match.whitePlayerId;
       const opponentSession = this.findSessionByPlayerId(opponentId);
       if (opponentSession) {
         const opponentClient = this.clients.find(c => c.sessionId === opponentSession);
         opponentClient?.send('draw_offered', { matchId, offeredBy: player.username });
+      }
+    });
+
+    this.onMessage('chess_draw_decline', (client, data) => {
+      const { matchId } = data as { matchId: string };
+      const player = this.state.players.get(client.sessionId);
+      if (!player) return;
+
+      const match = this.state.matches.get(matchId);
+      if (!match || match.status !== 'playing') return;
+
+      const isWhite = match.whitePlayerId === player.id;
+      const isBlack = match.blackPlayerId === player.id;
+      if (!isWhite && !isBlack) return;
+
+      // Only valid while an offer from the OPPONENT is pending
+      const pendingFrom = this.pendingDrawOffers.get(matchId);
+      const myColor: 'w' | 'b' = isWhite ? 'w' : 'b';
+      if (!pendingFrom || pendingFrom === myColor) return;
+      this.pendingDrawOffers.delete(matchId);
+
+      // Notify the opponent (the one who offered) that draw was declined
+      const offererId = isWhite ? match.blackPlayerId : match.whitePlayerId;
+      const offererSession = this.findSessionByPlayerId(offererId);
+      if (offererSession) {
+        const offererClient = this.clients.find(c => c.sessionId === offererSession);
+        offererClient?.send('draw_declined', { matchId });
       }
     });
 
@@ -295,6 +366,13 @@ export class WorldRoom extends Room<WorldState> {
       const isWhite = match.whitePlayerId === player.id;
       const isBlack = match.blackPlayerId === player.id;
       if (!isWhite && !isBlack) return;
+
+      // Only valid while an offer from the OPPONENT is pending — prevents
+      // forcing a draw without an offer and stale accepts after a decline/move.
+      const pendingFrom = this.pendingDrawOffers.get(matchId);
+      const myColor: 'w' | 'b' = isWhite ? 'w' : 'b';
+      if (!pendingFrom || pendingFrom === myColor) return;
+      this.pendingDrawOffers.delete(matchId);
 
       match.status = 'finished';
       match.result = 'draw';
@@ -384,6 +462,10 @@ export class WorldRoom extends Room<WorldState> {
           client.send('match_started', { matchId: board.matchId, boardId, color: myColor });
           return;
         }
+        // Board is in 'playing' but this player is not in that match — stale state.
+        // Don't fall through to the idle/waiting branches (none handle 'playing').
+        console.warn(`[WorldRoom] tournament_seat: board ${boardId} playing but ${player.id} not in match ${board.matchId}`);
+        return;
       }
 
       // First player: set up as waiting
@@ -480,6 +562,22 @@ export class WorldRoom extends Room<WorldState> {
         client.send('match_started', { matchId, boardId: match.boardId, color: 'b' });
       }
     });
+
+    // Cancel any active disconnect grace timer (player reconnected in time)
+    this.state.matches.forEach((match, matchId) => {
+      if (match.status !== 'playing') return;
+      if (match.whitePlayerId !== playerId && match.blackPlayerId !== playerId) return;
+      const timer = this.disconnectTimers.get(matchId);
+      if (!timer) return;
+      clearTimeout(timer);
+      this.disconnectTimers.delete(matchId);
+      console.log(`[WorldRoom] ${playerId} reconnected to match ${matchId}, grace timer cancelled`);
+      // Notify opponent of reconnection
+      const opponentId = match.whitePlayerId === playerId ? match.blackPlayerId : match.whitePlayerId;
+      const opponentSession = this.findSessionByPlayerId(opponentId);
+      const opponentClient = this.clients.find(c => c.sessionId === opponentSession);
+      opponentClient?.send('opponent_reconnected', { matchId, boardId: match.boardId });
+    });
   }
 
   async onLeave(client: Client, consented: boolean) {
@@ -496,11 +594,59 @@ export class WorldRoom extends Room<WorldState> {
       const abandonedMatches: MatchState[] = [];
       const matchEntries: [string, MatchState][] = [];
       this.state.matches.forEach((match, matchId) => matchEntries.push([matchId, match]));
+
+      // Load WO grace period from config (default 30s)
+      let woGraceMs = 30_000;
+      try {
+        const cfg = await coordinator.loadConfig();
+        woGraceMs = ((cfg.woTimeoutSeconds ?? 30)) * 1_000;
+      } catch { /* use default */ }
+
       for (const [matchId, match] of matchEntries) {
         if (match.status === 'playing') {
           const isWhite = match.whitePlayerId === player.id;
           const isBlack = match.blackPlayerId === player.id;
-          if (isWhite || isBlack) {
+          if (!(isWhite || isBlack)) continue;
+
+          const isTournamentMatch = match.boardId.includes('_table_');
+
+          if (isTournamentMatch) {
+            // Tournament match: give the player a reconnect grace window instead
+            // of immediately forfeiting. Cancel any existing timer for safety.
+            if (this.disconnectTimers.has(matchId)) clearTimeout(this.disconnectTimers.get(matchId)!);
+
+            const opponentId = isWhite ? match.blackPlayerId : match.whitePlayerId;
+            const opponentSession = this.findSessionByPlayerId(opponentId);
+            const opponentClient = opponentSession ? this.clients.find(c => c.sessionId === opponentSession) : null;
+            const reconnectDeadline = new Date(Date.now() + woGraceMs).toISOString();
+
+            opponentClient?.send('opponent_disconnected', {
+              matchId,
+              boardId: match.boardId,
+              reconnectDeadline,
+              disconnectedPlayerId: player.id,
+            });
+
+            const timer = setTimeout(async () => {
+              this.disconnectTimers.delete(matchId);
+              const m = this.state.matches.get(matchId);
+              if (!m || m.status !== 'playing') return;
+              // Player didn't reconnect in time → forfeit
+              m.status = 'finished';
+              m.result = 'abandon';
+              m.winnerId = isWhite ? m.blackPlayerId : m.whitePlayerId;
+              activeGames.delete(matchId);
+              await this.broadcastMatchEnd(m);
+              this.cleanupMatchBoard(m);
+              this.state.matches.delete(matchId);
+              opponentClient?.send('opponent_forfeited', { matchId, reason: 'disconnect_timeout' });
+              console.log(`[WorldRoom] W.O. awarded: ${player.id} did not reconnect to match ${matchId}`);
+            }, woGraceMs);
+
+            this.disconnectTimers.set(matchId, timer);
+            console.log(`[WorldRoom] Disconnect grace timer started for ${player.id} in match ${matchId} (${woGraceMs / 1000}s)`);
+          } else {
+            // Non-tournament match: immediate abandon (existing behaviour)
             match.status = 'finished';
             match.result = 'abandon';
             match.winnerId = isWhite ? match.blackPlayerId : match.whitePlayerId;
@@ -523,8 +669,14 @@ export class WorldRoom extends Room<WorldState> {
   }
 
   onDispose() {
-    activeGames.clear();
-    coordinator.setWorldRoomInstance(null);
+    // Clear all disconnect grace timers so they don't fire after room disposal.
+    this.disconnectTimers.forEach((timer) => clearTimeout(timer));
+    this.disconnectTimers.clear();
+    // Only drop games belonging to THIS room — activeGames is module-level
+    // and shared between the 'world' and 'arena' rooms; clearing everything
+    // here used to kill the other room's live matches.
+    this.state.matches.forEach((_match, matchId) => activeGames.delete(matchId));
+    coordinator.unregisterWorldRoom(this);
   }
 
   isBoardPlaying(boardId: string): boolean {
@@ -535,6 +687,121 @@ export class WorldRoom extends Room<WorldState> {
       }
     });
     return playing;
+  }
+
+  // Tournament end: players still inside the arena modules are teleported to
+  // random spots near the reception center. Modules are glued NORTH of the
+  // reception's north connector (y=0), so "inside a module" means y < 0.
+  // Reception map is 1440x896 px; the center strip between the two practice
+  // areas is safe ground.
+  teleportTournamentPlayersToReception(tournamentId: string): void {
+    if (this.roomName !== 'arena') return;
+
+    const MODULE_BOUNDARY_Y = 8;
+    const CENTER_X = 720;
+    const CENTER_Y = 660;
+    let moved = 0;
+
+    this.state.players.forEach((player, sessionId) => {
+      if (player.y >= MODULE_BOUNDARY_Y) return; // already in the reception
+      const x = Math.round(CENTER_X + (Math.random() * 2 - 1) * 140);
+      const y = Math.round(CENTER_Y + (Math.random() * 2 - 1) * 60);
+      player.x = x;
+      player.y = y;
+      player.targetX = x;
+      player.targetY = y;
+      player.isMoving = false;
+      player.currentBoardId = '';
+      moved++;
+      const cl = this.clients.find(c => c.sessionId === sessionId);
+      cl?.send('tournament_teleport', { x, y });
+    });
+
+    // Drop this tournament's boards from room state
+    const staleIds: string[] = [];
+    this.state.boards.forEach((b) => {
+      if (b.id.startsWith(`${tournamentId}_table_`)) staleIds.push(b.id);
+    });
+    for (const id of staleIds) this.state.boards.delete(id);
+
+    console.log(`[WorldRoom] Tournament ${tournamentId} ended: teleported ${moved} player(s) to reception, removed ${staleIds.length} board(s)`);
+  }
+
+  // Coordinator-driven safety net: start a paired tournament match even if
+  // the clients never sent tournament_seat. Colors come from the pairing
+  // (authoritative), the visual seating follows via match_started/
+  // tournament_seated on the clients.
+  tryForceStartTournamentMatch(opts: {
+    boardId: string;
+    whitePlayerId: string;
+    blackPlayerId: string;
+    baseTimeSeconds: number;
+    incrementSeconds: number;
+    timeCategory: string;
+    timeLabel: string;
+  }): 'started' | 'already' | 'missing' | 'busy' {
+    if (this.roomName !== 'arena') return 'missing';
+
+    const whiteSession = this.findSessionByPlayerId(opts.whitePlayerId);
+    const blackSession = this.findSessionByPlayerId(opts.blackPlayerId);
+    const whitePlayer = whiteSession ? this.state.players.get(whiteSession) : undefined;
+    const blackPlayer = blackSession ? this.state.players.get(blackSession) : undefined;
+    const whiteClient = whiteSession ? this.clients.find(c => c.sessionId === whiteSession) : undefined;
+    const blackClient = blackSession ? this.clients.find(c => c.sessionId === blackSession) : undefined;
+    if (!whitePlayer || !blackPlayer || !whiteClient || !blackClient) return 'missing';
+
+    let board = this.state.boards.get(opts.boardId);
+    if (!board) {
+      board = new BoardState();
+      board.id = opts.boardId;
+      board.name = `Tournament Board ${opts.boardId}`;
+      board.x = 0;
+      board.y = 0;
+      board.width = 80;
+      board.height = 80;
+      board.status = 'idle';
+      this.state.boards.set(opts.boardId, board);
+    }
+
+    if (board.status === 'playing' && board.matchId) {
+      const match = this.state.matches.get(board.matchId);
+      if (match && match.status === 'playing') {
+        const samePlayers =
+          (match.whitePlayerId === opts.whitePlayerId && match.blackPlayerId === opts.blackPlayerId)
+          || (match.whitePlayerId === opts.blackPlayerId && match.blackPlayerId === opts.whitePlayerId);
+        return samePlayers ? 'already' : 'busy';
+      }
+      // Stale board: it says 'playing' but the match is gone or finished
+      // (e.g. a client crashed without unseating). Self-heal so the next
+      // round is never blocked by a ghost game.
+      this.resetBoard(board);
+    }
+
+    if (board.status === 'waiting' && board.waitingPlayerId
+      && board.waitingPlayerId !== opts.whitePlayerId
+      && board.waitingPlayerId !== opts.blackPlayerId) {
+      // Stray waiter on a tournament board — clear it, the pairing wins.
+      this.resetBoard(board);
+    }
+
+    // Configure the board as if white had seated first, then join black.
+    board.status = 'waiting';
+    board.waitingPlayerId = opts.whitePlayerId;
+    board.waitingPlayerName = whitePlayer.username;
+    board.timeCategory = opts.timeCategory;
+    board.baseMinutes = opts.baseTimeSeconds / 60;
+    board.incrementSeconds = opts.incrementSeconds;
+    board.timeLabel = opts.timeLabel;
+    board.whitePlayerId = opts.whitePlayerId;
+    board.blackPlayerId = '';
+    whitePlayer.currentBoardId = opts.boardId;
+
+    whiteClient.send('tournament_seated', { boardId: opts.boardId, color: 'w', seat: 'bottom' });
+    blackClient.send('tournament_seated', { boardId: opts.boardId, color: 'b', seat: 'top' });
+
+    this.startMatch(board, blackPlayer, blackClient);
+    console.log(`[WorldRoom] Force-started tournament match on ${opts.boardId}: ${whitePlayer.username} vs ${blackPlayer.username}`);
+    return 'started';
   }
 
   private async tick() {
@@ -588,6 +855,13 @@ export class WorldRoom extends Room<WorldState> {
     board.matchId = '';
   }
 
+  hasPlayerById(playerId: string): boolean {
+    for (const p of this.state.players.values()) {
+      if (p.id === playerId) return true;
+    }
+    return false;
+  }
+
   private cleanupMatchBoard(match: MatchState) {
     const board = this.state.boards.get(match.boardId);
     if (board) {
@@ -600,6 +874,10 @@ export class WorldRoom extends Room<WorldState> {
         p.currentBoardId = '';
       }
     });
+
+    // Clear draw offer counters for this match
+    this.drawOfferCounts.delete(match.id);
+    this.pendingDrawOffers.delete(match.id);
   }
 
   private async broadcastMatchEnd(match: MatchState): Promise<void> {
@@ -682,6 +960,8 @@ export class WorldRoom extends Room<WorldState> {
     let blackId: string;
     let whitePlayerName: string;
     let blackPlayerName: string;
+    let whitePlayerElo: number;
+    let blackPlayerElo: number;
 
     if (board.whitePlayerId === board.waitingPlayerId) {
       // Challenger chose white
@@ -690,7 +970,9 @@ export class WorldRoom extends Room<WorldState> {
       const whiteSession = this.findSessionByPlayerId(whiteId);
       const whitePlayer = whiteSession ? this.state.players.get(whiteSession) : null;
       whitePlayerName = whitePlayer?.username || 'Player';
+      whitePlayerElo = whitePlayer?.rating || 1200;
       blackPlayerName = joiningPlayer.username;
+      blackPlayerElo = joiningPlayer.rating || 1200;
     } else {
       // Challenger chose black
       blackId = board.waitingPlayerId;
@@ -698,7 +980,9 @@ export class WorldRoom extends Room<WorldState> {
       const blackSession = this.findSessionByPlayerId(blackId);
       const blackPlayer = blackSession ? this.state.players.get(blackSession) : null;
       blackPlayerName = blackPlayer?.username || 'Player';
+      blackPlayerElo = blackPlayer?.rating || 1200;
       whitePlayerName = joiningPlayer.username;
+      whitePlayerElo = joiningPlayer.rating || 1200;
     }
 
     const match = new MatchState();
@@ -709,6 +993,8 @@ export class WorldRoom extends Room<WorldState> {
     match.blackPlayerId = blackId;
     match.whitePlayerName = whitePlayerName;
     match.blackPlayerName = blackPlayerName;
+    match.whitePlayerElo = whitePlayerElo;
+    match.blackPlayerElo = blackPlayerElo;
     match.fen = chess.fen();
     match.pgn = '';
     match.status = 'playing';

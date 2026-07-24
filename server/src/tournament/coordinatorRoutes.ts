@@ -9,7 +9,6 @@ import {
   unregisterPlayer,
   getPairings,
   getStandings,
-  reportMatchResult,
   type TournamentConfig,
 } from './coordinator.js';
 import { getEngineStatus } from './engine.js';
@@ -94,11 +93,32 @@ coordinatorRouter.get('/config', async (_req, res) => {
   }
 });
 
+// Admin allowlist for config writes: comma-separated emails in ADMIN_EMAILS.
+// When set, only those users may change tournament config. When unset:
+// allowed in development (with a loud warning), rejected otherwise (fail
+// closed) so a production deploy is never open to every authenticated user.
+function requireAdmin(req: Request, res: Response, next: Function): void {
+  const raw = (process.env.ADMIN_EMAILS || '').trim();
+  const email = String((req as any).userEmail || '').toLowerCase();
+  if (raw) {
+    const allowed = raw.split(',').map((e) => e.trim().toLowerCase()).filter(Boolean);
+    if (email && allowed.includes(email)) { next(); return; }
+    res.status(403).json({ error: 'Acesso restrito a administradores' });
+    return;
+  }
+  if (process.env.NODE_ENV === 'development') {
+    console.warn('[Coordinator] ADMIN_EMAILS not set — allowing config write for any authenticated user (development only). Set ADMIN_EMAILS before going live.');
+    next();
+    return;
+  }
+  res.status(403).json({ error: 'ADMIN_EMAILS não configurado no servidor' });
+}
+
 // --- Auth-required routes ---
 
 coordinatorRouter.use(requireAuth);
 
-coordinatorRouter.post('/config', async (req: Request, res: Response) => {
+coordinatorRouter.post('/config', requireAdmin, async (req: Request, res: Response) => {
   try {
     const userId = (req as any).userId;
     const config: TournamentConfig = req.body;
@@ -140,12 +160,7 @@ coordinatorRouter.post('/unregister', async (req: Request, res: Response) => {
   }
 });
 
-coordinatorRouter.post('/report-result', async (req: Request, res: Response) => {
-  try {
-    const { tournamentId, roundNumber, boardNumber, result, reason } = req.body;
-    const ok = await reportMatchResult(tournamentId, roundNumber, boardNumber, result, reason);
-    res.json({ ok });
-  } catch (err: any) {
-    res.status(400).json({ error: err.message });
-  }
-});
+// NOTE: the old POST /report-result route was removed on purpose. Results are
+// server-authoritative: WorldRoom reports every end condition in-process and
+// the coordinator sweeps forfeits. An HTTP result route is purely a cheat
+// vector — do not reintroduce it.

@@ -123,6 +123,8 @@ export class TournamentArenaState extends Schema {
   pairings: ArraySchema<PairingState> = new ArraySchema<PairingState>();
   registrations: ArraySchema<RegistrationState> = new ArraySchema<RegistrationState>();
   standings: ArraySchema<StandingState> = new ArraySchema<StandingState>();
+  /** ISO timestamp when the next round becomes active (5-second countdown). Empty string when not counting down. */
+  nextRoundAt: string = '';
 }
 defineTypes(TournamentArenaState, {
   status: 'string',
@@ -140,6 +142,7 @@ defineTypes(TournamentArenaState, {
   practiceTablesLocked: 'boolean',
   doorOpen: 'boolean',
   lastStatus: 'string',
+  nextRoundAt: 'string',
   modules: [ModuleState],
   tables: [TableState],
   pairings: [PairingState],
@@ -191,12 +194,11 @@ export class TournamentRoom extends Room<TournamentArenaState> {
       }
     });
 
-    this.onMessage('reportResult', async (_client, data: { roundNumber: number; boardNumber: number; result: string; reason: string }) => {
-      const tournamentId = this.state.tournamentId;
-      if (!tournamentId) return;
-      await coordinator.reportMatchResult(tournamentId, data.roundNumber, data.boardNumber, data.result, data.reason);
-      await this.syncState();
-    });
+    // NOTE: client-side result reporting was removed on purpose. Results are
+    // reported exclusively by the authoritative WorldRoom game logic
+    // (checkmate/resign/timeout/disconnect) and by the coordinator's presence
+    // sweep (forfeit). A client-facing reportResult message would let any
+    // authenticated user falsify results.
 
     await this.syncState();
 
@@ -256,12 +258,17 @@ export class TournamentRoom extends Room<TournamentArenaState> {
 
       this.state.serverNow = new Date().toISOString();
 
-      if (config) {
-        this.state.timeControlLabel = config.timeControl.displayLabel;
-        this.state.timeControlCategory = config.timeControl.category;
-        this.state.baseTimeSeconds = config.timeControl.baseTimeSeconds;
-        this.state.incrementSeconds = config.timeControl.incrementSeconds;
-        this.state.roundMode = config.swissConfig.roundMode;
+      // Prefer the instance's own config snapshot (set when the cycle was
+      // created with randomize on, or when the tournament started) so the
+      // registration panel shows the ACTUAL settings of the upcoming
+      // tournament instead of the live defaults.
+      const effective = current?.configSnapshot || config;
+      if (effective) {
+        this.state.timeControlLabel = effective.timeControl.displayLabel;
+        this.state.timeControlCategory = effective.timeControl.category;
+        this.state.baseTimeSeconds = effective.timeControl.baseTimeSeconds;
+        this.state.incrementSeconds = effective.timeControl.incrementSeconds;
+        this.state.roundMode = effective.swissConfig.roundMode;
       }
 
       if (current) {
@@ -269,6 +276,7 @@ export class TournamentRoom extends Room<TournamentArenaState> {
         this.state.status = current.status;
         this.state.startsAt = current.startsAt || '';
         this.state.currentRound = current.currentRound;
+        this.state.nextRoundAt = (current.configSnapshot as Record<string, unknown> | null)?.next_round_at as string || '';
         this.state.totalRounds = current.totalRounds;
         this.state.playerCount = current.playerCount;
 
@@ -313,6 +321,7 @@ export class TournamentRoom extends Room<TournamentArenaState> {
       } else {
         this.state.status = 'idle';
         this.state.tournamentId = '';
+        this.state.nextRoundAt = '';
         this.state.modules.clear();
         this.state.tables.clear();
         this.state.pairings.clear();
