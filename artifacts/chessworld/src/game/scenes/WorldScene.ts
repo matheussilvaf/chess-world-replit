@@ -1408,6 +1408,39 @@ export class WorldScene extends Phaser.Scene {
           remote.sprite.setFrame(0);
         }
       }
+      // Fix local player sprite: rotate Math.PI to counteract the camera rotation so
+      // the character appears upright from black's perspective.
+      if (this.player) {
+        this.player.setTexture('sitting-north');
+        this.player.setRotation(Math.PI);
+        this.player.setFrame(0);
+      }
+    }
+  }
+
+  /**
+   * Called by the ChessBoardOverlay React component when a pinch gesture
+   * starts/moves/ends on the board HTML overlay.  Lets the player zoom
+   * even while touching the board (which normally intercepts touch events).
+   */
+  public handleBoardPinch(
+    p1: { x: number; y: number },
+    p2: { x: number; y: number },
+    phase: 'start' | 'move' | 'end',
+  ) {
+    const { min, max, step } = MAP_CONFIG.zoom;
+    const dist = Phaser.Math.Distance.Between(p1.x, p1.y, p2.x, p2.y);
+    if (phase === 'start') {
+      this.isPinching = true;
+      this.pinchStartDistance = dist;
+      this.pinchStartZoom = this.targetZoom;
+    } else if (phase === 'move' && this.isPinching && this.pinchStartDistance > 0) {
+      const scale = dist / this.pinchStartDistance;
+      this.targetZoom = Phaser.Math.Clamp(this.pinchStartZoom * scale, min, max);
+    } else if (phase === 'end') {
+      this.isPinching = false;
+      this.targetZoom = Math.round(this.targetZoom / step) * step;
+      this.targetZoom = Phaser.Math.Clamp(this.targetZoom, min, max);
     }
   }
 

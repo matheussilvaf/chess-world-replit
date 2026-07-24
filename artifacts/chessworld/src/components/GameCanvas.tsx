@@ -517,6 +517,18 @@ export function GameCanvas() {
       useGameStore.getState().setOpponentDisconnected(null);
     });
 
+    room.onMessage('draw_offered', (_data: any) => {
+      useChessStore.getState().setDrawOfferPending(true);
+    });
+
+    room.onMessage('draw_declined', (_data: any) => {
+      useChessStore.getState().setDrawOfferedByUs(false);
+    });
+
+    room.onMessage('draw_offer_rejected', (_data: any) => {
+      useChessStore.getState().setDrawOfferedByUs(false);
+    });
+
     room.onMessage('match_finished', (data: any) => {
       useGameStore.getState().setLastEvent(`match_finished: ${data.result}`);
       useChessStore.getState().finishMatchFromServer(data);

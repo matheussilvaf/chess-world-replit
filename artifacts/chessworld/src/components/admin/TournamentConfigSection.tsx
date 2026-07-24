@@ -20,6 +20,7 @@ interface TournamentConfig {
   };
   randomize?: boolean;
   woTimeoutSeconds?: number;
+  maxDrawOffers?: number;
 }
 
 interface EngineStatus {
@@ -371,6 +372,30 @@ export function TournamentConfigSection({ serverUrl }: { serverUrl: string }) {
           />
           <p className="text-xs text-slate-500 mt-1">
             Tempo para o adversário chegar ao tabuleiro antes de W.O., e para reconexão após desconexão
+          </p>
+        </div>
+
+        {/* Max Draw Offers */}
+        <div>
+          <label className="flex items-center gap-2 text-sm font-medium text-slate-300 mb-2">
+            <Swords className="w-3.5 h-3.5 text-slate-400" />
+            Máximo de ofertas de empate por jogador
+          </label>
+          <input
+            type="number"
+            min={1}
+            max={10}
+            step={1}
+            value={config.maxDrawOffers ?? 2}
+            onChange={(e) => {
+              const updated = { ...config, maxDrawOffers: Math.max(1, Number(e.target.value) || 2) };
+              setConfig(updated);
+              saveConfig(updated);
+            }}
+            className="w-full bg-slate-800 border border-slate-700 rounded-lg px-4 py-2.5 text-sm text-white focus:border-emerald-500 focus:outline-none"
+          />
+          <p className="text-xs text-slate-500 mt-1">
+            Quantas vezes um jogador pode oferecer empate por partida (padrão: 2)
           </p>
         </div>
 

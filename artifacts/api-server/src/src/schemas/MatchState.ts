@@ -8,6 +8,8 @@ export class MatchState extends Schema {
   blackPlayerId!: string;
   whitePlayerName!: string;
   blackPlayerName!: string;
+  whitePlayerElo!: number;
+  blackPlayerElo!: number;
   fen!: string;
   pgn!: string;
   status!: string;
@@ -31,6 +33,8 @@ export class MatchState extends Schema {
     this.blackPlayerId = '';
     this.whitePlayerName = '';
     this.blackPlayerName = '';
+    this.whitePlayerElo = 1200;
+    this.blackPlayerElo = 1200;
     this.fen = 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1';
     this.pgn = '';
     this.status = 'playing';
@@ -55,6 +59,8 @@ defineTypes(MatchState, {
   blackPlayerId: 'string',
   whitePlayerName: 'string',
   blackPlayerName: 'string',
+  whitePlayerElo: 'number',
+  blackPlayerElo: 'number',
   fen: 'string',
   pgn: 'string',
   status: 'string',

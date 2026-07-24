@@ -123,6 +123,7 @@ export function ChessBoardOverlay() {
   const rafRef = useRef<number>(0);
   const filesRef = useRef(FILES);
   const ranksRef = useRef(RANKS);
+  const boardPinchActive = useRef(false);
 
   const isBlack = playerColor === 'b';
   const files = useMemo(() => isBlack ? [...FILES].reverse() : FILES, [isBlack]);
@@ -186,6 +187,55 @@ export function ChessBoardOverlay() {
   useEffect(() => {
     if (imagesReady) { setPiecesLoaded(true); return; }
     Promise.all(imageLoadPromises).then(() => setPiecesLoaded(true));
+  }, []);
+
+  // Pinch-to-zoom on the board: capture multi-touch before squares process them
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el || !matchId) return;
+
+    const onTouchStart = (e: TouchEvent) => {
+      if (e.touches.length >= 2) {
+        boardPinchActive.current = true;
+        e.preventDefault();
+        const scene = (window as any).__worldScene;
+        scene?.handleBoardPinch?.(
+          { x: e.touches[0].clientX, y: e.touches[0].clientY },
+          { x: e.touches[1].clientX, y: e.touches[1].clientY },
+          'start',
+        );
+      } else {
+        boardPinchActive.current = false;
+      }
+    };
+
+    el.addEventListener('touchstart', onTouchStart, { passive: false, capture: true });
+    return () => el.removeEventListener('touchstart', onTouchStart, true);
+  }, [matchId]);
+
+  // Forward pinch move/end globally while pinch started on board
+  useEffect(() => {
+    const onMove = (e: TouchEvent) => {
+      if (!boardPinchActive.current || e.touches.length < 2) return;
+      (window as any).__worldScene?.handleBoardPinch?.(
+        { x: e.touches[0].clientX, y: e.touches[0].clientY },
+        { x: e.touches[1].clientX, y: e.touches[1].clientY },
+        'move',
+      );
+    };
+    const onEnd = (e: TouchEvent) => {
+      if (!boardPinchActive.current) return;
+      if (e.touches.length < 2) {
+        boardPinchActive.current = false;
+        (window as any).__worldScene?.handleBoardPinch?.({ x: 0, y: 0 }, { x: 0, y: 0 }, 'end');
+      }
+    };
+    window.addEventListener('touchmove', onMove, { passive: true });
+    window.addEventListener('touchend', onEnd);
+    return () => {
+      window.removeEventListener('touchmove', onMove);
+      window.removeEventListener('touchend', onEnd);
+    };
   }, []);
 
   // Drag move handler
@@ -356,6 +406,8 @@ export function ChessBoardOverlay() {
                     else handleSquareClick(square);
                   }}
                   onTouchStart={(e) => {
+                    // If a board pinch is active (2-finger gesture), skip chess handling
+                    if (boardPinchActive.current || e.touches.length >= 2) return;
                     if (pieceKey && isMyTurn) handleDragStart(e, square);
                     else handleSquareClick(square);
                   }}
@@ -435,27 +487,26 @@ export function ChessBoardOverlay() {
         </div>
       )}
 
-      {/* Move navigation buttons */}
+      {/* Move navigation buttons — fixed at the very bottom of the screen */}
       {showNav && (
-        <div
-          className="fixed z-[200] pointer-events-auto"
-          style={{
-            left: screenRect.x,
-            top: screenRect.y + screenRect.height + 4,
-            width: screenRect.width,
-          }}
-        >
-          <div className="flex items-center justify-center gap-1.5">
-            <NavButton onClick={goToStart} disabled={isViewingHistory && viewIndex === 0} title="Go to start">
+        <div className="fixed z-[200] pointer-events-auto bottom-0 left-0 right-0">
+          <div className="flex items-center bg-slate-900/92 backdrop-blur-md border-t border-slate-700/60 px-2 py-1.5 gap-1.5">
+            <NavButton onClick={goToStart} disabled={isViewingHistory && viewIndex === 0} title="Start">
               <ChevronsLeft className="w-4 h-4" />
             </NavButton>
-            <NavButton onClick={goBack} disabled={!canGoBack} title="Previous move">
+            <NavButton onClick={goBack} disabled={!canGoBack} title="Previous">
               <ChevronLeft className="w-4 h-4" />
             </NavButton>
-            <NavButton onClick={goForward} disabled={!canGoForward} title="Next move">
+            {isViewingHistory && (
+              <span className="flex-1 text-center text-[10px] font-mono text-amber-400 select-none">
+                {viewIndex}/{moveHistory.length}
+              </span>
+            )}
+            {!isViewingHistory && <span className="flex-1" />}
+            <NavButton onClick={goForward} disabled={!canGoForward} title="Next">
               <ChevronRight className="w-4 h-4" />
             </NavButton>
-            <NavButton onClick={goToLive} disabled={!isViewingHistory} title="Go to current position">
+            <NavButton onClick={goToLive} disabled={!isViewingHistory} title="Live">
               <ChevronsRight className="w-4 h-4" />
             </NavButton>
           </div>

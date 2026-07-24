@@ -91,6 +91,12 @@ export interface TournamentConfig {
    * Default: 30.
    */
   woTimeoutSeconds?: number;
+  /**
+   * Maximum draw offers a player can make per match.
+   * Persisted inside swiss_config JSONB (no DDL access to add a column).
+   * Default: 2.
+   */
+  maxDrawOffers?: number;
 }
 
 export interface TournamentInstance {
@@ -1258,8 +1264,10 @@ export async function loadConfig(): Promise<TournamentConfig> {
   const rawSwiss = { ...(data.swiss_config || {}) };
   const randomize = !!rawSwiss.randomize;
   const woTimeoutSeconds = typeof rawSwiss.woTimeoutSeconds === 'number' ? rawSwiss.woTimeoutSeconds : 30;
+  const maxDrawOffers = typeof rawSwiss.maxDrawOffers === 'number' ? rawSwiss.maxDrawOffers : 2;
   delete rawSwiss.randomize;
   delete rawSwiss.woTimeoutSeconds;
+  delete rawSwiss.maxDrawOffers;
 
   return {
     intervalSeconds: data.interval_seconds,
@@ -1267,6 +1275,7 @@ export async function loadConfig(): Promise<TournamentConfig> {
     swissConfig: rawSwiss,
     randomize,
     woTimeoutSeconds,
+    maxDrawOffers,
   };
 }
 
@@ -1283,6 +1292,7 @@ export async function saveConfig(config: TournamentConfig, userId?: string): Pro
         ...config.swissConfig,
         randomize: !!config.randomize,
         woTimeoutSeconds: config.woTimeoutSeconds ?? 30,
+        maxDrawOffers: config.maxDrawOffers ?? 2,
       },
       updated_at: new Date().toISOString(),
       updated_by: userId || null,

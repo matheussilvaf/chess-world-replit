@@ -30,10 +30,14 @@ interface ChessState {
   turn: string;
   whitePlayerName: string;
   blackPlayerName: string;
+  whitePlayerElo: number;
+  blackPlayerElo: number;
   whitePlayerId: string;
   blackPlayerId: string;
   showBoard: boolean;
   lastMove: { from: string; to: string } | null;
+  drawOfferPending: boolean;
+  drawOfferedByUs: boolean;
 
   // Move history for navigation
   moveHistory: MoveRecord[];
@@ -47,6 +51,11 @@ interface ChessState {
   makeMove: (from: string, to: string, promotion?: string) => void;
   finishMatchFromServer: (payload: { matchId: string; boardId?: string; result: string; winnerId?: string }) => void;
   resign: () => void;
+  sendDrawOffer: () => void;
+  acceptDraw: () => void;
+  declineDraw: () => void;
+  setDrawOfferPending: (pending: boolean) => void;
+  setDrawOfferedByUs: (offered: boolean) => void;
   closeBoard: () => void;
   reopenBoard: () => void;
   tickTimer: () => void;
@@ -133,6 +142,10 @@ export const useChessStore = create<ChessState>((set, get) => ({
   turn: 'w',
   whitePlayerName: '',
   blackPlayerName: '',
+  whitePlayerElo: 1200,
+  blackPlayerElo: 1200,
+  drawOfferPending: false,
+  drawOfferedByUs: false,
   whitePlayerId: '',
   blackPlayerId: '',
   showBoard: false,
@@ -173,6 +186,8 @@ export const useChessStore = create<ChessState>((set, get) => ({
       turn: matchData?.turn || 'w',
       whitePlayerName: matchData?.whitePlayerName || 'White',
       blackPlayerName: matchData?.blackPlayerName || 'Black',
+      whitePlayerElo: matchData?.whitePlayerElo || 1200,
+      blackPlayerElo: matchData?.blackPlayerElo || 1200,
       whitePlayerId: matchData?.whitePlayerId || '',
       blackPlayerId: matchData?.blackPlayerId || '',
       selectedSquare: null,
@@ -182,6 +197,8 @@ export const useChessStore = create<ChessState>((set, get) => ({
       moveHistory: [],
       viewIndex: -1,
       dbMatchId: null,
+      drawOfferPending: false,
+      drawOfferedByUs: false,
     });
 
     // Create the DB match record (fire and forget) — skip for tournament tables (server persists those)
@@ -436,6 +453,35 @@ export const useChessStore = create<ChessState>((set, get) => ({
     sendResign(matchId);
   },
 
+  sendDrawOffer: () => {
+    const { matchId } = get();
+    if (!matchId) return;
+    getActiveRoom()?.send('chess_draw_offer', { matchId });
+    set({ drawOfferedByUs: true });
+  },
+
+  acceptDraw: () => {
+    const { matchId } = get();
+    if (!matchId) return;
+    getActiveRoom()?.send('chess_draw_accept', { matchId });
+    set({ drawOfferPending: false });
+  },
+
+  declineDraw: () => {
+    const { matchId } = get();
+    if (!matchId) return;
+    getActiveRoom()?.send('chess_draw_decline', { matchId });
+    set({ drawOfferPending: false });
+  },
+
+  setDrawOfferPending: (pending: boolean) => {
+    set({ drawOfferPending: pending });
+  },
+
+  setDrawOfferedByUs: (offered: boolean) => {
+    set({ drawOfferedByUs: offered });
+  },
+
   closeBoard: () => {
     set({ showBoard: false });
   },
@@ -489,6 +535,7 @@ export const useChessStore = create<ChessState>((set, get) => ({
       matchId: null, boardId: null, game: null, playerColor: null,
       selectedSquare: null, validMoves: [], isMyTurn: false, gameOver: false,
       result: null, winnerId: null, isSpectating: false, showBoard: false,
+      drawOfferPending: false, drawOfferedByUs: false,
       whiteTimeMs: 600000, blackTimeMs: 600000, lastMoveAt: Date.now(),
       incrementMs: 0, turn: 'w', whitePlayerName: '', blackPlayerName: '',
       whitePlayerId: '', blackPlayerId: '', lastMove: null,

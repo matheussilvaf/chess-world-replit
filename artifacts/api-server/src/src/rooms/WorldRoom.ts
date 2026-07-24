@@ -24,6 +24,8 @@ export class WorldRoom extends Room<WorldState> {
   private readonly TICK_RATE = 20;
   /** Timer per matchId for the tournament disconnect grace period. */
   private disconnectTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  /** Tracks how many draw offers each player has made per match: matchId → {white: n, black: n} */
+  private drawOfferCounts = new Map<string, { white: number; black: number }>();
 
   onCreate(options: any) {
     this.setState(new WorldState());
@@ -266,7 +268,7 @@ export class WorldRoom extends Room<WorldState> {
       console.log(`[WorldRoom] chess_resign: match ${matchId} finished and removed from state`);
     });
 
-    this.onMessage('chess_draw_offer', (client, data) => {
+    this.onMessage('chess_draw_offer', async (client, data) => {
       const { matchId } = data as { matchId: string };
       const player = this.state.players.get(client.sessionId);
       if (!player) return;
@@ -278,11 +280,47 @@ export class WorldRoom extends Room<WorldState> {
       const isBlack = match.blackPlayerId === player.id;
       if (!isWhite && !isBlack) return;
 
+      // Check max draw offers per match
+      const config = await coordinator.loadConfig().catch(() => null);
+      const maxOffers = config?.maxDrawOffers ?? 2;
+      const counts = this.drawOfferCounts.get(matchId) ?? { white: 0, black: 0 };
+      const myCount = isWhite ? counts.white : counts.black;
+      if (myCount >= maxOffers) {
+        client.send('draw_offer_rejected', { reason: 'limit_reached', max: maxOffers });
+        return;
+      }
+
+      // Increment counter
+      if (isWhite) counts.white++;
+      else counts.black++;
+      this.drawOfferCounts.set(matchId, counts);
+
       const opponentId = isWhite ? match.blackPlayerId : match.whitePlayerId;
       const opponentSession = this.findSessionByPlayerId(opponentId);
       if (opponentSession) {
         const opponentClient = this.clients.find(c => c.sessionId === opponentSession);
         opponentClient?.send('draw_offered', { matchId, offeredBy: player.username });
+      }
+    });
+
+    this.onMessage('chess_draw_decline', (client, data) => {
+      const { matchId } = data as { matchId: string };
+      const player = this.state.players.get(client.sessionId);
+      if (!player) return;
+
+      const match = this.state.matches.get(matchId);
+      if (!match || match.status !== 'playing') return;
+
+      const isWhite = match.whitePlayerId === player.id;
+      const isBlack = match.blackPlayerId === player.id;
+      if (!isWhite && !isBlack) return;
+
+      // Notify the opponent (the one who offered) that draw was declined
+      const offererId = isWhite ? match.blackPlayerId : match.whitePlayerId;
+      const offererSession = this.findSessionByPlayerId(offererId);
+      if (offererSession) {
+        const offererClient = this.clients.find(c => c.sessionId === offererSession);
+        offererClient?.send('draw_declined', { matchId });
       }
     });
 
@@ -798,6 +836,9 @@ export class WorldRoom extends Room<WorldState> {
         p.currentBoardId = '';
       }
     });
+
+    // Clear draw offer counters for this match
+    this.drawOfferCounts.delete(match.id);
   }
 
   private async broadcastMatchEnd(match: MatchState): Promise<void> {
@@ -880,6 +921,8 @@ export class WorldRoom extends Room<WorldState> {
     let blackId: string;
     let whitePlayerName: string;
     let blackPlayerName: string;
+    let whitePlayerElo: number;
+    let blackPlayerElo: number;
 
     if (board.whitePlayerId === board.waitingPlayerId) {
       // Challenger chose white
@@ -888,7 +931,9 @@ export class WorldRoom extends Room<WorldState> {
       const whiteSession = this.findSessionByPlayerId(whiteId);
       const whitePlayer = whiteSession ? this.state.players.get(whiteSession) : null;
       whitePlayerName = whitePlayer?.username || 'Player';
+      whitePlayerElo = whitePlayer?.rating || 1200;
       blackPlayerName = joiningPlayer.username;
+      blackPlayerElo = joiningPlayer.rating || 1200;
     } else {
       // Challenger chose black
       blackId = board.waitingPlayerId;
@@ -896,7 +941,9 @@ export class WorldRoom extends Room<WorldState> {
       const blackSession = this.findSessionByPlayerId(blackId);
       const blackPlayer = blackSession ? this.state.players.get(blackSession) : null;
       blackPlayerName = blackPlayer?.username || 'Player';
+      blackPlayerElo = blackPlayer?.rating || 1200;
       whitePlayerName = joiningPlayer.username;
+      whitePlayerElo = joiningPlayer.rating || 1200;
     }
 
     const match = new MatchState();
@@ -907,6 +954,8 @@ export class WorldRoom extends Room<WorldState> {
     match.blackPlayerId = blackId;
     match.whitePlayerName = whitePlayerName;
     match.blackPlayerName = blackPlayerName;
+    match.whitePlayerElo = whitePlayerElo;
+    match.blackPlayerElo = blackPlayerElo;
     match.fen = chess.fen();
     match.pgn = '';
     match.status = 'playing';
