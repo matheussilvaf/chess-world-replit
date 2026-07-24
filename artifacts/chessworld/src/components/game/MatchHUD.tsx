@@ -46,47 +46,51 @@ function CompactTimer({
       type="button"
       onClick={clickable ? onClick : undefined}
       disabled={!clickable}
-      className={`flex items-center gap-2.5 rounded-xl backdrop-blur-sm shadow-xl border transition-all duration-300 px-3 py-2 select-none ${
+      className={`flex flex-col items-start rounded-xl backdrop-blur-sm shadow-xl border transition-all duration-300 px-3 py-2 select-none min-w-0 w-[7.5rem] ${
         active
           ? 'bg-slate-800/95 border-emerald-500/60'
           : 'bg-slate-900/90 border-slate-700/50'
       } ${clickable ? 'cursor-pointer hover:border-slate-500/70 active:scale-[0.98]' : 'cursor-default'}`}
     >
-      {/* Piece color dot */}
-      <div
-        className={`w-3 h-3 rounded-full flex-shrink-0 ${
-          pieceColor === 'white'
-            ? 'bg-white border border-slate-300'
-            : 'bg-slate-950 border border-slate-400'
-        }`}
-      />
-      {/* Name + elo */}
-      <span className="text-white font-semibold text-sm whitespace-nowrap leading-none">
-        {nick}{' '}
-        <span className="text-slate-400 font-normal text-xs">({elo})</span>
-      </span>
-      {/* Divider */}
-      <div className="w-px h-4 bg-slate-600/70 flex-shrink-0" />
-      {/* Clock */}
-      <span
-        className={`font-mono font-bold text-sm tabular-nums whitespace-nowrap leading-none ${
-          active
-            ? isLow
-              ? 'text-red-400 animate-pulse'
-              : 'text-emerald-400'
-            : 'text-slate-500'
-        }`}
-      >
-        {formatTime(timeMs)}
-      </span>
-      {/* Active pulse dot */}
-      {active && (
+      {/* Row 1: piece dot + name (elo) */}
+      <div className="flex items-center gap-1.5 w-full">
         <div
-          className={`w-2 h-2 rounded-full flex-shrink-0 animate-pulse ${
-            isLow ? 'bg-red-400' : 'bg-emerald-400'
+          className={`w-2.5 h-2.5 rounded-full flex-shrink-0 ${
+            pieceColor === 'white'
+              ? 'bg-white border border-slate-300'
+              : 'bg-slate-950 border border-slate-400'
           }`}
         />
-      )}
+        <span className="text-white font-semibold text-[11px] leading-none truncate">
+          {nick}
+        </span>
+        <span className="text-slate-400 text-[10px] leading-none whitespace-nowrap flex-shrink-0">
+          ({elo})
+        </span>
+      </div>
+
+      {/* Row 2: clock + active pulse */}
+      <div className="flex items-center gap-1.5 mt-1.5">
+        <span
+          className={`font-mono font-bold tabular-nums leading-none ${
+            active
+              ? isLow
+                ? 'text-red-400 animate-pulse'
+                : 'text-emerald-400'
+              : 'text-slate-500'
+          }`}
+          style={{ fontSize: 20 }}
+        >
+          {formatTime(timeMs)}
+        </span>
+        {active && (
+          <div
+            className={`w-2 h-2 rounded-full flex-shrink-0 animate-pulse ${
+              isLow ? 'bg-red-400' : 'bg-emerald-400'
+            }`}
+          />
+        )}
+      </div>
     </button>
   );
 }
