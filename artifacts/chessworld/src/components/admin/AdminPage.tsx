@@ -18,6 +18,15 @@ const BOARD_ZOOM_MIGRATION_SQL = `ALTER TABLE game_settings
   ADD COLUMN IF NOT EXISTS board_zoom_mobile numeric NOT NULL DEFAULT 2.5;`;
 
 export function AdminPage() {
+  // The game forces overflow:hidden on html/body/#root. Override it here so
+  // the admin page scrolls normally, and restore on unmount.
+  useEffect(() => {
+    const els = [document.documentElement, document.body, document.getElementById('root')].filter(Boolean) as HTMLElement[];
+    const prev = els.map(el => el.style.overflow);
+    els.forEach(el => { el.style.overflow = 'auto'; });
+    return () => { els.forEach((el, i) => { el.style.overflow = prev[i]; }); };
+  }, []);
+
   const [settings, setSettings] = useState<GameSettings>({
     default_zoom: 2,
     player_speed: 3,

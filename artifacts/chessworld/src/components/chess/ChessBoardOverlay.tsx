@@ -458,14 +458,6 @@ export function ChessBoardOverlay() {
           )}
         </div>
 
-        {/* History viewing indicator */}
-        {isViewingHistory && (
-          <div className="absolute top-1 left-1/2 -translate-x-1/2 bg-slate-900/80 backdrop-blur-sm rounded px-2 py-0.5 border border-amber-500/50">
-            <span className="text-[9px] font-bold text-amber-400">
-              Move {viewIndex}/{moveHistory.length}
-            </span>
-          </div>
-        )}
       </div>
 
       {/* Dragged piece following cursor */}
