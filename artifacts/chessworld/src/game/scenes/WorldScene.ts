@@ -17,6 +17,7 @@ import type { InteractionEvent, InteractionObject, ZoneChangeEvent } from '../in
 import { loadTableRegistry, getSeatAnchor, getExitAnchor } from '../config/tableAnchors';
 import type { TableAnchors, TableRegistry } from '../config/tableAnchors';
 import { ChessOverlayManager } from '../overlay/ChessOverlayManager';
+import { playerTagBus, type PlayerTagEntry } from '../playerTagBus';
 
 interface ChessArenaZone {
   id: string;
@@ -33,7 +34,10 @@ interface ChessArenaZone {
 interface RemotePlayer {
   container: Phaser.GameObjects.Container;
   sprite: Phaser.GameObjects.Sprite;
-  nameText: Phaser.GameObjects.Text;
+  /** Display name shown in the HTML name-tag overlay (not Canvas text). */
+  username: string;
+  /** Elo rating shown in the HTML name-tag overlay. */
+  rating: number;
   interpolator: RemotePlayerInterpolator;
   direction: Direction8;
   isMoving: boolean;
@@ -378,6 +382,43 @@ export class WorldScene extends Phaser.Scene {
       remote.container.x = Math.floor(pos.x);
       remote.container.y = Math.floor(pos.y);
     });
+
+    // Emit HTML name-tag positions for the React overlay (PlayerNameTags).
+    // We compute container-relative screen coords (no canvasRect offset) so
+    // the overlay's absolute-inset-0 positioning maps directly.
+    {
+      const cam = this.cameras.main;
+      const canvasEl = this.game.canvas;
+      const canvasRect = canvasEl.getBoundingClientRect();
+      const scaleX = canvasRect.width  / canvasEl.width;
+      const scaleY = canvasRect.height / canvasEl.height;
+      const cx  = cam.scrollX + cam.width  * 0.5;
+      const cy  = cam.scrollY + cam.height * 0.5;
+      const cos = Math.cos(-this.currentCameraRotation);
+      const sin = Math.sin(-this.currentCameraRotation);
+      const zoom = cam.zoom;
+      // Name-tag Y offset above the container centre in world pixels.
+      // 32 puts the badge just above the character's head at default zoom.
+      const HEAD_OFFSET = 32;
+
+      const tags: PlayerTagEntry[] = [];
+      this.otherPlayers.forEach((remote) => {
+        const wx = remote.container.x;
+        const wy = remote.container.y - HEAD_OFFSET;
+        const dx = wx - cx;
+        const dy = wy - cy;
+        const rx = dx * cos - dy * sin;
+        const ry = dx * sin + dy * cos;
+        tags.push({
+          sessionId: remote.sessionId,
+          username:  remote.username,
+          rating:    remote.rating,
+          x: (rx * zoom + cam.width  * 0.5) * scaleX,
+          y: (ry * zoom + cam.height * 0.5) * scaleY,
+        });
+      });
+      playerTagBus.emit(tags);
+    }
   }
 
   private drawDebug() {
@@ -1308,22 +1349,6 @@ export class WorldScene extends Phaser.Scene {
     s.setOrigin(charDef.originX, charDef.originY);
     c.add(s);
 
-    const nameText = this.add.text(0, -30, p.username, {
-      fontSize: '8px',
-      color: '#fff',
-      stroke: '#000',
-      strokeThickness: 2,
-    }).setOrigin(0.5);
-    c.add(nameText);
-
-    const ratingText = this.add.text(0, -20, `${p.rating}`, {
-      fontSize: '7px',
-      color: '#ffd700',
-      stroke: '#000',
-      strokeThickness: 1,
-    }).setOrigin(0.5);
-    c.add(ratingText);
-
     c.setSize(48, 48);
     c.setInteractive(new Phaser.Geom.Rectangle(-24, -24, 48, 48), Phaser.Geom.Rectangle.Contains);
     c.on('pointerdown', (pointer: Phaser.Input.Pointer) => {
@@ -1336,7 +1361,8 @@ export class WorldScene extends Phaser.Scene {
     this.otherPlayers.set(sessionId, {
       container: c,
       sprite: s,
-      nameText,
+      username: p.username,
+      rating: p.rating,
       interpolator,
       direction,
       isMoving: p.isMoving,

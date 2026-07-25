@@ -20,6 +20,7 @@ import { useColyseusStore } from '../hooks/useColyseusConnection';
 import { loadCharacterConfigs } from '../config/loadCharacterConfigs';
 import type { WorldScene } from '../game/scenes/WorldScene';
 import type { Room } from 'colyseus.js';
+import { PlayerNameTags } from './game/PlayerNameTags';
 
 export function GameCanvas() {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -615,11 +616,16 @@ export function GameCanvas() {
   }
 
   return (
-    <div
-      ref={containerRef}
-      className="absolute inset-0 overflow-hidden"
-      style={{ imageRendering: 'pixelated' }}
-    />
+    <div className="absolute inset-0">
+      {/* Phaser canvas container */}
+      <div
+        ref={containerRef}
+        className="absolute inset-0 overflow-hidden"
+        style={{ imageRendering: 'pixelated' }}
+      />
+      {/* HTML player name-tag overlay — sits above canvas, no pointer events */}
+      <PlayerNameTags />
+    </div>
   );
 }
 

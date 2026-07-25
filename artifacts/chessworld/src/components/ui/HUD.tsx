@@ -148,12 +148,20 @@ export function HUD() {
               <button
                 key={chatPreview.id}
                 onClick={() => { setChatPreview(null); toggleChat(); }}
-                className="absolute right-0 top-full mt-2 w-60 max-w-[72vw] rounded-xl rounded-tr-sm border border-slate-700/60 bg-slate-900/95 backdrop-blur-sm px-3 py-2 text-left shadow-2xl"
+                className={[
+                  // Base
+                  'absolute top-full mt-2 border border-slate-700/60 bg-slate-900/95 backdrop-blur-sm px-3 py-2 text-left shadow-2xl rounded-xl',
+                  // Mobile: anchor left edge → balloon grows to the right; narrow
+                  'left-0 w-40 max-w-[55vw] rounded-tl-sm',
+                  // Desktop: anchor right edge → balloon grows to the left; wider
+                  'sm:left-auto sm:right-0 sm:w-60 sm:max-w-[72vw] sm:rounded-tl-xl sm:rounded-tl-none sm:rounded-tr-sm',
+                ].join(' ')}
                 style={{ animation: 'chat-preview-in 0.18s ease-out' }}
               >
-                <span className="absolute -top-[5px] right-4 h-2.5 w-2.5 rotate-45 border-l border-t border-slate-700/60 bg-slate-900" />
+                {/* Caret — mobile: top-left of balloon; desktop: top-right */}
+                <span className="absolute -top-[5px] left-4 sm:left-auto sm:right-4 h-2.5 w-2.5 rotate-45 border-l border-t border-slate-700/60 bg-slate-900" />
                 <span className="block truncate text-[11px] font-semibold text-emerald-400">{chatPreview.username}</span>
-                <span className="block break-words text-xs leading-snug text-white/90 line-clamp-3">
+                <span className="block break-words text-xs leading-snug text-white/90 line-clamp-2">
                   {chatPreview.message.length > 80
                     ? `${chatPreview.message.slice(0, 80).trimEnd()}...`
                     : chatPreview.message}

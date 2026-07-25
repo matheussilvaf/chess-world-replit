@@ -85,3 +85,53 @@ canvas {
   from { transform: translateY(-4px); opacity: 0; }
   to   { transform: translateY(0);    opacity: 1; }
 }
+
+/* ─── HTML player name-tag overlay ─────────────────────────────────────────
+   Rendered by PlayerNameTags.tsx over the Phaser canvas.
+   Each .player-nametag-wrap is position:absolute top:0 left:0 and moved with
+   CSS transform; the inner pill is the visible badge.
+──────────────────────────────────────────────────────────────────────────── */
+.player-nametag-wrap {
+  position: absolute;
+  top: 0;
+  left: 0;
+  pointer-events: none;
+  will-change: transform;
+}
+
+.player-nametag {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  background: rgba(8, 12, 24, 0.80);
+  border: 1px solid rgba(255, 255, 255, 0.13);
+  border-radius: 9999px;
+  padding: 2px 8px 2px 7px;
+  white-space: nowrap;
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+  box-shadow: 0 1px 10px rgba(0, 0, 0, 0.55), 0 0 0 0.5px rgba(255,255,255,0.05) inset;
+  transform: translateY(-100%); /* sit above the computed anchor point */
+}
+
+.player-nametag-name {
+  font-size: 10px;
+  font-weight: 700;
+  color: #f1f5f9;
+  letter-spacing: 0.02em;
+  line-height: 1;
+}
+
+.player-nametag-elo {
+  font-size: 9px;
+  font-weight: 600;
+  color: #fbbf24;
+  letter-spacing: 0.01em;
+  line-height: 1;
+}
+
+.player-nametag-elo::before {
+  content: '★ ';
+  font-size: 7px;
+  vertical-align: middle;
+}
