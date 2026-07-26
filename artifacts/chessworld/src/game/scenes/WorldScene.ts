@@ -72,7 +72,7 @@ export class WorldScene extends Phaser.Scene {
   private localPlayerId: string = '';
 
   private lastSentTime = 0;
-  private readonly SEND_INTERVAL = 50;
+  private readonly SEND_INTERVAL = 33;
   private movementLocked = false;
   private defaultZoom = MAP_CONFIG.zoom.default;
   private boardZoom = MAP_CONFIG.zoom.board;
@@ -140,6 +140,27 @@ export class WorldScene extends Phaser.Scene {
 
   preload() {
     (window as any).decomp = decomp;
+
+    // Dark backdrop + progress bar while assets download (was: green flash)
+    this.cameras.main.setBackgroundColor('#0f172a');
+    const cx = this.scale.width / 2;
+    const cy = this.scale.height / 2;
+    const barBg = this.add.rectangle(cx, cy, 320, 10, 0x1e293b).setScrollFactor(0).setDepth(9999);
+    const bar = this.add.rectangle(cx - 158, cy, 4, 6, 0xf59e0b).setOrigin(0, 0.5).setScrollFactor(0).setDepth(9999);
+    const label = this.add.text(cx, cy - 26, 'Carregando mundo… 0%', {
+      fontFamily: 'ui-sans-serif, system-ui, sans-serif',
+      fontSize: '14px',
+      color: '#cbd5e1',
+    }).setOrigin(0.5).setScrollFactor(0).setDepth(9999);
+    this.load.on('progress', (v: number) => {
+      bar.width = Math.max(4, 316 * v);
+      label.setText(`Carregando mundo… ${Math.round(v * 100)}%`);
+    });
+    this.load.once('complete', () => {
+      bar.destroy();
+      barBg.destroy();
+      label.destroy();
+    });
 
     this.load.tilemapTiledJSON(MAP_CONFIG.key, MAP_CONFIG.path);
 
@@ -862,6 +883,9 @@ export class WorldScene extends Phaser.Scene {
       this.pathWaypoints = waypoints;
       this.currentWaypointIndex = 1;
       this.target = this.pathWaypoints[this.currentWaypointIndex];
+      // New destination: emit on the very next frame instead of waiting out
+      // the throttle window, so remote clients see the direction change ASAP.
+      this.lastSentTime = 0;
     } else {
       this.stopMovement();
     }
@@ -2165,6 +2189,10 @@ export class WorldScene extends Phaser.Scene {
     return this.currentSeatInfo !== null;
   }
 
+  public getCurrentSeatTableId(): string | null {
+    return this.currentSeatInfo?.tableId ?? null;
+  }
+
   // =========================================================
   // Map Switching
   // =========================================================
@@ -2280,12 +2308,18 @@ export class WorldScene extends Phaser.Scene {
       }
     }
 
+    // Register clickable spectator seats for module tables (runtime ids)
+    this.interactionSystem?.addModuleChessInteractions(this.arenaManager.getInteractionFeeds());
+
     console.log('[WorldScene] Arena modules loaded, tables registered:', tableAnchors.size,
       'pathfinder rebuilt with origin Y:', bounds.minY);
   }
 
   public removeArenaModules() {
     if (!this.arenaManager) return;
+
+    // Drop module spectator-seat click zones before the tables disappear
+    this.interactionSystem?.removeModuleChessInteractions();
 
     // 1. Get reception dimensions from the cached TMJ
     const tmjData = this.cache.tilemap.get(this.currentMapKey)?.data;

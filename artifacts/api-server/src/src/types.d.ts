@@ -3,6 +3,7 @@ declare module '@colyseus/tools' {
   import type { Application } from 'express';
 
   export interface ConfigOptions {
+    initializeTransport?: (options: any) => any;
     initializeGameServer?: (gameServer: Server) => void;
     initializeExpress?: (app: Application) => void;
   }

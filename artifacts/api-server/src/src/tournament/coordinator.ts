@@ -35,8 +35,10 @@ export interface WorldRoomLike {
   roomName?: string;
   isBoardPlaying(boardId: string): boolean;
   hasPlayerById?(playerId: string): boolean;
+  hasActivePlayerById?(playerId: string): boolean;
   teleportTournamentPlayersToReception(tournamentId: string): void;
   tryForceStartTournamentMatch?(pairing: ForceStartPairing): 'started' | 'already' | 'missing' | 'busy';
+  resolveTournamentWalkover?(boardId: string, result: string, whitePlayerId: string, blackPlayerId: string): void;
 }
 // Registry instead of a single instance: the 'world' and 'arena' rooms are
 // both WorldRoom and used to overwrite each other here (and dispose set null),
@@ -535,9 +537,19 @@ async function ensureMatchesStarted(instance: TournamentInstance): Promise<void>
   }
 }
 
+// Counts consecutive short re-arms granted to a pairing whose players are
+// both present yet never started (see checkPresenceDeadlines).
+const bothPresentRearms = new Map<string, number>();
+let rearmTournamentId: string | null = null;
+
 async function checkPresenceDeadlines(instance: TournamentInstance): Promise<void> {
   const db = getClient();
   const now = new Date().toISOString();
+
+  if (rearmTournamentId !== instance.id) {
+    bothPresentRearms.clear();
+    rearmTournamentId = instance.id;
+  }
 
   const { data: expired } = await db
     .from('tournament_pairings')
@@ -587,16 +599,24 @@ async function checkPresenceDeadlines(instance: TournamentInstance): Promise<voi
     const blackPresent = blackPresence === true;
 
     if (whitePresent && blackPresent) {
-      // Both present but the board hasn't started (the playing case is
-      // handled above). Re-arm the deadline instead of clearing it: players
-      // who register, stay in the room, but never seat would otherwise leave
-      // the round stuck in round_active forever (no deadline, no result).
-      await db
-        .from('tournament_pairings')
-        .update({ presence_deadline: new Date(Date.now() + 120_000).toISOString() })
-        .eq('id', p.id)
-        .is('result', null);
-      continue;
+      // Both genuinely in the arena yet the board never started — the
+      // force-starter resolves this within seconds in the normal case, so
+      // grant at most two SHORT extra windows before double-forfeiting.
+      // Unlimited 120s re-arms here once kept a pairing hostage for many
+      // minutes; the round must never wedge open.
+      const attempts = (bothPresentRearms.get(p.id) ?? 0) + 1;
+      bothPresentRearms.set(p.id, attempts);
+      if (attempts <= 2) {
+        await db
+          .from('tournament_pairings')
+          .update({ presence_deadline: new Date(Date.now() + 30_000).toISOString() })
+          .eq('id', p.id)
+          .is('result', null);
+        continue;
+      }
+      console.warn(`[Coordinator] Board ${p.board_number}: both players present but match never started after extra windows — double forfeit`);
+      result = '-/-';
+      reason = 'forfeit';
     } else if (whitePresent && !blackPresent) {
       result = '+/-';
       reason = 'forfeit';
@@ -608,6 +628,13 @@ async function checkPresenceDeadlines(instance: TournamentInstance): Promise<voi
       reason = 'forfeit';
     }
 
+    // Last-instant in-memory re-check: the match may have started while the
+    // presence probes above awaited. The started_at CAS below is the durable
+    // guard; this avoids even attempting the write for a locally live board.
+    if (p.runtime_table_id && anyWorldRoomPlaying(p.runtime_table_id)) {
+      continue;
+    }
+
     const { data: updated, error: forfeitErr } = await db
       .from('tournament_pairings')
       .update({
@@ -617,14 +644,33 @@ async function checkPresenceDeadlines(instance: TournamentInstance): Promise<voi
       })
       .eq('id', p.id)
       .is('result', null)
+      // CAS: markPairingStarted() stamps started_at the moment a match
+      // starts — a pairing that started meanwhile must never be forfeited.
+      .is('started_at', null)
       .select('id')
       .maybeSingle();
 
     if (forfeitErr) {
       console.error(`[Coordinator] Forfeit update FAILED on board ${p.board_number}:`, forfeitErr.message);
     }
-    console.log(`[Coordinator] Forfeit on board ${p.board_number}: ${result}`);
-    if (updated) anyUpdated = true;
+    if (!updated && !forfeitErr) {
+      console.log(`[Coordinator] Forfeit on board ${p.board_number} skipped — match started/decided concurrently`);
+    }
+    if (updated) {
+      console.log(`[Coordinator] Forfeit on board ${p.board_number}: ${result}`);
+      anyUpdated = true;
+      bothPresentRearms.delete(p.id);
+      // Tell the arena rooms RIGHT NOW: free the board, stand the winner up,
+      // notify both players. Without this the seated winner stared at a
+      // 'waiting' board forever even though the forfeit was already written.
+      if (p.runtime_table_id) {
+        for (const room of worldRooms) {
+          try {
+            room.resolveTournamentWalkover?.(p.runtime_table_id, result, p.white_player_id ?? '', p.black_player_id ?? '');
+          } catch { /* disposed */ }
+        }
+      }
+    }
   }
 
   if (anyUpdated) {
@@ -1722,11 +1768,13 @@ async function ensureEngineOwnership(instance: TournamentInstance): Promise<bool
 }
 
 async function isPlayerPresent(playerId: string): Promise<boolean | null> {
-  // Presence for W.O. purposes means "inside a WORLD room", i.e. the player
-  // can actually be seated (force-start included). The registration lobby
-  // (TournamentRoom) does NOT count: a player parked only in the lobby can
-  // never be force-started, and counting them as present re-armed the
-  // presence deadline forever, leaving the round stuck in round_active.
+  // Presence for W.O. purposes means "inside the ARENA room with a LIVE
+  // connection", i.e. somewhere the player can actually be seated or
+  // force-started. The registration lobby (TournamentRoom) and the outdoor
+  // plaza do NOT count: a player parked there past the presence deadline is a
+  // no-show. The live-connection requirement (hasActivePlayerById) guards
+  // against ghost state entries — a half-open socket once kept a W.O.
+  // hostage for ~16 minutes until TCP gave up on the dead peer.
   if (worldRooms.size === 0) {
     // No world rooms on this process: no view of who is online, so make no
     // presence decision at all. Returning "present" here made a room-less
@@ -1736,7 +1784,11 @@ async function isPlayerPresent(playerId: string): Promise<boolean | null> {
   }
   for (const room of worldRooms) {
     try {
-      if (room.hasPlayerById?.(playerId)) return true;
+      if (room.roomName !== 'arena') continue;
+      const present = room.hasActivePlayerById
+        ? room.hasActivePlayerById(playerId)
+        : room.hasPlayerById?.(playerId);
+      if (present) return true;
     } catch { /* disposed */ }
   }
   return false;

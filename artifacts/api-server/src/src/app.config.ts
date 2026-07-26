@@ -1,4 +1,5 @@
 import type { ConfigOptions } from "@colyseus/tools";
+import { WebSocketTransport } from "@colyseus/ws-transport";
 import { monitor } from "@colyseus/monitor";
 import { WorldRoom } from "./rooms/WorldRoom.js";
 import { TournamentRoom } from "./rooms/TournamentRoom.js";
@@ -11,6 +12,17 @@ import { coordinatorRouter } from "./tournament/coordinatorRoutes.js";
 import { startCoordinator } from "./tournament/coordinator.js";
 
 const config: ConfigOptions = {
+  // Explicit liveness probing: without app-level pings a half-open socket
+  // (phone in airplane mode, killed process behind a proxy) can linger as a
+  // "connected" ghost for ~15 minutes until TCP gives up — long enough to
+  // hold W.O. decisions and matches hostage. 3s × 2 retries ≈ dead sockets
+  // detected within ~9 seconds.
+  initializeTransport: (options) => new WebSocketTransport({
+    ...options,
+    pingInterval: 3000,
+    pingMaxRetries: 2,
+  }),
+
   initializeGameServer: (gameServer) => {
     gameServer.define("world", WorldRoom).filterBy(["region"]);
     gameServer.define("arena", WorldRoom).filterBy(["region"]);

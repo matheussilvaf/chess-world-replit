@@ -248,6 +248,51 @@ export function GameCanvas() {
     return () => unsubColyseus();
   }, []);
 
+  // Reconcile after the tab comes back from background (minimized phone):
+  // patches keep flowing while hidden, but Phaser visuals and missed messages
+  // can leave the client stuck "seated" at a match the server already ended.
+  useEffect(() => {
+    let hiddenAt = 0;
+    const onVisibility = () => {
+      if (document.visibilityState === 'hidden') {
+        hiddenAt = Date.now();
+        return;
+      }
+      const hiddenFor = hiddenAt ? Date.now() - hiddenAt : 0;
+      if (hiddenFor < 3000) return;
+      const room = getActiveRoom();
+      if (!room || !room.state || !gameRef.current) return;
+      const scene = getWorldScene(gameRef.current);
+      if (!scene) return;
+
+      // Skip right after a tournament auto-seat: the new match may not have
+      // hit our state copy yet, and tearing the seat down would be wrong.
+      const seatAt = (window as any).__tournamentSeatAt || 0;
+      const freshlySeated = Date.now() - seatAt < 5000;
+
+      const chess = useChessStore.getState();
+      const matchGone =
+        !!chess.matchId && room.state.matches && !room.state.matches.get(chess.matchId);
+      if (matchGone && !freshlySeated) {
+        console.log('[GameCanvas] Reconcile: local match no longer on server — cleaning up');
+        scene.deactivateOverlayInteraction();
+        scene.unseatPlayer();
+        if (chess.boardId) scene.updateBoardStatus(chess.boardId, 'idle');
+        chess.reset();
+        useGameStore.getState().setOpponentDisconnected(null);
+      }
+
+      // Resync remote sprites (seat + position) and board visuals
+      room.state.players?.forEach((p: any, sid: string) => {
+        if (sid === room.sessionId) return;
+        scene.syncRemoteSeat(sid, (p.currentBoardId ?? '') as string, p.x, p.y);
+      });
+      room.state.boards?.forEach((b: any) => updateBoardVisual(scene, b, room));
+    };
+    document.addEventListener('visibilitychange', onVisibility);
+    return () => document.removeEventListener('visibilitychange', onVisibility);
+  }, []);
+
   function attemptListenerSetup() {
     if (!sceneReadyRef.current || !gameRef.current) return;
     const scene = getWorldScene(gameRef.current);
@@ -525,6 +570,29 @@ export function GameCanvas() {
     room.onMessage('opponent_forfeited', (_data: any) => {
       useGameStore.getState().setLastEvent('opponent_forfeited');
       useGameStore.getState().setOpponentDisconnected(null);
+    });
+
+    // Tournament W.O. decided by the coordinator sweep (match never started):
+    // free the seat, clear waiting UI and show the outcome toast.
+    room.onMessage('tournament_wo', (data: any) => {
+      useGameStore.getState().setLastEvent(`tournament_wo ${data.result}`);
+      useGameStore.getState().setOpponentDisconnected(null);
+      useGameStore.getState().setWoNotice({
+        boardId: data.boardId || '',
+        youWin: !!data.youWin,
+        result: data.result || '',
+      });
+      const chess = useChessStore.getState();
+      if (!chess.matchId && gameRef.current) {
+        const worldScene = getWorldScene(gameRef.current);
+        if (worldScene) {
+          if (worldScene.getCurrentSeatTableId() === data.boardId) {
+            worldScene.deactivateOverlayInteraction();
+            worldScene.unseatPlayer();
+          }
+          if (data.boardId) worldScene.updateBoardStatus(data.boardId, 'idle');
+        }
+      }
     });
 
     room.onMessage('draw_offered', (_data: any) => {

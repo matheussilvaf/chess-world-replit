@@ -98,7 +98,7 @@ export function BoardModal() {
   // I am the one waiting on the server
   if (waitingPlayerIsMe) {
     return (
-      <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70">
+      <div className="fixed inset-0 z-[1000] flex items-center justify-center p-4 bg-black/70">
         <div className="bg-slate-900 rounded-2xl border border-slate-700 w-full max-w-sm overflow-hidden shadow-2xl">
           <div className="p-6 text-center">
             <div className="w-16 h-16 mx-auto rounded-full bg-amber-500/20 border-2 border-amber-500/50 flex items-center justify-center mb-4">
@@ -131,7 +131,7 @@ export function BoardModal() {
   // Board has an active match - offer spectate
   if (isPlaying) {
     return (
-      <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70">
+      <div className="fixed inset-0 z-[1000] flex items-center justify-center p-4 bg-black/70">
         <div className="bg-slate-900 rounded-2xl border border-slate-700 w-full max-w-sm overflow-hidden shadow-2xl">
           <div className="p-6 text-center">
             <div className="w-16 h-16 mx-auto rounded-full bg-blue-500/20 border-2 border-blue-500/50 flex items-center justify-center mb-4">
@@ -167,7 +167,7 @@ export function BoardModal() {
     const categoryLabel = (boardState?.timeCategory || 'rapid').charAt(0).toUpperCase() + (boardState?.timeCategory || 'rapid').slice(1);
 
     return (
-      <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70">
+      <div className="fixed inset-0 z-[1000] flex items-center justify-center p-4 bg-black/70">
         <div className="bg-slate-900 rounded-2xl border border-slate-700 w-full max-w-sm overflow-hidden shadow-2xl">
           <div className="flex items-center justify-between px-5 py-4 border-b border-slate-700">
             <div className="flex items-center gap-3">
@@ -222,7 +222,7 @@ export function BoardModal() {
 
   // Default: Time control + side selection (only when board is idle)
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70">
+    <div className="fixed inset-0 z-[1000] flex items-center justify-center p-4 bg-black/70">
       <div className="bg-slate-900 rounded-2xl border border-slate-700 w-full max-w-sm overflow-hidden shadow-2xl">
         <div className="flex items-center justify-between px-5 py-4 border-b border-slate-700">
           <div>

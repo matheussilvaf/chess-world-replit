@@ -57,6 +57,7 @@ const MODULE_CONNECTORS: Record<string, { south: string; north?: string }> = {
 export class ArenaModuleManager {
   private scene: Phaser.Scene;
   private modules: ModuleInstance[] = [];
+  private interactionFeeds: Array<{ objects: any[]; anchors: any[]; offsetX: number; offsetY: number; remap: Map<string, string>; instanceId: string }> = [];
   private loaded = false;
   private doorBlockerBody: MatterJS.BodyType | null = null;
   private doorBlockerRect: { x: number; y: number; w: number; h: number } | null = null;
@@ -180,6 +181,19 @@ export class ArenaModuleManager {
 
       const moduleTables = tables.filter(t => t.moduleInstanceId === mod.instanceId);
       this.extractTableAnchors(tmjData, offsetX, offsetY, mod.instanceId, moduleTables, modInstance);
+
+      // Collect raw interaction + anchor objects so the InteractionSystem can
+      // register clickable spectator seats with runtime table ids.
+      const remap = new Map<string, string>();
+      for (const t of moduleTables) remap.set(t.localSlotId, t.runtimeTableId);
+      this.interactionFeeds.push({
+        objects: this.findObjectLayer(tmjData.layers, 'chess_tables_interactions') || [],
+        anchors: this.findObjectLayer(tmjData.layers, 'character_anchors') || [],
+        offsetX,
+        offsetY,
+        remap,
+        instanceId: mod.instanceId,
+      });
 
       this.modules.push(modInstance);
 
@@ -492,6 +506,10 @@ export class ArenaModuleManager {
     return rects;
   }
 
+  public getInteractionFeeds(): Array<{ objects: any[]; anchors: any[]; offsetX: number; offsetY: number; remap: Map<string, string>; instanceId: string }> {
+    return this.interactionFeeds;
+  }
+
   public removeAll() {
     for (const mod of this.modules) {
       for (const layer of mod.layers) layer.destroy();
@@ -500,6 +518,7 @@ export class ArenaModuleManager {
       if (mod.tilemap) mod.tilemap.destroy();
     }
     this.modules = [];
+    this.interactionFeeds = [];
     this.loaded = false;
   }
 

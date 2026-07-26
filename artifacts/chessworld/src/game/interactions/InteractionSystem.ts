@@ -501,12 +501,108 @@ export class InteractionSystem {
     return counts;
   }
 
+  // ── Dynamic module interactions (tournament arena) ────────────────────────
+  private moduleInteractionIds: number[] = [];
+  // Synthetic ids far above any Tiled object id: module TMJ object ids are
+  // small ints that would collide with the base map's ids in interactiveZones.
+  private nextDynamicId = 1_000_000;
+
+  /** Ingest spectator-seat interactions from dynamically rendered arena
+   *  modules. Module TMJs carry local slot ids (e.g. table_slot_center); the
+   *  coordinator assigns runtime table ids per tournament, so every tableId
+   *  is remapped before registering. Only spectator seats are ingested:
+   *  player seating in tournaments is server-driven, and the create-match
+   *  modal must never open on a tournament table. */
+  public addModuleChessInteractions(
+    feeds: Array<{
+      objects: any[];
+      anchors: any[];
+      offsetX: number;
+      offsetY: number;
+      remap: Map<string, string>;
+      instanceId: string;
+    }>,
+  ) {
+    for (const feed of feeds) {
+      // Same fallback rule as ArenaModuleManager.extractTableAnchors so the
+      // ids here always match the table registry.
+      const mapId = (localId: string) => feed.remap.get(localId) ?? `${feed.instanceId}_${localId}`;
+
+      for (const obj of feed.anchors) {
+        const props = this.getProps(obj);
+        if (props.anchorType !== 'chess_seat' || !props.tableId) continue;
+        this.anchors.push({
+          name: obj.name,
+          x: obj.x + feed.offsetX,
+          y: obj.y + feed.offsetY,
+          tableId: mapId(props.tableId as string),
+          role: props.role as string,
+          position: props.position as string | undefined,
+          side: props.side as string | undefined,
+          seatIndex: props.seatIndex as string | undefined,
+        });
+      }
+
+      for (const obj of feed.objects) {
+        const props = this.getProps(obj);
+        if (props.interaction !== 'spectator_seat' || !props.tableId) continue;
+        const id = this.nextDynamicId++;
+        const interaction: InteractionObject = {
+          id,
+          name: obj.name,
+          category: 'spectator_seat',
+          triggerMode: 'click',
+          x: obj.x + feed.offsetX,
+          y: obj.y + feed.offsetY,
+          width: obj.width || 0,
+          height: obj.height || 0,
+          properties: { ...props, tableId: mapId(props.tableId as string) },
+          interactionRadius: 80,
+        };
+        this.interactions.push(interaction);
+        this.moduleInteractionIds.push(id);
+
+        if (interaction.width > 0 && interaction.height > 0) {
+          const cx = interaction.x + interaction.width / 2;
+          const cy = interaction.y + interaction.height / 2;
+          const zone = this.scene.add.zone(cx, cy, interaction.width, interaction.height);
+          zone.setInteractive({ useHandCursor: true });
+          zone.setDepth(50);
+          zone.on('pointerdown', (pointer: Phaser.Input.Pointer) => {
+            pointer.event.stopPropagation();
+            this.handleClickInteraction(interaction);
+          });
+          this.interactiveZones.set(id, zone);
+        }
+      }
+    }
+    this.resolveAnchors();
+    console.log(`[InteractionSystem] Module spectator seats registered: ${this.moduleInteractionIds.length}`);
+  }
+
+  public removeModuleChessInteractions() {
+    if (this.moduleInteractionIds.length === 0) return;
+    const ids = new Set(this.moduleInteractionIds);
+    for (const id of ids) {
+      const zone = this.interactiveZones.get(id);
+      if (zone) {
+        zone.destroy();
+        this.interactiveZones.delete(id);
+      }
+    }
+    this.interactions = this.interactions.filter(i => !ids.has(i.id));
+    if (this.pendingNavigation && ids.has(this.pendingNavigation.id)) this.pendingNavigation = null;
+    if (this.proximityActive && ids.has(this.proximityActive.id)) this.proximityActive = null;
+    this.moduleInteractionIds = [];
+  }
+
   public destroy() {
     this.interactiveZones.forEach(zone => zone.destroy());
     this.interactiveZones.clear();
     this.interactions = [];
     this.zones = [];
     this.anchors = [];
+    this.moduleInteractionIds = [];
     this.proximityActive = null;
     this.currentZone = null;
     this.pendingNavigation = null;

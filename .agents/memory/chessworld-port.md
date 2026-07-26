@@ -116,3 +116,8 @@ The tester's headless browser has no WebGL context; Phaser 4 is WebGL-only (no C
 - `artifacts/api-server/src/src` is a byte-for-byte mirror of `server/src`, used only to run the server locally in the monorepo.
 - RULE: every Colyseus server change must land in BOTH trees before commit — `diff -rq server/src artifacts/api-server/src/src` must be empty. Entry/outer layers (server/index.ts, api-server app.ts/routes) are layout-specific and stay separate.
 - Jul 24 2026: synced ~1264 lines api-server→server (coordinator hardening, WorldRoom/TournamentRoom, draw handling, app.config /api rewrite — harmless on cloud); `npx tsc --noEmit` passes standalone in server/.
+
+### Lições sessão 2026-07 (W.O./espectador/perf)
+- Forfeit/W.O.: qualquer `await` entre pausar relógio e armar timer cria janela de reconexão — re-checar `hasActivePlayerById` depois de todo await E dentro do callback do timer; escrita de forfeit no banco exige CAS `.is('result',null).is('started_at',null)` + re-check `anyWorldRoomPlaying` imediatamente antes do write (markPairingStarted grava started_at no início da partida).
+- worldAssets.ts agora lista SÓ tilesets usados (17 removidos ~4MB, verificados por GID-walk em todos os TMJs vivos): mapa novo/editado que referencie tileset removido perde tiles silenciosamente — rodar o GID-walk de novo e re-adicionar a entrada.
+- Interações de módulos de arena NÃO vêm do loadFromTMJ (só mapa principal): ingerir via ArenaModuleManager feeds → InteractionSystem.addModuleChessInteractions, APENAS spectator_seat (player_seat/board abririam modal de amistoso em mesa de torneio), com remap localSlotId→runtimeTableId e ids sintéticos ≥1e6 (ids do Tiled colidem entre mapas).

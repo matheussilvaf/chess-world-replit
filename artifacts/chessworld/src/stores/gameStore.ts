@@ -55,6 +55,7 @@ interface GameState {
   lastEvent: string;
   /** Set when the opponent disconnects mid-tournament-match. Cleared on reconnect or forfeit. */
   opponentDisconnected: { reconnectDeadline: string; matchId: string; boardId: string } | null;
+  woNotice: { boardId: string; youWin: boolean; result: string } | null;
 
   setRegion: (region: Region) => void;
   setPlayerPosition: (pos: { x: number; y: number }) => void;
@@ -74,6 +75,7 @@ interface GameState {
   setChallengeColor: (color: 'w' | 'b' | null) => void;
   setLastEvent: (event: string) => void;
   setOpponentDisconnected: (info: { reconnectDeadline: string; matchId: string; boardId: string } | null) => void;
+  setWoNotice: (notice: { boardId: string; youWin: boolean; result: string } | null) => void;
   toggleChat: () => void;
   toggleProfile: () => void;
   toggleFriends: () => void;
@@ -113,6 +115,7 @@ export const useGameStore = create<GameState>((set, get) => ({
   challengeColor: null,
   lastEvent: '',
   opponentDisconnected: null,
+  woNotice: null,
 
   setRegion: (region) => set({ region }),
   setPlayerPosition: (pos) => set({ playerPosition: pos }),
@@ -132,6 +135,7 @@ export const useGameStore = create<GameState>((set, get) => ({
   setChallengeColor: (color) => set({ challengeColor: color }),
   setLastEvent: (event) => set({ lastEvent: event }),
   setOpponentDisconnected: (info) => set({ opponentDisconnected: info }),
+  setWoNotice: (notice) => set({ woNotice: notice }),
   toggleChat: () => set((s) => ({ showChat: !s.showChat, unreadChat: !s.showChat ? 0 : s.unreadChat })),
   toggleProfile: () => set((s) => ({ showProfile: !s.showProfile })),
   toggleFriends: () => set((s) => ({ showFriends: !s.showFriends })),

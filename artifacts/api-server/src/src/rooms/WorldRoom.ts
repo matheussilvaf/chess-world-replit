@@ -22,8 +22,10 @@ const activeGames = new Map<string, Chess>();
 
 export class WorldRoom extends Room<WorldState> {
   private readonly TICK_RATE = 20;
-  /** Timer per matchId for the tournament disconnect grace period. */
-  private disconnectTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  /** Per-player reconnect grace timers: matchId → (playerId → timer). A
+   *  single timer per match let a second disconnect overwrite the first and
+   *  let a refresh by EITHER participant cancel the other one's countdown. */
+  private disconnectTimers = new Map<string, Map<string, ReturnType<typeof setTimeout>>>();
   /** Tracks how many draw offers each player has made per match: matchId → {white: n, black: n} */
   private drawOfferCounts = new Map<string, { white: number; black: number }>();
   // matchId -> color of the player whose draw offer is currently awaiting an answer
@@ -32,6 +34,9 @@ export class WorldRoom extends Room<WorldState> {
   onCreate(options: any) {
     this.setState(new WorldState());
     this.setSimulationInterval(() => this.tick(), 1000 / this.TICK_RATE);
+    // Ship state patches at 30Hz (default 20Hz): remote movement reaches
+    // other clients ~17ms sooner on average; patches are tiny position deltas.
+    this.setPatchRate(1000 / 30);
     this.maxClients = 100;
 
     coordinator.registerWorldRoom(this);
@@ -196,6 +201,11 @@ export class WorldRoom extends Room<WorldState> {
 
       const match = this.state.matches.get(matchId);
       if (!match || match.status !== 'playing') return;
+
+      if (match.clockPausedAt > 0) {
+        client.send('error', { message: 'Partida pausada — aguardando reconexão do adversário' });
+        return;
+      }
 
       const game = activeGames.get(matchId);
       if (!game) return;
@@ -563,15 +573,29 @@ export class WorldRoom extends Room<WorldState> {
       }
     });
 
-    // Cancel any active disconnect grace timer (player reconnected in time)
+    // Cancel this player's OWN disconnect grace timer (they came back in
+    // time). Timers are per-player: a refresh by the still-connected player
+    // must never cancel the countdown of the one who is actually gone.
     this.state.matches.forEach((match, matchId) => {
       if (match.status !== 'playing') return;
       if (match.whitePlayerId !== playerId && match.blackPlayerId !== playerId) return;
-      const timer = this.disconnectTimers.get(matchId);
-      if (!timer) return;
-      clearTimeout(timer);
-      this.disconnectTimers.delete(matchId);
-      console.log(`[WorldRoom] ${playerId} reconnected to match ${matchId}, grace timer cancelled`);
+      const timers = this.disconnectTimers.get(matchId);
+      const own = timers?.get(playerId);
+      const wasPaused = match.clockPausedAt > 0;
+      // No grace timer AND clocks running → no disconnect in progress here.
+      // (own may be missing even mid-disconnect: the reconnect can land while
+      // onLeave is still awaiting the config, before the timer is installed.)
+      if (!own && !wasPaused) return;
+      if (own && timers) {
+        clearTimeout(own);
+        timers.delete(playerId);
+        console.log(`[WorldRoom] ${playerId} reconnected to match ${matchId}, grace timer cancelled`);
+      }
+      if (!timers || timers.size === 0) {
+        // Everyone is back — unfreeze the clocks.
+        this.disconnectTimers.delete(matchId);
+        this.resumeMatchClock(match);
+      }
       // Notify opponent of reconnection
       const opponentId = match.whitePlayerId === playerId ? match.blackPlayerId : match.whitePlayerId;
       const opponentSession = this.findSessionByPlayerId(opponentId);
@@ -582,95 +606,139 @@ export class WorldRoom extends Room<WorldState> {
 
   async onLeave(client: Client, consented: boolean) {
     const player = this.state.players.get(client.sessionId);
-    if (player) {
-      console.log(`[WorldRoom] Player leaving: ${player.username} (${client.sessionId}) | consented: ${consented}`);
+    if (!player) return;
 
-      this.state.boards.forEach((board) => {
-        if (board.waitingPlayerId === player.id) {
-          this.resetBoard(board);
+    const playerId = player.id;
+    const username = player.username;
+    console.log(`[WorldRoom] Player leaving: ${username} (${client.sessionId}) | consented: ${consented}`);
+
+    // --- Synchronous state cleanup FIRST, before ANY await. A hung config or
+    // DB call here once left ghost players in state for many minutes, and the
+    // W.O. sweep kept counting them as "present" the whole time.
+    this.state.boards.forEach((board) => {
+      if (board.waitingPlayerId === playerId && board.status === 'waiting') {
+        this.resetBoard(board);
+      }
+    });
+    this.state.voiceParticipants.delete(client.sessionId);
+    this.state.players.delete(client.sessionId);
+    console.log(`[WorldRoom] Player removed: ${username} | remaining: ${this.state.players.size}`);
+
+    const affected: [string, MatchState][] = [];
+    this.state.matches.forEach((match, matchId) => {
+      if (match.status !== 'playing') return;
+      if (match.whitePlayerId === playerId || match.blackPlayerId === playerId) {
+        affected.push([matchId, match]);
+      }
+    });
+    if (affected.length === 0) return;
+
+    // Freeze both clocks immediately (synchronously) for every affected match
+    // so nobody's time burns while their opponent is offline.
+    for (const [, match] of affected) this.pauseMatchClock(match);
+
+    // Reconnect window length (W.O. timeout from config; default 30s)
+    let woGraceMs = 30_000;
+    try {
+      const cfg = await coordinator.loadConfig();
+      woGraceMs = ((cfg.woTimeoutSeconds ?? 30)) * 1_000;
+    } catch { /* use default */ }
+
+    for (const [matchId, match] of affected) {
+      const isWhite = match.whitePlayerId === playerId;
+      const opponentId = isWhite ? match.blackPlayerId : match.whitePlayerId;
+      const isTournamentMatch = match.boardId.includes('_table_');
+
+      // The player may have reconnected (fresh session) while we awaited the
+      // config above — never arm a forfeit timer against a present player,
+      // and unfreeze the clocks we paused if nobody else is in a grace window.
+      if (this.hasActivePlayerById(playerId)) {
+        const pending = this.disconnectTimers.get(matchId);
+        if (!pending || pending.size === 0) {
+          this.disconnectTimers.delete(matchId);
+          this.resumeMatchClock(match);
         }
+        console.log(`[WorldRoom] ${playerId} already back before grace timer armed for ${matchId} — no W.O. timer`);
+        continue;
+      }
+
+      // A deliberate exit (tab closed / logout) from a FRIENDLY match is an
+      // immediate abandon — the player chose to leave. Tournament matches
+      // always get the reconnect window; so do accidental drops in friendlies
+      // (mobile screen lock, network blip).
+      if (!isTournamentMatch && consented) {
+        const m = this.state.matches.get(matchId);
+        if (!m || m.status !== 'playing') continue;
+        m.status = 'finished';
+        m.result = 'abandon';
+        m.winnerId = opponentId;
+        activeGames.delete(matchId);
+        await this.broadcastMatchEnd(m);
+        this.cleanupMatchBoard(m);
+        this.state.matches.delete(matchId);
+        continue;
+      }
+
+      let timers = this.disconnectTimers.get(matchId);
+      if (!timers) {
+        timers = new Map();
+        this.disconnectTimers.set(matchId, timers);
+      }
+      const existing = timers.get(playerId);
+      if (existing) clearTimeout(existing);
+
+      const opponentSession = this.findSessionByPlayerId(opponentId);
+      const opponentClient = opponentSession ? this.clients.find(c => c.sessionId === opponentSession) : null;
+      const reconnectDeadline = new Date(Date.now() + woGraceMs).toISOString();
+
+      opponentClient?.send('opponent_disconnected', {
+        matchId,
+        boardId: match.boardId,
+        reconnectDeadline,
+        disconnectedPlayerId: playerId,
       });
 
-      const abandonedMatches: MatchState[] = [];
-      const matchEntries: [string, MatchState][] = [];
-      this.state.matches.forEach((match, matchId) => matchEntries.push([matchId, match]));
-
-      // Load WO grace period from config (default 30s)
-      let woGraceMs = 30_000;
-      try {
-        const cfg = await coordinator.loadConfig();
-        woGraceMs = ((cfg.woTimeoutSeconds ?? 30)) * 1_000;
-      } catch { /* use default */ }
-
-      for (const [matchId, match] of matchEntries) {
-        if (match.status === 'playing') {
-          const isWhite = match.whitePlayerId === player.id;
-          const isBlack = match.blackPlayerId === player.id;
-          if (!(isWhite || isBlack)) continue;
-
-          const isTournamentMatch = match.boardId.includes('_table_');
-
-          if (isTournamentMatch) {
-            // Tournament match: give the player a reconnect grace window instead
-            // of immediately forfeiting. Cancel any existing timer for safety.
-            if (this.disconnectTimers.has(matchId)) clearTimeout(this.disconnectTimers.get(matchId)!);
-
-            const opponentId = isWhite ? match.blackPlayerId : match.whitePlayerId;
-            const opponentSession = this.findSessionByPlayerId(opponentId);
-            const opponentClient = opponentSession ? this.clients.find(c => c.sessionId === opponentSession) : null;
-            const reconnectDeadline = new Date(Date.now() + woGraceMs).toISOString();
-
-            opponentClient?.send('opponent_disconnected', {
-              matchId,
-              boardId: match.boardId,
-              reconnectDeadline,
-              disconnectedPlayerId: player.id,
-            });
-
-            const timer = setTimeout(async () => {
-              this.disconnectTimers.delete(matchId);
-              const m = this.state.matches.get(matchId);
-              if (!m || m.status !== 'playing') return;
-              // Player didn't reconnect in time → forfeit
-              m.status = 'finished';
-              m.result = 'abandon';
-              m.winnerId = isWhite ? m.blackPlayerId : m.whitePlayerId;
-              activeGames.delete(matchId);
-              await this.broadcastMatchEnd(m);
-              this.cleanupMatchBoard(m);
-              this.state.matches.delete(matchId);
-              opponentClient?.send('opponent_forfeited', { matchId, reason: 'disconnect_timeout' });
-              console.log(`[WorldRoom] W.O. awarded: ${player.id} did not reconnect to match ${matchId}`);
-            }, woGraceMs);
-
-            this.disconnectTimers.set(matchId, timer);
-            console.log(`[WorldRoom] Disconnect grace timer started for ${player.id} in match ${matchId} (${woGraceMs / 1000}s)`);
-          } else {
-            // Non-tournament match: immediate abandon (existing behaviour)
-            match.status = 'finished';
-            match.result = 'abandon';
-            match.winnerId = isWhite ? match.blackPlayerId : match.whitePlayerId;
-            activeGames.delete(matchId);
-            await this.broadcastMatchEnd(match);
-            this.cleanupMatchBoard(match);
-            abandonedMatches.push(match);
-          }
+      const timer = setTimeout(async () => {
+        const byPlayer = this.disconnectTimers.get(matchId);
+        byPlayer?.delete(playerId);
+        const m = this.state.matches.get(matchId);
+        if (!m || m.status !== 'playing') {
+          if (byPlayer && byPlayer.size === 0) this.disconnectTimers.delete(matchId);
+          return;
         }
-      }
+        // Belt & suspenders: if a reconnect slipped past timer cancellation,
+        // never forfeit a player who is actually connected right now.
+        if (this.hasActivePlayerById(playerId)) {
+          if (byPlayer && byPlayer.size === 0) {
+            this.disconnectTimers.delete(matchId);
+            this.resumeMatchClock(m);
+          }
+          console.log(`[WorldRoom] Grace timer expired for ${playerId} but they are present — no W.O.`);
+          return;
+        }
+        // If the opponent is ALSO inside their own grace window, nobody wins.
+        const bothGone = !!byPlayer && byPlayer.size > 0;
+        m.status = 'finished';
+        m.result = 'abandon';
+        m.winnerId = bothGone ? '' : opponentId;
+        activeGames.delete(matchId);
+        await this.broadcastMatchEnd(m);
+        this.cleanupMatchBoard(m);
+        this.state.matches.delete(matchId);
+        const oppSession = this.findSessionByPlayerId(opponentId);
+        const oppClient = oppSession ? this.clients.find(c => c.sessionId === oppSession) : null;
+        oppClient?.send('opponent_forfeited', { matchId, reason: 'disconnect_timeout' });
+        console.log(`[WorldRoom] W.O. awarded: ${playerId} did not reconnect to match ${matchId}${bothGone ? ' (both absent — double forfeit)' : ''}`);
+      }, woGraceMs);
 
-      for (const match of abandonedMatches) {
-        this.state.matches.delete(match.id);
-      }
-
-      this.state.voiceParticipants.delete(client.sessionId);
-      this.state.players.delete(client.sessionId);
-      console.log(`[WorldRoom] Player removed: ${player.username} | remaining: ${this.state.players.size}`);
+      timers.set(playerId, timer);
+      console.log(`[WorldRoom] Disconnect grace timer started for ${playerId} in match ${matchId} (${woGraceMs / 1000}s)`);
     }
   }
 
   onDispose() {
     // Clear all disconnect grace timers so they don't fire after room disposal.
-    this.disconnectTimers.forEach((timer) => clearTimeout(timer));
+    this.disconnectTimers.forEach((timers) => timers.forEach((t) => clearTimeout(t)));
     this.disconnectTimers.clear();
     // Only drop games belonging to THIS room — activeGames is module-level
     // and shared between the 'world' and 'arena' rooms; clearing everything
@@ -811,6 +879,8 @@ export class WorldRoom extends Room<WorldState> {
     this.state.matches.forEach((match, matchId) => entries.push([matchId, match]));
     for (const [matchId, match] of entries) {
       if (match.status !== 'playing') continue;
+      // Clocks are frozen during a reconnect window — no flag falls.
+      if (match.clockPausedAt > 0) continue;
 
       const elapsed = now - match.lastMoveAt;
       if (match.turn === 'w') {
@@ -862,6 +932,60 @@ export class WorldRoom extends Room<WorldState> {
     return false;
   }
 
+  /** Like hasPlayerById, but the player must ALSO have a live client attached.
+   *  Guards the W.O. sweep against ghost state entries (half-open sockets or
+   *  a stalled onLeave) that otherwise count as "present" for minutes. */
+  hasActivePlayerById(playerId: string): boolean {
+    let sessionId: string | null = null;
+    this.state.players.forEach((p, sid) => {
+      if (p.id === playerId) sessionId = sid;
+    });
+    if (!sessionId) return false;
+    return this.clients.some((c) => c.sessionId === sessionId);
+  }
+
+  /** Freeze both clocks: bank the elapsed time into the side to move, then stop. */
+  private pauseMatchClock(match: MatchState) {
+    if (match.status !== 'playing' || match.clockPausedAt > 0) return;
+    const now = Date.now();
+    const elapsed = Math.max(0, now - match.lastMoveAt);
+    if (match.turn === 'w') {
+      match.whiteTimeMs = Math.max(0, match.whiteTimeMs - elapsed);
+    } else {
+      match.blackTimeMs = Math.max(0, match.blackTimeMs - elapsed);
+    }
+    match.lastMoveAt = now;
+    match.clockPausedAt = now;
+    console.log(`[WorldRoom] Clocks paused for match ${match.id}`);
+  }
+
+  private resumeMatchClock(match: MatchState) {
+    if (match.clockPausedAt === 0) return;
+    match.clockPausedAt = 0;
+    match.lastMoveAt = Date.now();
+    console.log(`[WorldRoom] Clocks resumed for match ${match.id}`);
+  }
+
+  /** Coordinator callback after a W.O. forfeit is written: free the board,
+   *  stand the participants up and tell them the outcome in real time. */
+  resolveTournamentWalkover(boardId: string, result: string, whitePlayerId: string, blackPlayerId: string) {
+    const board = this.state.boards.get(boardId);
+    if (board && board.status !== 'playing') {
+      this.resetBoard(board);
+    }
+    const winnerId = result === '+/-' ? whitePlayerId : result === '-/+' ? blackPlayerId : '';
+    for (const pid of [whitePlayerId, blackPlayerId]) {
+      if (!pid) continue;
+      const sessionId = this.findSessionByPlayerId(pid);
+      if (!sessionId) continue;
+      const p = this.state.players.get(sessionId);
+      if (p && p.currentBoardId === boardId) p.currentBoardId = '';
+      const c = this.clients.find((cl) => cl.sessionId === sessionId);
+      c?.send('tournament_wo', { boardId, result, winnerId, youWin: !!winnerId && pid === winnerId });
+    }
+    console.log(`[WorldRoom] W.O. resolved on ${boardId}: ${result}`);
+  }
+
   private cleanupMatchBoard(match: MatchState) {
     const board = this.state.boards.get(match.boardId);
     if (board) {
@@ -878,6 +1002,14 @@ export class WorldRoom extends Room<WorldState> {
     // Clear draw offer counters for this match
     this.drawOfferCounts.delete(match.id);
     this.pendingDrawOffers.delete(match.id);
+
+    // Central place every match-end path passes through: make sure no
+    // reconnect grace timer survives the match it belonged to.
+    const timers = this.disconnectTimers.get(match.id);
+    if (timers) {
+      timers.forEach((t) => clearTimeout(t));
+      this.disconnectTimers.delete(match.id);
+    }
   }
 
   private async broadcastMatchEnd(match: MatchState): Promise<void> {
@@ -905,7 +1037,9 @@ export class WorldRoom extends Room<WorldState> {
         } else if (match.winnerId === match.blackPlayerId) {
           result = '0-1';
         } else {
-          result = '1/2-1/2';
+          // An abandon with no winner means BOTH players vanished during
+          // their grace windows — that is a double forfeit, not a draw.
+          result = match.result === 'abandon' ? '-/-' : '1/2-1/2';
         }
       } else {
         result = '1/2-1/2';
@@ -940,7 +1074,8 @@ export class WorldRoom extends Room<WorldState> {
       await coordinator.finishTournamentMatch(finishParams);
 
       // Update player profile stats only when pairing was successfully updated
-      if (pairing.updated && pairing.whitePlayerId && pairing.blackPlayerId) {
+      // (skip double forfeits — there is no winner and no draw to credit)
+      if (pairing.updated && pairing.whitePlayerId && pairing.blackPlayerId && result !== '-/-') {
         await coordinator.updateProfileStats(pairing.whitePlayerId, pairing.blackPlayerId, result);
       }
     } catch (err: any) {

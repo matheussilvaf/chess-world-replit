@@ -23,6 +23,8 @@ export class MatchState extends Schema {
   lastMoveTo!: string;
   winnerId!: string;
   result!: string;
+  /** Epoch ms when both clocks were frozen (reconnect window); 0 = running. */
+  clockPausedAt!: number;
 
   constructor() {
     super();
@@ -48,6 +50,7 @@ export class MatchState extends Schema {
     this.lastMoveTo = '';
     this.winnerId = '';
     this.result = '';
+    this.clockPausedAt = 0;
   }
 }
 
@@ -74,4 +77,5 @@ defineTypes(MatchState, {
   lastMoveTo: 'string',
   winnerId: 'string',
   result: 'string',
+  clockPausedAt: 'number',
 });

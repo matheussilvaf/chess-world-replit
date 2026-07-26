@@ -6,7 +6,7 @@ interface Snapshot {
   timestamp: number;
 }
 
-const INTERPOLATION_DELAY_MS = 100;
+const INTERPOLATION_DELAY_MS = 70;
 const MAX_BUFFER_SIZE = 10;
 
 export class RemotePlayerInterpolator {
@@ -30,8 +30,8 @@ export class RemotePlayerInterpolator {
     if (this.buffer.length < 2) {
       if (this.buffer.length === 1) {
         const target = this.buffer[0];
-        this.currentX = Phaser.Math.Linear(this.currentX, target.x, 0.15);
-        this.currentY = Phaser.Math.Linear(this.currentY, target.y, 0.15);
+        this.currentX = Phaser.Math.Linear(this.currentX, target.x, 0.3);
+        this.currentY = Phaser.Math.Linear(this.currentY, target.y, 0.3);
       }
       return { x: this.currentX, y: this.currentY };
     }
@@ -57,10 +57,11 @@ export class RemotePlayerInterpolator {
       this.currentX = Phaser.Math.Linear(prev.x, next.x, t);
       this.currentY = Phaser.Math.Linear(prev.y, next.y, t);
     } else {
-      // Extrapolate towards latest
+      // Extrapolate towards latest — catch up fast enough that a burst of
+      // missed patches doesn't leave the sprite visibly dragging behind.
       const latest = this.buffer[this.buffer.length - 1];
-      this.currentX = Phaser.Math.Linear(this.currentX, latest.x, 0.15);
-      this.currentY = Phaser.Math.Linear(this.currentY, latest.y, 0.15);
+      this.currentX = Phaser.Math.Linear(this.currentX, latest.x, 0.3);
+      this.currentY = Phaser.Math.Linear(this.currentY, latest.y, 0.3);
     }
 
     // Clean old snapshots

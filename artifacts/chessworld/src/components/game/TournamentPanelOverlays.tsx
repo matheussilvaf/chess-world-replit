@@ -97,23 +97,19 @@ function rectsEqual(a: PanelRect | undefined, b: PanelRect | undefined): boolean
 interface ScaledAnchorPanelProps {
   rect: PanelRect;
   baseWidth: number;
-  baseHeight: number;
   children: ReactNode;
 }
 
-function ScaledAnchorPanel({ rect, baseWidth, baseHeight, children }: ScaledAnchorPanelProps) {
-  const scaleX = rect.width / baseWidth;
-  const scaleY = rect.height / baseHeight;
-  const scale = Math.min(scaleX, scaleY);
-
-  const scaledW = baseWidth * scale;
-  const scaledH = baseHeight * scale;
-  const offsetX = (rect.width - scaledW) / 2;
-  const offsetY = (rect.height - scaledH) / 2;
+function ScaledAnchorPanel({ rect, baseWidth, children }: ScaledAnchorPanelProps) {
+  // Fill the ENTIRE anchor rect: uniform scale locked to the rect width, and
+  // the content box made exactly rect.height/scale tall — no letterboxing.
+  // (Math.min of both axes left wide anchors with big empty side margins.)
+  const scale = rect.width / baseWidth;
+  const innerHeight = scale > 0 ? rect.height / scale : 0;
 
   return (
     <div
-      className="fixed z-[600] overflow-hidden"
+      className="fixed z-[600]"
       style={{
         left: rect.x,
         top: rect.y,
@@ -122,13 +118,13 @@ function ScaledAnchorPanel({ rect, baseWidth, baseHeight, children }: ScaledAnch
       }}
     >
       <div
-        className="rounded-lg border border-slate-700/80 bg-slate-900/95 backdrop-blur-sm shadow-xl shadow-black/40"
+        className="rounded-lg border border-slate-700/80 bg-slate-900/95 backdrop-blur-sm shadow-xl shadow-black/40 overflow-hidden"
         style={{
           position: 'absolute',
-          left: offsetX,
-          top: offsetY,
+          left: 0,
+          top: 0,
           width: baseWidth,
-          height: baseHeight,
+          height: innerHeight,
           transform: `scale(${scale})`,
           transformOrigin: 'top left',
         }}
@@ -140,9 +136,7 @@ function ScaledAnchorPanel({ rect, baseWidth, baseHeight, children }: ScaledAnch
 }
 
 const REGISTRY_BASE_WIDTH = 240;
-const REGISTRY_BASE_HEIGHT = 320;
 const STANDINGS_BASE_WIDTH = 280;
-const STANDINGS_BASE_HEIGHT = 380;
 
 export function TournamentPanelOverlays() {
   const { user } = useAuthStore();
@@ -262,9 +256,14 @@ export function TournamentPanelOverlays() {
 
   // Must be called before any early returns (Rules of Hooks).
   const opponentDisconnected = useGameStore(s => s.opponentDisconnected);
+  const woNotice = useGameStore(s => s.woNotice);
 
-  if (!panelRects || !connected) return null;
-  if (state.status === 'idle' && !state.startsAt) return null;
+  // The W.O. toast must survive the early returns below — the notified player
+  // may be anywhere (plaza, reception) when the walkover is decided.
+  const woToast = woNotice ? <TournamentWoToast notice={woNotice} /> : null;
+
+  if (!panelRects || !connected) return woToast;
+  if (state.status === 'idle' && !state.startsAt) return woToast;
 
   const registryRect = panelRects.registry;
   const standingsRect = panelRects.standings;
@@ -281,7 +280,9 @@ export function TournamentPanelOverlays() {
     !p.isBye &&
     (p.whitePlayerId === user?.id || p.blackPlayerId === user?.id) &&
     !!p.presenceDeadline &&
-    !p.startedAt
+    !p.startedAt &&
+    // A decided pairing (W.O. written) must kill the waiting pill instantly
+    !p.result
   ) : undefined;
   const showWaitingForOpponent =
     state.status === 'round_active' && !!myPairing && !opponentDisconnected;
@@ -290,11 +291,7 @@ export function TournamentPanelOverlays() {
   return (
     <>
       {registryRect && registryRect.width > 20 && registryRect.height > 20 && (
-        <ScaledAnchorPanel
-          rect={registryRect}
-          baseWidth={REGISTRY_BASE_WIDTH}
-          baseHeight={REGISTRY_BASE_HEIGHT}
-        >
+        <ScaledAnchorPanel rect={registryRect} baseWidth={REGISTRY_BASE_WIDTH}>
           <TournamentRegistryPanel
             state={state}
             userId={user?.id || null}
@@ -304,11 +301,7 @@ export function TournamentPanelOverlays() {
         </ScaledAnchorPanel>
       )}
       {standingsRect && standingsRect.width > 20 && standingsRect.height > 20 && (
-        <ScaledAnchorPanel
-          rect={standingsRect}
-          baseWidth={STANDINGS_BASE_WIDTH}
-          baseHeight={STANDINGS_BASE_HEIGHT}
-        >
+        <ScaledAnchorPanel rect={standingsRect} baseWidth={STANDINGS_BASE_WIDTH}>
           <TournamentStandingsPanel
             state={state}
             onExpandStandings={state.standings.length > 0 ? () => setStandingsModalOpen(true) : undefined}
@@ -331,6 +324,32 @@ export function TournamentPanelOverlays() {
       {opponentDisconnected && (
         <OpponentDisconnectedOverlay reconnectDeadline={opponentDisconnected.reconnectDeadline} />
       )}
+      {woToast}
     </>
+  );
+}
+
+function TournamentWoToast({ notice }: { notice: { boardId: string; youWin: boolean; result: string } }) {
+  const setWoNotice = useGameStore(s => s.setWoNotice);
+
+  useEffect(() => {
+    const t = setTimeout(() => setWoNotice(null), 7000);
+    return () => clearTimeout(t);
+  }, [notice, setWoNotice]);
+
+  const isDouble = notice.result === '-/-';
+  return (
+    <div className="fixed top-20 left-1/2 -translate-x-1/2 z-[900] rounded-lg border border-amber-500/60 bg-slate-900/95 px-4 py-3 shadow-xl shadow-black/50 pointer-events-none">
+      <div className="text-sm font-semibold text-amber-300">
+        {isDouble ? 'W.O. duplo' : notice.youWin ? 'Vitória por W.O.!' : 'Derrota por W.O.'}
+      </div>
+      <div className="text-xs text-slate-300 mt-0.5">
+        {isDouble
+          ? 'Nenhum jogador compareceu — mesa liberada.'
+          : notice.youWin
+            ? 'Seu adversário não compareceu. Ponto para você!'
+            : 'Você não compareceu a tempo.'}
+      </div>
+    </div>
   );
 }

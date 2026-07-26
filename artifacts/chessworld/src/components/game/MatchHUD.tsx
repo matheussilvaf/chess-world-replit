@@ -251,6 +251,7 @@ export function MatchHUD() {
   const whiteTimeMs = useChessStore(s => s.whiteTimeMs);
   const blackTimeMs = useChessStore(s => s.blackTimeMs);
   const lastMoveAt = useChessStore(s => s.lastMoveAt);
+  const clockPausedAt = useChessStore(s => s.clockPausedAt);
   const whitePlayerName = useChessStore(s => s.whitePlayerName);
   const blackPlayerName = useChessStore(s => s.blackPlayerName);
   const whitePlayerElo = useChessStore(s => s.whitePlayerElo);
@@ -330,7 +331,9 @@ export function MatchHUD() {
 
   if (!matchId) return null;
 
-  const elapsed = gameOver ? 0 : Math.max(0, now - lastMoveAt);
+  // While clocks are paused (opponent reconnect window) the server has already
+  // banked the elapsed time — freeze the display at the synced values.
+  const elapsed = gameOver || clockPausedAt > 0 ? 0 : Math.max(0, now - lastMoveAt);
   const displayWhite = turn === 'w' ? Math.max(0, whiteTimeMs - elapsed) : whiteTimeMs;
   const displayBlack = turn === 'b' ? Math.max(0, blackTimeMs - elapsed) : blackTimeMs;
   const isLow = (ms: number) => ms < 30000;

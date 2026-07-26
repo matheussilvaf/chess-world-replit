@@ -26,6 +26,8 @@ interface ChessState {
   whiteTimeMs: number;
   blackTimeMs: number;
   lastMoveAt: number;
+  /** Server epoch ms when clocks were frozen (reconnect window); 0 = running. */
+  clockPausedAt: number;
   incrementMs: number;
   turn: string;
   whitePlayerName: string;
@@ -140,6 +142,7 @@ export const useChessStore = create<ChessState>((set, get) => ({
   whiteTimeMs: 600000,
   blackTimeMs: 600000,
   lastMoveAt: Date.now(),
+  clockPausedAt: 0,
   incrementMs: 0,
   turn: 'w',
   whitePlayerName: '',
@@ -185,6 +188,7 @@ export const useChessStore = create<ChessState>((set, get) => ({
       whiteTimeMs: matchData?.whiteTimeMs || 600000,
       blackTimeMs: matchData?.blackTimeMs || 600000,
       lastMoveAt: matchData?.lastMoveAt || Date.now(),
+      clockPausedAt: matchData?.clockPausedAt || 0,
       incrementMs: matchData?.incrementMs || 0,
       turn: matchData?.turn || 'w',
       whitePlayerName: matchData?.whitePlayerName || 'White',
@@ -263,6 +267,7 @@ export const useChessStore = create<ChessState>((set, get) => ({
       whiteTimeMs: matchData.whiteTimeMs,
       blackTimeMs: matchData.blackTimeMs,
       lastMoveAt: matchData.lastMoveAt,
+      clockPausedAt: matchData.clockPausedAt || 0,
       incrementMs: matchData.incrementMs || 0,
       turn: matchData.turn,
       whitePlayerName: matchData.whitePlayerName || 'White',
@@ -360,6 +365,7 @@ export const useChessStore = create<ChessState>((set, get) => ({
       whiteTimeMs: matchData.whiteTimeMs,
       blackTimeMs: matchData.blackTimeMs,
       lastMoveAt: matchData.lastMoveAt,
+      clockPausedAt: matchData.clockPausedAt || 0,
       turn: matchData.turn,
       selectedSquare: null,
       validMoves: [],
@@ -568,7 +574,7 @@ export const useChessStore = create<ChessState>((set, get) => ({
       selectedSquare: null, validMoves: [], isMyTurn: false, gameOver: false,
       result: null, winnerId: null, isSpectating: false, showBoard: false,
       drawOfferPending: false, drawOfferedByUs: false, drawNotice: null,
-      whiteTimeMs: 600000, blackTimeMs: 600000, lastMoveAt: Date.now(),
+      whiteTimeMs: 600000, blackTimeMs: 600000, lastMoveAt: Date.now(), clockPausedAt: 0,
       incrementMs: 0, turn: 'w', whitePlayerName: '', blackPlayerName: '',
       whitePlayerId: '', blackPlayerId: '', lastMove: null,
       moveHistory: [], viewIndex: -1, dbMatchId: null,
