@@ -152,11 +152,17 @@ export class WorldScene extends Phaser.Scene {
       fontSize: '14px',
       color: '#cbd5e1',
     }).setOrigin(0.5).setScrollFactor(0).setDepth(9999);
-    this.load.on('progress', (v: number) => {
+    // Named handler so we can detach it on complete: the LoaderPlugin is
+    // reused for later runtime loads (e.g. chess piece textures), and firing
+    // 'progress' against the destroyed label crashes Phaser (null canvas).
+    const onProgress = (v: number) => {
+      if (!label.scene) return; // destroyed — stale event
       bar.width = Math.max(4, 316 * v);
       label.setText(`Carregando mundo… ${Math.round(v * 100)}%`);
-    });
+    };
+    this.load.on('progress', onProgress);
     this.load.once('complete', () => {
+      this.load.off('progress', onProgress);
       bar.destroy();
       barBg.destroy();
       label.destroy();
