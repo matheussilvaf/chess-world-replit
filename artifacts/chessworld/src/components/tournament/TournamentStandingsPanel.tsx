@@ -1,6 +1,7 @@
 import { useState, useEffect, useMemo } from 'react';
-import { Trophy, Crown, Medal, Award, Swords, Clock, Check, X, ChevronRight } from 'lucide-react';
+import { Trophy, Swords, Clock, Check, X, ChevronRight } from 'lucide-react';
 import type { TournamentState } from '../../hooks/useTournamentRoom';
+import { PlayerMatchHistory, fetchStandingsPairings, type DbPairing } from './PlayerMatchHistory';
 
 interface TournamentStandingsPanelProps {
   state: TournamentState;
@@ -263,9 +264,9 @@ function formatPts(n: number): string {
 const STANDINGS_GRID = 'grid grid-cols-[24px_minmax(0,1fr)_38px_52px_30px] items-center gap-1';
 
 function RankBadge({ position }: { position: number }) {
-  if (position === 1) return <Crown className="w-3.5 h-3.5 text-amber-400" />;
-  if (position === 2) return <Medal className="w-3 h-3 text-slate-300" />;
-  if (position === 3) return <Award className="w-3 h-3 text-amber-700" />;
+  if (position === 1) return <span className="text-[11px] font-mono font-bold text-amber-400">1</span>;
+  if (position === 2) return <span className="text-[11px] font-mono font-bold text-slate-300">2</span>;
+  if (position === 3) return <span className="text-[11px] font-mono font-bold text-amber-700">3</span>;
   return <span className="text-[10px] text-slate-500 font-mono">{position}</span>;
 }
 
@@ -273,10 +274,12 @@ export function StandingsTable({
   standings,
   limit,
   onExpand,
+  onSelectPlayer,
 }: {
   standings: TournamentState['standings'];
   limit?: number;
   onExpand?: () => void;
+  onSelectPlayer?: (standing: TournamentState['standings'][0]) => void;
 }) {
   const visible = limit ? standings.slice(0, limit) : standings;
   const hiddenCount = standings.length - visible.length;
@@ -294,7 +297,10 @@ export function StandingsTable({
         {visible.map((s) => (
           <div
             key={s.playerId}
-            className={`${STANDINGS_GRID} px-3 py-1.5 ${s.isChampion ? 'bg-amber-500/5' : 'hover:bg-slate-800/30'}`}
+            onClick={onSelectPlayer ? (e) => { e.stopPropagation(); onSelectPlayer(s); } : undefined}
+            className={`${STANDINGS_GRID} px-3 py-1.5 ${s.isChampion ? 'bg-amber-500/5' : ''} ${
+              onSelectPlayer ? 'cursor-pointer hover:bg-slate-800/50' : s.isChampion ? '' : 'hover:bg-slate-800/30'
+            }`}
           >
             <div className="flex items-center justify-center">
               <RankBadge position={s.position} />
@@ -328,13 +334,35 @@ export function StandingsTable({
 
 export function TournamentStandingsModal({
   title,
-  standings,
+  state,
   onClose,
 }: {
   title: string;
-  standings: TournamentState['standings'];
+  state: TournamentState;
   onClose: () => void;
 }) {
+  const standings = state.standings;
+  const [selected, setSelected] = useState<TournamentState['standings'][0] | null>(null);
+  const [pairings, setPairings] = useState<DbPairing[] | null>(null);
+  const [historyError, setHistoryError] = useState<string | null>(null);
+  const [retryKey, setRetryKey] = useState(0);
+  // Frozen at mount: the standings shown belong to the tournament resolved at
+  // open time, even if the room transitions to a new cycle while open.
+  const [resolution] = useState(() => ({ status: state.status, tournamentId: state.tournamentId }));
+
+  useEffect(() => {
+    let alive = true;
+    setHistoryError(null);
+    setPairings(null);
+    fetchStandingsPairings(resolution.status, resolution.tournamentId)
+      .then((rows) => { if (alive) setPairings(rows); })
+      .catch((err: unknown) => {
+        console.error('[TournamentStandingsModal] pairings fetch failed:', err);
+        if (alive) setHistoryError(err instanceof Error ? err.message : 'fetch failed');
+      });
+    return () => { alive = false; };
+  }, [resolution, retryKey]);
+
   return (
     <div className="fixed inset-0 z-[700] flex items-center justify-center p-4" onClick={onClose}>
       <div className="absolute inset-0 bg-black/70 backdrop-blur-sm" />
@@ -355,7 +383,22 @@ export function TournamentStandingsModal({
           </button>
         </div>
         <div className="flex-1 overflow-y-auto min-h-0">
-          <StandingsTable standings={standings} />
+          {selected ? (
+            <PlayerMatchHistory
+              standing={selected}
+              pairings={pairings}
+              error={historyError}
+              onRetry={() => setRetryKey((k) => k + 1)}
+              onBack={() => setSelected(null)}
+            />
+          ) : (
+            <>
+              <StandingsTable standings={standings} onSelectPlayer={setSelected} />
+              <p className="px-4 py-2.5 text-[10px] text-slate-500 text-center border-t border-slate-800">
+                Clique em um jogador para ver as partidas dele neste torneio
+              </p>
+            </>
+          )}
         </div>
       </div>
     </div>

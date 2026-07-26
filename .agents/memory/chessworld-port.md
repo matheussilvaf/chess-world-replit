@@ -81,6 +81,11 @@ The Colyseus Cloud server was found running MONTHS-stale code: GitHub pushes "su
 - `tournament_config.interval_seconds` is set to 120 for TESTING; production value ~10800 (3h). Restore before going live.
 - Protocol-level E2E exists: `artifacts/api-server/scripts/e2e-tournament.mjs` (2 chained tournaments, checkmate + resign, teleport + standings asserts; test accounts e2e-bot-a/b@chessworld.test).
 
+## Tournament tables are client-readable via RLS (authenticated only)
+`tournament_pairings` and `tournament_instances` return rows for the `authenticated` role but 0 rows for bare `anon` — both HTTP 200, so an empty result is NOT proof of missing data. In-world users are always authenticated, so client features can read these tables directly (standings-modal player history does).
+**Why:** anon-key curl probes falsely suggested "no access"; only a real user JWT (e2e bot login from the e2e script) revealed the rows.
+**How to apply:** probe RLS with a bot-account JWT, never just the anon key. Historical per-round data must come from the DB anyway — the room clears `state.pairings` when the next registration opens (only standings survive), and during `registration_open` the displayed standings belong to the latest COMPLETED instance (`completed_at` not null), not `state.tournamentId`.
+
 ## Coordinator REST from the client: /api double-prefix hid the admin section
 `getColyseusHttpUrl()` ends with `/api` in local-proxy mode but typically NOT in cloud mode (`VITE_COLYSEUS_URL`), so appending `/api/...` produced `/api/api/...` → 404; TournamentConfigSection then hit `if (!config) return null` and vanished — user reported the section "didn't exist".
 **Why:** two URL shapes for the same server + silent null-render on fetch failure.

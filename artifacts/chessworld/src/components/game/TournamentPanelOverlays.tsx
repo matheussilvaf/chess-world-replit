@@ -318,7 +318,7 @@ export function TournamentPanelOverlays() {
       {standingsModalOpen && state.standings.length > 0 && (
         <TournamentStandingsModal
           title={state.status === 'registration_open' ? 'Ultimo Torneio' : state.status === 'completed' ? 'Classificacao Final' : 'Classificacao'}
-          standings={state.standings}
+          state={state}
           onClose={() => setStandingsModalOpen(false)}
         />
       )}
