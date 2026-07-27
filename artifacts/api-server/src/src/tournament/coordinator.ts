@@ -181,6 +181,15 @@ function getClient(): SupabaseClient {
 // --- Coordinator lifecycle ---
 
 export async function startCoordinator(): Promise<void> {
+  // Split-brain guard: exactly ONE coordinator may own the Supabase DB — the
+  // Colyseus Cloud deploy. Replit auto-starts the local api-server workflow on
+  // workspace boot, and a second coordinator churn-cancels tournament cycles
+  // and races the cloud one over shared state. REPL_ID exists only inside
+  // Replit containers, so the cloud server is unaffected by this gate.
+  if (process.env.REPL_ID && process.env.FORCE_COORDINATOR !== 'true') {
+    console.log('[Coordinator] Skipped: local Replit server must not run a second coordinator against the shared DB (set FORCE_COORDINATOR=true for deliberate local/e2e runs).');
+    return;
+  }
   if (isRunning) return;
   isRunning = true;
   console.log('[Coordinator] Starting tournament coordinator...');
