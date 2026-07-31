@@ -53,6 +53,7 @@ export class WorldRoom extends Room<WorldState> {
     this.onMessage('move_to', (client, data) => {
       const player = this.state.players.get(client.sessionId);
       if (!player) return;
+      if (this.combatResolver.isDead(client.sessionId)) return; // corpses don't walk
       // Combat resolves hitboxes from these values — never let NaN/Infinity
       // or non-numeric junk poison authoritative state.
       if (!Number.isFinite(data?.x) || !Number.isFinite(data?.y)) return;
@@ -92,6 +93,7 @@ export class WorldRoom extends Room<WorldState> {
       };
       const player = this.state.players.get(client.sessionId);
       if (!player) return;
+      if (this.combatResolver.isDead(client.sessionId)) return; // dead players can't challenge
 
       const board = this.state.boards.get(boardId);
       if (!board || board.status !== 'idle') {
@@ -131,6 +133,7 @@ export class WorldRoom extends Room<WorldState> {
       const { boardId } = data as { boardId: string };
       const player = this.state.players.get(client.sessionId);
       if (!player) return;
+      if (this.combatResolver.isDead(client.sessionId)) return; // dead players can't accept
 
       const board = this.state.boards.get(boardId);
       if (!board || board.status !== 'waiting') {
@@ -164,6 +167,7 @@ export class WorldRoom extends Room<WorldState> {
       const { boardId, seatKey } = data as { boardId: string; seatKey: string };
       const player = this.state.players.get(client.sessionId);
       if (!player) return;
+      if (this.combatResolver.isDead(client.sessionId)) return; // dead players can't sit
 
       const board = this.state.boards.get(boardId);
       if (!board) return;
@@ -454,6 +458,7 @@ export class WorldRoom extends Room<WorldState> {
         opponentId: string;
         color: 'w' | 'b';
       };
+      if (this.combatResolver.isDead(client.sessionId)) return; // dead players can't take a seat
       const player = this.state.players.get(client.sessionId);
       if (!player) return;
 
@@ -550,6 +555,8 @@ export class WorldRoom extends Room<WorldState> {
       const raw = typeof data?.characterId === 'string' ? data.characterId.trim() : '';
       if (!/^character\d{2,4}$/.test(raw)) return;
       if (player.characterId === raw) return;
+      // No switch-heal while dead: wait out the respawn first.
+      if (player.characterId && this.combatResolver.isDead(client.sessionId)) return;
       // Last-request-wins: two rapid switches interleave across the awaits
       // below; every authoritative mutation must re-check this stamp so a
       // stale (older) request can never overwrite a newer one.

@@ -15,6 +15,8 @@ import type { Client, Room } from '@colyseus/core';
 import type { WorldState } from '../schemas/WorldState.js';
 import type { PlayerState } from '../schemas/PlayerState.js';
 import {
+  ATTACK_COOLDOWN_PAD_MS as COOLDOWN_PAD_MS,
+  COMBAT_RESPAWN_MS,
   DIRECTION_ROWS_8,
   getActiveHitboxRects,
   hitboxFrameIndices,
@@ -33,7 +35,6 @@ const FPS = 12;
 const ATTACK_MOVEMENTS = new Set(['attack', 'walk-attack', 'run-attack']);
 const DIRECTIONS = new Set<string>(DIRECTION_ROWS_8);
 const CHARACTER_ID_RE = /^character\d{2,4}$/;
-const COOLDOWN_PAD_MS = 200;
 
 export interface AttackIntent {
   movement: string;
@@ -43,18 +44,27 @@ export interface AttackIntent {
 
 export class CombatResolver {
   private cooldownUntil = new Map<string, number>();
+  /** Sessions currently dead (KO'd): timestamp when the server revives them. */
+  private deadUntil = new Map<string, number>();
 
   constructor(private room: Room<WorldState>) {}
+
+  /** True while a player is KO'd — dead players can't attack, be hit or move. */
+  isDead(sessionId: string): boolean {
+    return Date.now() < (this.deadUntil.get(sessionId) ?? 0);
+  }
 
   /** Free per-session bookkeeping when a client leaves. */
   clearSession(sessionId: string): void {
     this.cooldownUntil.delete(sessionId);
+    this.deadUntil.delete(sessionId);
   }
 
   async handleAttack(client: Client, data: unknown): Promise<void> {
     const attacker = this.room.state.players.get(client.sessionId);
     if (!attacker) return;
     if (attacker.currentBoardId) return; // seated players don't fight
+    if (this.isDead(client.sessionId)) return; // dead players don't attack
 
     const intent = (data ?? {}) as Partial<AttackIntent>;
     const movement = typeof intent.movement === 'string' ? intent.movement : '';
@@ -128,6 +138,7 @@ export class CombatResolver {
     const attacker = this.room.state.players.get(attackerSessionId);
     if (!attacker) return; // attacker left mid-swing
     if (attacker.currentBoardId) return; // sat down mid-swing — no damage from a chair
+    if (this.isDead(attackerSessionId)) return; // died mid-swing — corpses deal no damage
 
     const hitLocal = getActiveHitboxRects(config, assetKey, direction, frameIdx);
     if (hitLocal.length === 0) return;
@@ -141,11 +152,21 @@ export class CombatResolver {
       if (sessionId === attackerSessionId) continue;
       if (hitTargets.has(sessionId)) continue;
       if (target.currentBoardId) continue; // seated players are safe
+      if (this.isDead(sessionId) || target.hp <= 0) continue; // already dead — no double-KO
       if (!CHARACTER_ID_RE.test(target.characterId)) continue; // character unknown yet
 
       const targetCfg = await getCharacterConfig(target.characterId);
       // Boxes disabled = also can't be hit (symmetric with dealing damage).
       if (!targetCfg || !targetCfg.combatBoxesEnabled) continue;
+
+      // Revalidate after the await: while the config loaded, a PARALLEL
+      // attacker's frame may have KO'd this target, or players may have
+      // seated/left. Without this, two lethal frames double-kill (duplicate
+      // player_died broadcasts + duplicate revive timers).
+      if (!this.room.state.players.has(sessionId)) continue; // target left
+      if (target.currentBoardId) continue; // sat down — seated players are safe
+      if (this.isDead(sessionId) || target.hp <= 0) continue; // already down
+      if (this.isDead(attackerSessionId) || attacker.currentBoardId) return; // attacker died/sat
 
       const hurtLocal = targetHurtboxUnion(targetCfg, target);
       if (hurtLocal.length === 0) continue;
@@ -167,12 +188,24 @@ export class CombatResolver {
         targetMaxHp,
       });
       if (target.hp <= 0) {
-        target.hp = targetMaxHp; // instant "respawn" placeholder — no death state yet
-        this.room.broadcast('combat_ko', {
+        // Death state: corpse for COMBAT_RESPAWN_MS, then revive at full HP.
+        const reviveAt = Date.now() + COMBAT_RESPAWN_MS;
+        this.deadUntil.set(sessionId, reviveAt);
+        this.room.broadcast('player_died', {
           targetSessionId: sessionId,
           targetName: target.username,
           attackerName: attacker.username,
+          respawnMs: COMBAT_RESPAWN_MS,
         });
+        this.room.clock.setTimeout(() => {
+          // Stale-timer guard: only the timer of the CURRENT death revives.
+          if (this.deadUntil.get(sessionId) !== reviveAt) return;
+          this.deadUntil.delete(sessionId);
+          const still = this.room.state.players.get(sessionId);
+          if (!still) return; // left while dead
+          still.hp = Math.max(1, still.maxHp || DEFAULT_MAX_HP);
+          this.room.broadcast('player_revived', { sessionId, hp: still.hp });
+        }, COMBAT_RESPAWN_MS);
       }
     }
   }

@@ -1,3 +1,3 @@
-- [ChessWorld MMO port](chessworld-port.md) — Colyseus/Supabase quirks: stale deploys, engine ownership, presence=world-rooms, PostgREST traps, client pinning, server↔api-server mirror, HP/dano via config + set_character seq guard.
+- [ChessWorld MMO port](chessworld-port.md) — Colyseus/Supabase quirks: stale deploys, engine ownership, presence=world-rooms, PostgREST traps, client pinning, server↔api-server mirror, combate: HP/dano, cooldown honesto no cliente, morte/respawn com revalidação pós-await, seq guard.
 - [gitPush provider](gitpush-provider.md) — sempre usar `gitPush({ provider: "github" })`, sem o parâmetro vai pro backup interno.
 - [Same-file edit batching](edit-batching.md) — many Edit calls to one file in one batch can silently drop some; batch small, sed for repeats, grep/tsc-verify after.

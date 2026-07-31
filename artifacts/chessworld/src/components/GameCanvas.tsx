@@ -725,8 +725,21 @@ export function GameCanvas() {
       );
     });
 
-    room.onMessage('combat_ko', (data: any) => {
-      console.log(`[Combat] KO: ${data?.targetName || '?'} (HP resetado)`);
+    // Combat: a player's HP reached 0 — death pose + input lock until revive
+    room.onMessage('player_died', (data: any) => {
+      if (!data) return;
+      const isMe = data.targetSessionId === room.sessionId;
+      scene.playDeath(isMe ? null : data.targetSessionId, data.respawnMs ?? 3000);
+      console.log(
+        `[Combat] ${isMe ? 'Você' : data.targetName || '?'} morreu` +
+          `${data.attackerName ? ` (${data.attackerName})` : ''} — respawn em ${((data.respawnMs ?? 3000) / 1000).toFixed(0)}s`,
+      );
+    });
+
+    // Combat: server revived a dead player at full HP
+    room.onMessage('player_revived', (data: any) => {
+      if (!data) return;
+      scene.revivePlayer(data.sessionId === room.sessionId ? null : data.sessionId);
     });
 
     room.onMessage('chat', (data: any) => {

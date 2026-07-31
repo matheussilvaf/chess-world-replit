@@ -123,6 +123,16 @@ export const DEFAULT_MAX_HP = 100;
 export const DEFAULT_DAMAGE = 10;
 export const MAX_HP_LIMIT = 10000;
 export const DAMAGE_LIMIT = 1000;
+/** Gap the server adds after each swing before accepting the next attack. */
+export const ATTACK_COOLDOWN_PAD_MS = 150;
+/**
+ * Extra margin the CLIENT adds on top of the pad before allowing another
+ * swing: attacks sent earlier than the server cooldown are silently dropped,
+ * which would show a local-only "ghost swing" that deals no damage.
+ */
+export const ATTACK_COOLDOWN_CLIENT_MARGIN_MS = 80;
+/** How long a KO'd player stays dead before the server revives at full HP. */
+export const COMBAT_RESPAWN_MS = 3000;
 
 /** Character total HP with clamping + fallback to the default (100). */
 export function characterMaxHp(config: Pick<CharacterConfigV1, 'maxHp'> | null | undefined): number {

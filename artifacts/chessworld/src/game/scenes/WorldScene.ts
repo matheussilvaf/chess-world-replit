@@ -16,6 +16,8 @@ import {
   type Direction8,
 } from '../characters/characterCatalog';
 import {
+  ATTACK_COOLDOWN_CLIENT_MARGIN_MS,
+  ATTACK_COOLDOWN_PAD_MS,
   getActiveHitboxRects,
   getActiveHurtboxRects,
   localShapeToWorldCoordinates,
@@ -52,6 +54,12 @@ const HP_BAR_HEIGHT = 4;
 /** Y offset of the HP bar above the sprite origin (name tags sit at -32). */
 const HP_BAR_OFFSET_Y = -26;
 
+// Hold-to-move: keep re-pathing toward the pointer while it stays pressed.
+const HOLD_MOVE_ACTIVATE_MS = 150;
+const HOLD_MOVE_REPATH_MS = 150;
+/** Pointer must move at least this many world px to trigger a new re-path. */
+const HOLD_MOVE_MIN_DELTA_PX = 6;
+
 interface RemotePlayer {
   container: Phaser.GameObjects.Container;
   sprite: Phaser.GameObjects.Sprite;
@@ -73,6 +81,8 @@ interface RemotePlayer {
   attackingUntil: number;
   /** While in the future, the hurt animation owns this sprite (anim only). */
   hurtUntil: number;
+  /** While in the future, this player is dead (death pose owns the sprite). */
+  deadUntil: number;
   hp: number;
   maxHp: number;
   /** HP bar inside the container (visibility: HP_BAR_TEST_CHARACTER rule). */
@@ -127,6 +137,15 @@ export class WorldScene extends Phaser.Scene {
   private attackLocksMovement = true;
   /** While in the future, the hurt animation owns the local sprite (anim only). */
   private hurtUntil = 0;
+  /** While in the future, the local player is dead: input, movement and anims locked. */
+  private deadUntil = 0;
+  /** Server-aligned attack cooldown — earlier sends would be silently dropped. */
+  private attackCooldownUntil = 0;
+  // Hold-to-move state (see updateHoldToMove)
+  private holdStartedAt = 0;
+  private holdActive = false;
+  private lastHoldRepath = 0;
+  private lastHoldTarget: { x: number; y: number } | null = null;
   private localHp = 100;
   private localMaxHp = 100;
   private localHpBar: Phaser.GameObjects.Graphics | null = null;
@@ -345,11 +364,25 @@ export class WorldScene extends Phaser.Scene {
     // Build pathfinding grid
     this.buildPathfindingGrid(map.widthInPixels, map.heightInPixels);
 
-    // Click-to-move: only on pointer RELEASE (not hold), with drag threshold
+    // Click-to-move: tap (press + release) walks to the clicked point, while
+    // press-and-HOLD keeps re-pathing toward wherever the pointer is
+    // (updateHoldToMove). Pinch and interactive objects never trigger walking.
     const DRAG_THRESHOLD = 8; // px — if pointer moved more than this, it was a drag, not a tap
+    this.input.on('pointerdown', () => {
+      this.holdStartedAt = Date.now();
+      this.holdActive = false;
+      this.lastHoldRepath = 0;
+      this.lastHoldTarget = null;
+    });
     this.input.on('pointerup', (pointer: Phaser.Input.Pointer) => {
+      const wasHolding = this.holdActive;
+      this.holdStartedAt = 0;
+      this.holdActive = false;
+      // Hold already navigated continuously — keep walking to the last point.
+      if (wasHolding) return;
       if (this.movementLocked) return;
       if (this.isPinching) return;
+      if (Date.now() < this.deadUntil) return;
       const dist = Phaser.Math.Distance.Between(
         pointer.downX, pointer.downY, pointer.upX, pointer.upY
       );
@@ -925,7 +958,7 @@ export class WorldScene extends Phaser.Scene {
     this.pathfinder.buildGrid(mapWidth, mapHeight, this.collisionRects, this.collisionPolys, 12);
   }
 
-  private navigateTo(worldX: number, worldY: number) {
+  private navigateTo(worldX: number, worldY: number, opts?: { keepPathOnFail?: boolean }) {
     // Store click position for debug visualization (raw click)
     this.clickMarker = { x: worldX, y: worldY };
 
@@ -942,6 +975,7 @@ export class WorldScene extends Phaser.Scene {
     this.stuckFrames = 0;
     this.lastStuckPos = null;
     this.rerouteAttempts = 0;
+    const prevFinalDestination = this.finalDestination;
     this.finalDestination = { x: targetBodyX, y: targetBodyY };
 
     const waypoints = this.pathfinder.findPath(startX, startY, targetBodyX, targetBodyY);
@@ -952,6 +986,10 @@ export class WorldScene extends Phaser.Scene {
       // New destination: emit on the very next frame instead of waiting out
       // the throttle window, so remote clients see the direction change ASAP.
       this.lastSentTime = 0;
+    } else if (opts?.keepPathOnFail) {
+      // Hold-to-move sweeping over an unreachable spot (wall, water): keep
+      // walking the previous path instead of freezing in place.
+      this.finalDestination = prevFinalDestination;
     } else {
       this.stopMovement();
     }
@@ -994,6 +1032,47 @@ export class WorldScene extends Phaser.Scene {
     this.matter.body.setVelocity(this.playerBody, { x: 0, y: 0 });
     this.localIdle();
     this.emitMovement(false);
+  }
+
+  /**
+   * Hold-to-move: while the pointer stays pressed, keep re-pathing toward it
+   * (throttled). A quick tap is still handled by the pointerup handler; this
+   * only activates after HOLD_MOVE_ACTIVATE_MS or once the pointer drags.
+   */
+  private updateHoldToMove() {
+    if (this.holdStartedAt <= 0) return;
+    if (this.isPinching || this.movementLocked || this.inMatch || this.currentSeatInfo || this.seatTween) {
+      this.holdStartedAt = 0;
+      this.holdActive = false;
+      return;
+    }
+    const pointer = this.input.activePointer;
+    if (!pointer.isDown) {
+      // Normal exit is the pointerup handler; this covers releases that
+      // happen outside the canvas.
+      this.holdStartedAt = 0;
+      this.holdActive = false;
+      return;
+    }
+    const now = Date.now();
+    if (!this.holdActive) {
+      const heldLong = now - this.holdStartedAt >= HOLD_MOVE_ACTIVATE_MS;
+      const draggedFar =
+        Phaser.Math.Distance.Between(pointer.downX, pointer.downY, pointer.x, pointer.y) > 8;
+      if (!heldLong && !draggedFar) return;
+      this.holdActive = true;
+    }
+    if (now - this.lastHoldRepath < HOLD_MOVE_REPATH_MS) return;
+    const wp = this.cameras.main.getWorldPoint(pointer.x, pointer.y);
+    // Hovering an interactive object mid-hold: keep the current path.
+    if (this.interactionSystem?.hitTestPointer(wp.x, wp.y)) return;
+    this.lastHoldRepath = now;
+    const last = this.lastHoldTarget;
+    if (last && this.target && Math.hypot(wp.x - last.x, wp.y - last.y) <= HOLD_MOVE_MIN_DELTA_PX) {
+      return; // pointer basically didn't move — keep the current path
+    }
+    this.lastHoldTarget = { x: wp.x, y: wp.y };
+    this.navigateTo(wp.x, wp.y, { keepPathOnFail: true });
   }
 
   private setupInteractives(_map: Phaser.Tilemaps.Tilemap, mapKey?: string) {
@@ -1117,6 +1196,7 @@ export class WorldScene extends Phaser.Scene {
       // TESTE: barra de HP visível apenas para o personagem de teste.
       remote.hpBar.setVisible(!remote.seated && remote.characterId === HP_BAR_TEST_CHARACTER);
       if (remote.seated) return;
+      if (Date.now() < remote.deadUntil) return; // death pose owns the sprite
       if (remote.attackingUntil > 0 && Date.now() >= remote.attackingUntil) {
         remote.attackingUntil = 0;
       }
@@ -1145,6 +1225,15 @@ export class WorldScene extends Phaser.Scene {
       if (!this.target && this.attackingUntil <= 0) this.localIdle();
     }
     this.updateLocalHpBar();
+    // Dead: the corpse pose owns everything — no input, no motion — until the
+    // server revives us (deadUntil also self-expires as a safety net).
+    if (Date.now() < this.deadUntil) {
+      if (this.playerBody.speed > 0.1) {
+        this.matter.body.setVelocity(this.playerBody, { x: 0, y: 0 });
+      }
+      return;
+    }
+    this.updateHoldToMove();
     // Stationary 'attack' blocks movement; walk-attack/run-attack don't.
     if (this.attackingUntil > 0 && this.attackLocksMovement) return;
 
@@ -1488,6 +1577,7 @@ export class WorldScene extends Phaser.Scene {
       def,
       attackingUntil: 0,
       hurtUntil: 0,
+      deadUntil: 0,
       hp: typeof p.hp === 'number' ? p.hp : 100,
       maxHp: typeof p.maxHp === 'number' && p.maxHp > 0 ? p.maxHp : 100,
       hpBar,
@@ -2777,6 +2867,7 @@ export class WorldScene extends Phaser.Scene {
 
   /** Local player: play looping idle animation or freeze on the walk row's first frame. */
   private localIdle(direction: Direction8 = this.currentDirection) {
+    if (Date.now() < this.deadUntil) return; // death pose owns the sprite
     const def = this.localDef;
     if (!def || !this.player) return;
     if (this.attackingUntil > 0 || this.hurtUntil > 0) return;
@@ -2795,6 +2886,7 @@ export class WorldScene extends Phaser.Scene {
 
   /** Local player: walking animation with speed-scaled playback. */
   private localWalk(direction: Direction8, timeScale: number) {
+    if (Date.now() < this.deadUntil) return; // death pose owns the sprite
     const def = this.localDef;
     if (!def || !this.player) return;
     if (this.attackingUntil > 0 || this.hurtUntil > 0) return;
@@ -2854,6 +2946,7 @@ export class WorldScene extends Phaser.Scene {
       remote.def = def;
       remote.attackingUntil = 0;
       remote.hurtUntil = 0;
+      remote.deadUntil = 0;
       // HP is server-authoritative and re-synced on switch; redraw with the
       // new character's proportions right away.
       this.drawHpBar(remote.hpBar, remote.hp, remote.maxHp);
@@ -2878,7 +2971,11 @@ export class WorldScene extends Phaser.Scene {
     const def = this.localDef;
     if (!def || !this.player) return false;
     if (this.movementLocked || this.inMatch || this.currentSeatInfo || this.seatTween) return false;
-    if (this.attackingUntil > 0 && Date.now() < this.attackingUntil) return false;
+    if (Date.now() < this.deadUntil) return false; // corpses don't swing
+    // Mirror of the SERVER cooldown (anim duration + pad) plus a jitter
+    // margin: anything sent earlier is silently dropped by the server, which
+    // would show a local-only "ghost swing" that deals no damage.
+    if (Date.now() < this.attackCooldownUntil) return false;
     // Moving with a walk-attack sheet available → attack WHILE walking
     // (animation + server damage timeline use the walk-attack asset).
     const moving = !!this.target;
@@ -2904,6 +3001,8 @@ export class WorldScene extends Phaser.Scene {
 
     const dir = this.dirForDef(def, this.currentDirection);
     this.attackingUntil = Date.now() + (attackMv.columns / 12) * 1000;
+    this.attackCooldownUntil =
+      this.attackingUntil + ATTACK_COOLDOWN_PAD_MS + ATTACK_COOLDOWN_CLIENT_MARGIN_MS;
     this.player.anims.timeScale = 1;
     this.player.anims.play(animKeyFor(def.id, attackMv.movement, dir));
     if (this.attackLocksMovement) this.emitMovement(false, dir);
@@ -2991,6 +3090,7 @@ export class WorldScene extends Phaser.Scene {
     if (sessionId === null) {
       const def = this.localDef;
       if (!def || !this.player) return;
+      if (now < this.deadUntil) return; // death pose owns the sprite
       if (this.attackingUntil > now) return; // attack anim has priority
       const hurt = def.movements.get('hurt');
       if (!hurt) return; // no hurt sheet — red flash only
@@ -3004,6 +3104,7 @@ export class WorldScene extends Phaser.Scene {
     }
     const remote = this.otherPlayers.get(sessionId);
     if (!remote || remote.seated) return;
+    if (now < remote.deadUntil) return; // death pose owns the sprite
     if (remote.attackingUntil > now) return; // attack anim has priority
     const hurt = remote.def.movements.get('hurt');
     if (!hurt) return;
@@ -3013,6 +3114,68 @@ export class WorldScene extends Phaser.Scene {
     remote.hurtUntil = now + (hurt.columns / 12) * 1000;
     remote.sprite.anims.timeScale = 1;
     remote.sprite.anims.play(key);
+  }
+
+  /**
+   * Death (server broadcast): plays the 'death' sheet, locks input/movement
+   * and keeps the corpse pose until the server revives (sessionId null =
+   * local player). deadUntil self-expires as a safety net if the revive
+   * broadcast is lost.
+   */
+  public playDeath(sessionId: string | null, respawnMs: number) {
+    const now = Date.now();
+    const safeMs = Math.max(500, Math.min(30000, respawnMs || 3000));
+    if (sessionId === null) {
+      if (!this.player || !this.localDef) return;
+      this.deadUntil = now + safeMs;
+      this.attackingUntil = 0;
+      this.attackLocksMovement = false;
+      this.hurtUntil = 0;
+      // Full stop: corpses don't finish their path.
+      this.target = null;
+      this.pathWaypoints = [];
+      this.currentWaypointIndex = 0;
+      this.finalDestination = null;
+      this.holdStartedAt = 0;
+      this.holdActive = false;
+      if (this.playerBody) this.matter.body.setVelocity(this.playerBody, { x: 0, y: 0 });
+      this.emitMovement(false);
+      this.playDeathAnim(this.player, this.localDef, this.currentDirection);
+      return;
+    }
+    const remote = this.otherPlayers.get(sessionId);
+    if (!remote) return;
+    remote.deadUntil = now + safeMs;
+    remote.attackingUntil = 0;
+    remote.hurtUntil = 0;
+    // Seated players can't be hit server-side; if this ever fires anyway,
+    // track the dead state but leave the seated pose alone.
+    if (remote.seated) return;
+    remote.isMoving = false;
+    this.playDeathAnim(remote.sprite, remote.def, remote.direction);
+  }
+
+  /** Plays the 'death' sheet when it exists (non-looping → freezes on the last frame). */
+  private playDeathAnim(sprite: Phaser.GameObjects.Sprite, def: WorldCharacterDef, direction: Direction8) {
+    const death = def.movements.get('death');
+    if (!death) return; // no death sheet — corpse keeps the current pose
+    const dir = this.dirForDef(def, direction);
+    const key = animKeyFor(def.id, death.movement, dir);
+    if (!this.anims.exists(key)) return;
+    sprite.anims.timeScale = 1;
+    sprite.anims.play(key);
+  }
+
+  /** Server revived a player: release the death lock (sessionId null = local). */
+  public revivePlayer(sessionId: string | null) {
+    if (sessionId === null) {
+      this.deadUntil = 0;
+      if (this.player?.scene) this.localIdle();
+      return;
+    }
+    const remote = this.otherPlayers.get(sessionId);
+    if (!remote) return;
+    remote.deadUntil = 0; // the update loop restores idle/walk next tick
   }
 
   // ------------------------------------------------------------------
@@ -3057,6 +3220,7 @@ export class WorldScene extends Phaser.Scene {
     if (!def) return deny(`personagem "${nextId}" não existe no manifest`);
     if (!this.player || !this.playerBody) return deny('o mundo ainda está carregando');
     if (def.id === this.localDef?.id) return deny(`"${def.displayName}" já é o personagem ativo`);
+    if (Date.now() < this.deadUntil) return deny('morto — aguarde o respawn');
     if (this.movementLocked || this.inMatch || this.currentSeatInfo || this.seatTween) return deny(blockReason());
 
     await this.ensureCharacterLoaded(def);
@@ -3070,7 +3234,9 @@ export class WorldScene extends Phaser.Scene {
     this.currentWaypointIndex = 0;
     this.finalDestination = null;
     this.attackingUntil = 0;
+    this.attackCooldownUntil = 0;
     this.hurtUntil = 0;
+    this.deadUntil = 0;
 
     const spriteX = this.player.x;
     const spriteY = this.player.y;
