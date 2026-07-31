@@ -32,7 +32,8 @@ export function AttackButton({ getScene }: { getScene: () => WorldScene | null }
       className="absolute z-40 pointer-events-none"
       style={{
         right: 'max(1rem, env(safe-area-inset-right))',
-        bottom: 'max(1.5rem, env(safe-area-inset-bottom))',
+        // High enough to clear the mobile browser's bottom toolbar overlap.
+        bottom: 'max(4.5rem, calc(env(safe-area-inset-bottom) + 3rem))',
       }}
     >
       <button
