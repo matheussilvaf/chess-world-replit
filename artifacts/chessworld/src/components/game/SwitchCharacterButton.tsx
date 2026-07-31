@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { RefreshCw } from 'lucide-react';
 import { useGameSettingsStore } from '../../stores/gameSettingsStore';
 import {
@@ -18,29 +18,59 @@ export function SwitchCharacterButton({ getScene }: { getScene: () => WorldScene
   const characterSwitchEnabled = useGameSettingsStore((s) => s.characterSwitchEnabled);
   const [currentId, setCurrentId] = useState<string | null>(() => getSelectedCharacterId());
   const [busy, setBusy] = useState(false);
+  const [denial, setDenial] = useState<string | null>(null);
+  const denialTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (denialTimerRef.current) clearTimeout(denialTimerRef.current);
+    };
+  }, []);
 
   const visible = import.meta.env.DEV || characterSwitchEnabled;
   if (!visible) return null;
   if (listWorldCharacters().length < 2) return null;
+
+  const showDenial = (message: string) => {
+    if (denialTimerRef.current) clearTimeout(denialTimerRef.current);
+    setDenial(message);
+    denialTimerRef.current = setTimeout(() => setDenial(null), 5000);
+  };
 
   const nextId = nextCharacterId(currentId);
   const next = nextId ? getWorldCharacter(nextId) : null;
   const current = currentId ? getWorldCharacter(currentId) : null;
 
   const onClick = async () => {
+    if (busy) return;
     const scene = getScene();
-    if (!scene || !nextId || busy) return;
+    if (!scene) {
+      showDenial('O mundo ainda está carregando — tente de novo em instantes.');
+      return;
+    }
+    if (!nextId) {
+      showDenial('Nenhum outro personagem disponível.');
+      return;
+    }
     setBusy(true);
     try {
       const ok = await scene.switchCharacter(nextId);
-      if (ok) setCurrentId(nextId);
+      if (ok) {
+        setDenial(null);
+        setCurrentId(nextId);
+      } else {
+        showDenial(scene.lastSwitchDenial ?? 'Não foi possível trocar agora.');
+      }
+    } catch (err) {
+      console.error('[SwitchCharacterButton] switch failed:', err);
+      showDenial('Erro ao trocar — veja o console.');
     } finally {
       setBusy(false);
     }
   };
 
   return (
-    <div className="absolute top-2 left-1/2 -translate-x-1/2 z-40 pointer-events-none">
+    <div className="absolute top-2 left-1/2 -translate-x-1/2 z-40 pointer-events-none flex flex-col items-center gap-1">
       <button
         onClick={onClick}
         disabled={busy || !next}
@@ -52,6 +82,11 @@ export function SwitchCharacterButton({ getScene }: { getScene: () => WorldScene
           {current?.displayName ?? '—'} → {next?.displayName ?? '—'}
         </span>
       </button>
+      {denial && (
+        <div className="rounded border border-amber-500/40 bg-slate-900/90 px-2 py-1 text-center text-[10px] text-amber-300 shadow">
+          {denial}
+        </div>
+      )}
     </div>
   );
 }

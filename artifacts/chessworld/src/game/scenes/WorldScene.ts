@@ -97,6 +97,8 @@ export class WorldScene extends Phaser.Scene {
   private lastSentTime = 0;
   private readonly SEND_INTERVAL = 33;
   private movementLocked = false;
+  /** Why the last switchCharacter() call was refused (PT-BR, for the dev button UI). */
+  public lastSwitchDenial: string | null = null;
   private defaultZoom = MAP_CONFIG.zoom.default;
   private boardZoom = MAP_CONFIG.zoom.board;
   private movementSender: MovementSender | null = null;
@@ -2897,15 +2899,32 @@ export class WorldScene extends Phaser.Scene {
    * with the new character's collision config and notifies the server.
    */
   public async switchCharacter(nextId: string): Promise<boolean> {
+    const deny = (reason: string): false => {
+      this.lastSwitchDenial = reason;
+      console.warn(`[WorldScene] switchCharacter negado: ${reason}`);
+      return false;
+    };
+    const blockReason = () =>
+      `bloqueado: ${[
+        this.movementLocked && 'movimento travado',
+        this.inMatch && 'em partida',
+        this.currentSeatInfo && 'sentado em um tabuleiro',
+        this.seatTween && 'animação de assento em andamento',
+      ]
+        .filter(Boolean)
+        .join(', ')}`;
+
+    this.lastSwitchDenial = null;
     const def = getWorldCharacter(nextId);
-    if (!def || !this.player || !this.playerBody) return false;
-    if (def.id === this.localDef?.id) return false;
-    if (this.movementLocked || this.inMatch || this.currentSeatInfo || this.seatTween) return false;
+    if (!def) return deny(`personagem "${nextId}" não existe no manifest`);
+    if (!this.player || !this.playerBody) return deny('o mundo ainda está carregando');
+    if (def.id === this.localDef?.id) return deny(`"${def.displayName}" já é o personagem ativo`);
+    if (this.movementLocked || this.inMatch || this.currentSeatInfo || this.seatTween) return deny(blockReason());
 
     await this.ensureCharacterLoaded(def);
-    if (!this.player.scene) return false;
+    if (!this.player.scene) return deny('a cena foi recriada durante o carregamento');
     // Re-check guards — the world may have changed while textures loaded
-    if (this.movementLocked || this.inMatch || this.currentSeatInfo || this.seatTween) return false;
+    if (this.movementLocked || this.inMatch || this.currentSeatInfo || this.seatTween) return deny(blockReason());
 
     // Stop movement
     this.target = null;
