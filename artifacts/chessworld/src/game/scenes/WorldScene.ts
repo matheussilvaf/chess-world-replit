@@ -2988,11 +2988,14 @@ export class WorldScene extends Phaser.Scene {
       originWorldY: number,
       isLocal: boolean,
     ) => {
-      if (!def?.combat?.combatBoxesEnabled) return;
+      // Debug shows the SAVED boxes even when "Ativas no jogo" is off —
+      // that flag gates gameplay damage (server side), not inspection.
+      const combat = def?.combat;
+      if (!def || !combat) return;
       const state = this.currentSpriteCombatState(sprite, def, fallbackDirection);
       if (!state) return;
-      const hurt = getActiveHurtboxRects(def.combat, state.assetKey, state.direction, state.frameInDir);
-      const hit = getActiveHitboxRects(def.combat, state.assetKey, state.direction, state.frameInDir);
+      const hurt = getActiveHurtboxRects(combat, state.assetKey, state.direction, state.frameInDir);
+      const hit = getActiveHitboxRects(combat, state.assetKey, state.direction, state.frameInDir);
       this.debugGfx.lineStyle(1, 0x00ff66, 0.95); // lime = hurtbox
       for (const r of hurt) {
         const w = localShapeToWorldCoordinates(r, originWorldX, originWorldY);
@@ -3004,7 +3007,9 @@ export class WorldScene extends Phaser.Scene {
         this.debugGfx.strokeRect(w.x, w.y, w.width, w.height);
       }
       if (isLocal) {
-        labelText = `${state.assetKey.split('/')[0]} ${state.direction} #${state.frameInDir}`;
+        labelText = `${state.assetKey.split('/')[0]} ${state.direction} #${state.frameInDir}${
+          combat.combatBoxesEnabled ? '' : ' (caixas inativas)'
+        }`;
       }
     };
 

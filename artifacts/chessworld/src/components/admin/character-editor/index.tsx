@@ -156,19 +156,26 @@ export function CharacterConfigEditor() {
 
   // Create the per-asset grid entry on demand (auto-detection)
   useEffect(() => {
-    if (!working || !asset || !assetKey) return;
+    if (!working || !asset || !assetKey || !entry) return;
+    // Mid-switch renders: `working` may still belong to the PREVIOUS character
+    // (the rebuild effect above runs first in the same flush). Grafting this
+    // character's asset into it corrupts the other character's config with a
+    // wrong grid — the "zoom" bug. Wait until the rebuild lands.
+    if (working.characterId !== entry.id) return;
     if (working.assets[assetKey]) {
-      setGridProblems(working.assets[assetKey].manualGrid ? [] : []);
+      setGridProblems([]);
       return;
     }
     const { config, problems } = ensureAssetConfig(working, assetKey, asset.width, asset.height);
     if (config !== working) {
-      setWorking(config);
+      // Reference-checked update: if another setWorking landed meanwhile
+      // (character switch), drop this stale ensure — the effect re-runs.
+      setWorking((prev) => (prev === working ? config : prev));
       markDirty();
     }
     setGridProblems(problems);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [working, assetKey, asset]);
+  }, [working, assetKey, asset, entry]);
 
   // Reset box selection when the visible frame changes
   useEffect(() => {

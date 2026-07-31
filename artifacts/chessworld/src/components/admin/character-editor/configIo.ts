@@ -103,6 +103,24 @@ export function buildWorkingConfig(
     }
     config.directions = entry.directions;
   }
+
+  // Prune asset entries that don't exist in this character's manifest —
+  // e.g. keys grafted from ANOTHER character by pre-fix editor sessions
+  // (the "zoom" corruption) or files that were renamed/removed.
+  const validKeys = new Set<string>();
+  for (const [movementName, movementAssets] of Object.entries(entry.movements)) {
+    for (const a of movementAssets) validKeys.add(`${movementName}/${a.fileName}`);
+  }
+  const junkKeys = Object.keys(config.assets).filter((k) => !validKeys.has(k));
+  if (junkKeys.length > 0) {
+    config.assets = Object.fromEntries(
+      Object.entries(config.assets).filter(([k]) => validKeys.has(k)),
+    );
+    issues.push(
+      `Removida(s) ${junkKeys.length} config(s) de asset que não pertencem a este personagem: ` +
+        `${junkKeys.join(', ')} — salve para limpar definitivamente.`,
+    );
+  }
   return { config, issues };
 }
 

@@ -91,7 +91,9 @@ export class CombatResolver {
       direction,
     });
 
-    if (!config || !assetKey) return;
+    // "Ativas no jogo" off = this character's boxes exist for editing/debug
+    // but are inert in gameplay: no damage dealt.
+    if (!config || !config.combatBoxesEnabled || !assetKey) return;
 
     const frames = hitboxFrameIndices(config, assetKey, direction);
     if (frames.length === 0) return;
@@ -134,7 +136,8 @@ export class CombatResolver {
       if (!CHARACTER_ID_RE.test(target.characterId)) continue; // character unknown yet
 
       const targetCfg = await getCharacterConfig(target.characterId);
-      if (!targetCfg) continue;
+      // Boxes disabled = also can't be hit (symmetric with dealing damage).
+      if (!targetCfg || !targetCfg.combatBoxesEnabled) continue;
 
       const hurtLocal = targetHurtboxUnion(targetCfg, target);
       if (hurtLocal.length === 0) continue;

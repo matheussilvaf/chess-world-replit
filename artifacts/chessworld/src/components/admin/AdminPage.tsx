@@ -12,6 +12,7 @@ interface GameSettings {
   board_zoom_desktop: number;
   board_zoom_mobile: number;
   chat_preview_seconds: number;
+  character_switch_enabled: boolean;
 }
 
 const BOARD_ZOOM_MIGRATION_SQL = `ALTER TABLE game_settings
@@ -38,6 +39,7 @@ export function AdminPage() {
     board_zoom_desktop: 3,
     board_zoom_mobile: 2.5,
     chat_preview_seconds: 3,
+    character_switch_enabled: false,
   });
   const [saving, setSaving] = useState(false);
   const { debugEnabled, setDebugEnabled } = useInteractionStore();
@@ -46,6 +48,8 @@ export function AdminPage() {
   const [boardZoomMissing, setBoardZoomMissing] = useState(false);
   // Same for the chat preview duration column
   const [chatPreviewMissing, setChatPreviewMissing] = useState(false);
+  // Same for the character switch flag column
+  const [switchFlagMissing, setSwitchFlagMissing] = useState(false);
 
   useEffect(() => {
     loadSettings();
@@ -62,8 +66,10 @@ export function AdminPage() {
       const row = data as Record<string, unknown>;
       const hasBoardZoom = row.board_zoom_desktop != null;
       const hasChatPreview = row.chat_preview_seconds != null;
+      const hasSwitchFlag = row.character_switch_enabled != null;
       setBoardZoomMissing(!hasBoardZoom);
       setChatPreviewMissing(!hasChatPreview);
+      setSwitchFlagMissing(!hasSwitchFlag);
       setSettings({
         default_zoom: Number(row.default_zoom),
         player_speed: Number(row.player_speed),
@@ -71,6 +77,7 @@ export function AdminPage() {
         board_zoom_desktop: hasBoardZoom ? Number(row.board_zoom_desktop) : 3,
         board_zoom_mobile: row.board_zoom_mobile != null ? Number(row.board_zoom_mobile) : 2.5,
         chat_preview_seconds: hasChatPreview ? Number(row.chat_preview_seconds) : 3,
+        character_switch_enabled: Boolean(row.character_switch_enabled),
       });
     }
   };
@@ -92,6 +99,10 @@ export function AdminPage() {
     if (!chatPreviewMissing) {
       payload.chat_preview_seconds = newSettings.chat_preview_seconds;
     }
+    // Same for the character switch flag column
+    if (!switchFlagMissing) {
+      payload.character_switch_enabled = newSettings.character_switch_enabled;
+    }
     const { error } = await supabase
       .from('game_settings')
       .update(payload)
@@ -101,7 +112,7 @@ export function AdminPage() {
     if (!error) {
       setLastSaved(new Date().toLocaleTimeString());
     }
-  }, [boardZoomMissing, chatPreviewMissing]);
+  }, [boardZoomMissing, chatPreviewMissing, switchFlagMissing]);
 
   const handleZoomChange = (value: number) => {
     const clamped = Math.round(value * 4) / 4; // snap to 0.25 steps
@@ -540,6 +551,45 @@ export function AdminPage() {
                 <span
                   className={`absolute top-0.5 left-0.5 w-5 h-5 rounded-full bg-white shadow transition-transform ${
                     settings.show_debug_visuals ? 'translate-x-6' : 'translate-x-0'
+                  }`}
+                />
+              </button>
+            </div>
+          </div>
+
+          {/* Character Switch Toggle */}
+          <div className="bg-slate-900 rounded-xl border border-slate-800 p-6">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-3">
+                <div className="w-9 h-9 rounded-lg bg-violet-500/10 flex items-center justify-center text-violet-400 text-base font-semibold">
+                  ⇄
+                </div>
+                <div>
+                  <h2 className="text-base font-medium text-white">Troca de Personagem</h2>
+                  <p className="text-sm text-slate-400">
+                    Permite trocar de personagem no mundo em produção — a troca aparece para todos em tempo real
+                  </p>
+                  {switchFlagMissing && (
+                    <p className="text-xs text-amber-400 mt-1">
+                      Rode a migração SQL da coluna character_switch_enabled para habilitar.
+                    </p>
+                  )}
+                </div>
+              </div>
+              <button
+                onClick={() => {
+                  const next = { ...settings, character_switch_enabled: !settings.character_switch_enabled };
+                  setSettings(next);
+                  saveSettings(next);
+                }}
+                disabled={switchFlagMissing}
+                className={`relative w-12 h-6 rounded-full transition-colors ${
+                  settings.character_switch_enabled ? 'bg-violet-500' : 'bg-slate-700'
+                } ${switchFlagMissing ? 'opacity-40 cursor-not-allowed' : ''}`}
+              >
+                <span
+                  className={`absolute top-0.5 left-0.5 w-5 h-5 rounded-full bg-white shadow transition-transform ${
+                    settings.character_switch_enabled ? 'translate-x-6' : 'translate-x-0'
                   }`}
                 />
               </button>

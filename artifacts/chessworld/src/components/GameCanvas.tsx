@@ -234,7 +234,19 @@ export function GameCanvas() {
 
     const unsubStore = settingsStore.subscribe(applySettings);
 
+    // The scene boots asynchronously — settings often finish loading BEFORE
+    // Phaser is ready, and that first apply hits a missing scene. Re-apply
+    // once the scene exists so toggles like Debug Visuals aren't lost until
+    // the next realtime change.
+    const readyPoll = window.setInterval(() => {
+      if (gameRef.current && getWorldScene(gameRef.current)) {
+        applySettings(settingsStore.getState());
+        window.clearInterval(readyPoll);
+      }
+    }, 500);
+
     return () => {
+      window.clearInterval(readyPoll);
       unsubRealtime();
       unsubStore();
     };
