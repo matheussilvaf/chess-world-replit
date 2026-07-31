@@ -47,3 +47,4 @@ Thumbs.db
 # Replit
 .cache/
 .local/
+artifacts/chessworld/public/assets/characters/manifest.json

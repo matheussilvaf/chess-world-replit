@@ -5,6 +5,8 @@ import { defineConfig, type PluginOption } from 'vite';
 
 import runtimeErrorOverlay from '@replit/vite-plugin-runtime-error-modal';
 
+import { characterManifestPlugin } from './vite-plugins/character-manifest';
+
 // Gzip everything the dev server sends (TMJ maps are multi-MB JSON that
 // compresses ~10x; the unbundled dev JS also shrinks massively). Production
 // static hosting applies its own compression, so this is dev-only by nature.
@@ -42,6 +44,7 @@ export default defineConfig({
   plugins: [
     react(),
     devGzip(),
+    characterManifestPlugin(),
     runtimeErrorOverlay(),
     ...(process.env.NODE_ENV !== 'production' &&
     process.env.REPL_ID !== undefined

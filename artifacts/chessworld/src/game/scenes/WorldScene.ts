@@ -4,12 +4,22 @@ import { MAP_CONFIG } from '../config/mapConfig';
 import { WORLD_TILESETS, ALL_TILESETS, EXTRA_TILESETS, findTilesetForGid, findTilesetForGidInMap, getTextureKeyForTileset } from '../config/worldAssets';
 import { ArenaModuleManager } from '../map/ArenaModuleManager';
 import {
-  getCharacter,
-  getIdleFrame,
-  getAnimKey,
-  Direction8,
-  getBodyConfig,
+  getSelectedCharacter,
+  getWorldCharacter,
+  setSelectedCharacterId,
+  movementOrFallback,
+  firstFrameIndexFor,
+  rowIndexFor,
+  animKeyFor,
+  directionForVector,
+  type WorldCharacterDef,
+  type Direction8,
 } from '../characters/characterCatalog';
+import {
+  getActiveHitboxRects,
+  getActiveHurtboxRects,
+  localShapeToWorldCoordinates,
+} from '../../shared/combat/CharacterCombatShapes';
 import { RemotePlayerInterpolator } from '../network/interpolation';
 import AStarGrid from '../pathfinding/AStarGrid';
 import { InteractionSystem } from '../interactions/InteractionSystem';
@@ -46,6 +56,10 @@ interface RemotePlayer {
   seated: boolean;
   seatedBoardId: string;
   seatedSeat: 'bottom' | 'top' | '';
+  characterId: string;
+  def: WorldCharacterDef;
+  /** While in the future, an attack animation owns this sprite. */
+  attackingUntil: number;
 }
 
 type MovementSender = (data: {
@@ -56,6 +70,15 @@ type MovementSender = (data: {
   direction: string;
   isMoving: boolean;
 }) => void;
+
+type AttackSender = (data: {
+  type: 'attack';
+  movement: string;
+  direction: string;
+  characterId: string;
+}) => void;
+
+type CharacterSetSender = (characterId: string) => void;
 
 export class WorldScene extends Phaser.Scene {
   private player!: Phaser.GameObjects.Sprite;
@@ -77,6 +100,11 @@ export class WorldScene extends Phaser.Scene {
   private defaultZoom = MAP_CONFIG.zoom.default;
   private boardZoom = MAP_CONFIG.zoom.board;
   private movementSender: MovementSender | null = null;
+  private attackSender: AttackSender | null = null;
+  private characterSetSender: CharacterSetSender | null = null;
+  private localDef: WorldCharacterDef | null = null;
+  private attackingUntil = 0;
+  private combatDebugLabel: Phaser.GameObjects.Text | null = null;
   private currentDirection: Direction8 = 'down';
   private playerSpeed = MAP_CONFIG.playerSpeed;
   private showDebugVisuals = false;
@@ -170,11 +198,15 @@ export class WorldScene extends Phaser.Scene {
 
     this.load.tilemapTiledJSON(MAP_CONFIG.key, MAP_CONFIG.path);
 
-    const charDef = getCharacter();
-    this.load.spritesheet(charDef.id, charDef.sheet, {
-      frameWidth: charDef.frameWidth,
-      frameHeight: charDef.frameHeight,
-    });
+    // Character system (manifest+config driven) is initialized BEFORE the
+    // Phaser game is created (GameCanvas awaits initCharacterSystem()).
+    const selected = getSelectedCharacter();
+    if (selected) {
+      this.localDef = selected;
+      this.queueCharacterTextures(selected);
+    } else {
+      console.error('[WorldScene] No valid character found — check assets/characters and /admin/characters');
+    }
 
     this.load.image('sitting-north', '/assets/characters/action/sitting/north.png');
     this.load.image('sitting-south', '/assets/characters/action/sitting/south.png');
@@ -264,6 +296,7 @@ export class WorldScene extends Phaser.Scene {
     const spawnPoint = this.findSpawnPoint(map);
     this.createPlayer(spawnPoint.x, spawnPoint.y);
     this.createAnimations();
+    this.setupAttackKey();
 
     // Debug graphics overlay
     this.debugGfx = this.add.graphics();
@@ -453,15 +486,13 @@ export class WorldScene extends Phaser.Scene {
     if (!this.showDebugVisuals) return;
     const bx = this.playerBody.position.x;
     const by = this.playerBody.position.y;
-    const bodyConfig = getBodyConfig();
-    const radius = bodyConfig.radius;
+    const radius = this.localDef?.bodyRadius ?? 10;
 
-    // WHITE rectangle = full character frame canvas
-    const charDef = getCharacter();
-    const fw = charDef.frameWidth * charDef.scale;
-    const fh = charDef.frameHeight * charDef.scale;
-    const frameX = this.player.x - charDef.originX * fw;
-    const frameY = this.player.y - charDef.originY * fh;
+    // WHITE rectangle = full character frame canvas (current frame size)
+    const fw = this.player.frame.width;
+    const fh = this.player.frame.height;
+    const frameX = this.player.x - this.player.originX * fw;
+    const frameY = this.player.y - this.player.originY * fh;
     this.debugGfx.lineStyle(1, 0xffffff, 0.6);
     this.debugGfx.strokeRect(frameX, frameY, fw, fh);
 
@@ -506,6 +537,9 @@ export class WorldScene extends Phaser.Scene {
       }
       this.debugGfx.strokePath();
     }
+
+    // Combat boxes (hurtbox lime / hitbox magenta) following the live frame
+    this.drawCombatDebug();
   }
 
   private setupZoom() {
@@ -932,8 +966,7 @@ export class WorldScene extends Phaser.Scene {
     this.lastStuckPos = null;
     this.rerouteAttempts = 0;
     this.matter.body.setVelocity(this.playerBody, { x: 0, y: 0 });
-    this.player.anims.stop();
-    this.player.setFrame(getIdleFrame(this.currentDirection));
+    this.localIdle();
     this.emitMovement(false);
   }
 
@@ -990,19 +1023,24 @@ export class WorldScene extends Phaser.Scene {
   }
 
   private createPlayer(x: number, y: number) {
-    const charDef = getCharacter();
+    const def = this.localDef;
+    const walk = def ? movementOrFallback(def, 'walk') : null;
 
-    this.player = this.add.sprite(x, y, charDef.id, 0);
-    this.player.setScale(charDef.scale);
-    this.player.setOrigin(charDef.originX, charDef.originY);
+    if (def && walk) {
+      this.player = this.add.sprite(x, y, walk.textureKey, firstFrameIndexFor(def, walk, 'down'));
+      this.player.setOrigin(def.originX, def.originY);
+    } else {
+      console.error('[WorldScene] createPlayer: no character definition — using placeholder');
+      this.player = this.add.sprite(x, y, '__DEFAULT', 0);
+      this.player.setOrigin(0.5, 0.5);
+    }
     this.player.setDepth(100);
 
     // Collision body at the character's feet using a circle for smooth sliding.
     // Body config comes from admin-defined values (or fallback defaults).
-    const bodyConfig = getBodyConfig(charDef.id);
-    const bodyRadius = bodyConfig.radius;
-    const feetOffsetX = Math.round(bodyConfig.offsetX);
-    const feetOffsetY = Math.round(bodyConfig.offsetY);
+    const bodyRadius = def?.bodyRadius ?? 10;
+    const feetOffsetX = Math.round(def?.bodyOffsetX ?? 0);
+    const feetOffsetY = Math.round(def?.bodyOffsetY ?? 21);
 
     this.playerBody = this.matter.add.circle(
       x + feetOffsetX, y + feetOffsetY,
@@ -1021,18 +1059,7 @@ export class WorldScene extends Phaser.Scene {
   }
 
   private createAnimations() {
-    const charDef = getCharacter();
-    for (let i = 0; i < charDef.directions.length; i++) {
-      const dir = charDef.directions[i];
-      const start = i * charDef.framesPerDirection;
-      const end = start + charDef.framesPerDirection - 1;
-      this.anims.create({
-        key: getAnimKey(dir),
-        frames: this.anims.generateFrameNumbers(charDef.id, { start, end }),
-        frameRate: 12,
-        repeat: -1,
-      });
-    }
+    if (this.localDef) this.ensureCharacterAnimations(this.localDef);
   }
 
   update() {
@@ -1062,19 +1089,30 @@ export class WorldScene extends Phaser.Scene {
 
     this.otherPlayers.forEach((remote) => {
       if (remote.seated) return;
+      if (remote.attackingUntil > 0 && Date.now() >= remote.attackingUntil) {
+        remote.attackingUntil = 0;
+      }
+      if (remote.attackingUntil > 0) return; // attack animation owns the sprite
+      const walk = movementOrFallback(remote.def, 'walk');
+      if (!walk) return;
       if (remote.isMoving) {
-        remote.sprite.anims.play(getAnimKey(remote.direction), true);
+        remote.sprite.anims.play(animKeyFor(remote.def.id, walk.movement, this.dirForDef(remote.def, remote.direction)), true);
       } else {
-        remote.sprite.anims.stop();
-        remote.sprite.setFrame(getIdleFrame(remote.direction));
+        this.remoteIdle(remote);
       }
     });
+
+    // Local attack animation finished → settle back to idle pose
+    if (this.attackingUntil > 0 && Date.now() >= this.attackingUntil) {
+      this.attackingUntil = 0;
+      this.localIdle();
+    }
+    if (this.attackingUntil > 0) return; // no movement while attacking
 
     if (!this.target) {
       if (this.playerBody.speed > 0.1) {
         this.matter.body.setVelocity(this.playerBody, { x: 0, y: 0 });
-        this.player.anims.stop();
-        this.player.setFrame(getIdleFrame(this.currentDirection));
+        this.localIdle();
         this.emitMovement(false);
       }
       return;
@@ -1123,8 +1161,7 @@ export class WorldScene extends Phaser.Scene {
         this.finalDestination = null;
         this.rerouteAttempts = 0;
         this.matter.body.setVelocity(this.playerBody, { x: 0, y: 0 });
-        this.player.anims.stop();
-        this.player.setFrame(getIdleFrame(this.currentDirection));
+        this.localIdle();
         this.emitMovement(false);
         if (this.onPositionUpdate) this.onPositionUpdate(this.player.x, this.player.y);
         return;
@@ -1155,11 +1192,9 @@ export class WorldScene extends Phaser.Scene {
 
     // Stop walk animation when speed is too low (deceleration phase)
     if (speed < this.playerSpeed * 0.35) {
-      this.player.anims.stop();
-      this.player.setFrame(getIdleFrame(dir));
+      this.localIdle(dir);
     } else {
-      this.player.anims.play(getAnimKey(dir), true);
-      this.player.anims.timeScale = speed / MAP_CONFIG.playerSpeed;
+      this.localWalk(dir, speed / MAP_CONFIG.playerSpeed);
     }
 
     const now = Date.now();
@@ -1174,15 +1209,8 @@ export class WorldScene extends Phaser.Scene {
   }
 
   private getDirection8(dx: number, dy: number): Direction8 {
-    const angle = Math.atan2(dy, dx) * (180 / Math.PI);
-    if (angle >= -22.5 && angle < 22.5) return 'right';
-    if (angle >= 22.5 && angle < 67.5) return 'down-right';
-    if (angle >= 67.5 && angle < 112.5) return 'down';
-    if (angle >= 112.5 && angle < 157.5) return 'down-left';
-    if (angle >= 157.5 || angle < -157.5) return 'left';
-    if (angle >= -157.5 && angle < -112.5) return 'up-left';
-    if (angle >= -112.5 && angle < -67.5) return 'up';
-    return 'up-right';
+    // 4-direction characters use the |dx|>|dy| rule; 8-direction use sectors.
+    return directionForVector(this.localDef?.directions ?? 8, dx, dy);
   }
 
   private emitMovement(isMoving: boolean, direction: Direction8 = this.currentDirection) {
@@ -1225,7 +1253,7 @@ export class WorldScene extends Phaser.Scene {
     return this.currentMapKey;
   }
 
-  public handlePlayerJoined(p: { id: string; socketId: string; username: string; rating: number; region: string; x: number; y: number; targetX: number; targetY: number; direction: string; isMoving: boolean }) {
+  public handlePlayerJoined(p: { id: string; socketId: string; username: string; rating: number; region: string; x: number; y: number; targetX: number; targetY: number; direction: string; isMoving: boolean; characterId?: string }) {
     if (p.id === this.localPlayerId) return;
     const sessionId = p.socketId;
     if (this.otherPlayers.has(sessionId)) return;
@@ -1267,9 +1295,12 @@ export class WorldScene extends Phaser.Scene {
     this.otherPlayers.clear();
   }
 
-  public updateRemotePlayerState(sessionId: string, state: { x: number; y: number; targetX: number; targetY: number; direction: string; isMoving: boolean }) {
+  public updateRemotePlayerState(sessionId: string, state: { x: number; y: number; targetX: number; targetY: number; direction: string; isMoving: boolean; characterId?: string }) {
     const remote = this.otherPlayers.get(sessionId);
     if (!remote) return;
+    if (state.characterId && state.characterId !== remote.characterId) {
+      this.applyCharacterToRemote(remote, state.characterId);
+    }
     if (remote.seated) return;
     remote.interpolator.pushSnapshot(state.x, state.y);
     remote.direction = (state.direction as Direction8) || 'down';
@@ -1332,10 +1363,8 @@ export class WorldScene extends Phaser.Scene {
     remote.seatedBoardId = '';
     remote.seatedSeat = '';
     remote.isMoving = false;
-    const charDef = getCharacter();
-    remote.sprite.setTexture(charDef.id);
     remote.sprite.setRotation(0);
-    remote.sprite.setFrame(getIdleFrame(remote.direction));
+    this.restoreRemoteWalkTexture(remote);
     remote.container.setPosition(x, y);
     remote.interpolator.pushSnapshot(x, y);
   }
@@ -1350,10 +1379,8 @@ export class WorldScene extends Phaser.Scene {
     remote.seatedBoardId = '';
     remote.seatedSeat = '';
     remote.interpolator.pushSnapshot(remote.container.x, remote.container.y);
-    const charDef = getCharacter();
-    remote.sprite.setTexture(charDef.id);
     remote.sprite.setRotation(0);
-    remote.sprite.setFrame(getIdleFrame(remote.direction));
+    this.restoreRemoteWalkTexture(remote);
   }
 
   public unseatRemotePlayersAtBoard(boardId: string) {
@@ -1363,20 +1390,25 @@ export class WorldScene extends Phaser.Scene {
         remote.seatedBoardId = '';
         remote.seatedSeat = '';
         remote.interpolator.pushSnapshot(remote.container.x, remote.container.y);
-        const charDef = getCharacter();
-        remote.sprite.setTexture(charDef.id);
         remote.sprite.setRotation(0);
-        remote.sprite.setFrame(getIdleFrame(remote.direction));
+        this.restoreRemoteWalkTexture(remote);
       }
     }
   }
 
-  private addRemotePlayer(sessionId: string, p: { id: string; username: string; rating: number; x: number; y: number; direction: string; isMoving: boolean }) {
-    const charDef = getCharacter();
+  private addRemotePlayer(sessionId: string, p: { id: string; username: string; rating: number; x: number; y: number; direction: string; isMoving: boolean; characterId?: string }) {
+    const def = getWorldCharacter(p.characterId);
+    if (!def) {
+      console.error('[WorldScene] addRemotePlayer: no character definitions available');
+      return;
+    }
+    const walk = movementOrFallback(def, 'walk');
+    if (!walk) return;
+
     const c = this.add.container(p.x, p.y).setDepth(99);
-    const s = this.add.sprite(0, 0, charDef.id, 0);
-    s.setScale(charDef.scale);
-    s.setOrigin(charDef.originX, charDef.originY);
+    const hasTexture = this.textures.exists(walk.textureKey);
+    const s = this.add.sprite(0, 0, hasTexture ? walk.textureKey : '__DEFAULT', 0);
+    s.setOrigin(def.originX, def.originY);
     c.add(s);
 
     c.setSize(48, 48);
@@ -1388,7 +1420,7 @@ export class WorldScene extends Phaser.Scene {
 
     const interpolator = new RemotePlayerInterpolator(p.x, p.y);
     const direction = (p.direction as Direction8) || 'down';
-    this.otherPlayers.set(sessionId, {
+    const remote: RemotePlayer = {
       container: c,
       sprite: s,
       username: p.username,
@@ -1401,6 +1433,18 @@ export class WorldScene extends Phaser.Scene {
       seated: false,
       seatedBoardId: '',
       seatedSeat: '',
+      characterId: def.id,
+      def,
+      attackingUntil: 0,
+    };
+    this.otherPlayers.set(sessionId, remote);
+
+    // The remote may use a character whose sheets we haven't loaded yet
+    // (e.g. after they switched characters). Load on demand, then apply.
+    this.ensureCharacterLoaded(def).then(() => {
+      if (!remote.sprite.scene) return; // destroyed meanwhile
+      if (remote.characterId !== def.id) return; // switched again meanwhile
+      if (!remote.seated) this.restoreRemoteWalkTexture(remote);
     });
   }
 
@@ -1689,8 +1733,7 @@ export class WorldScene extends Phaser.Scene {
       },
       onComplete: () => {
         this.currentDirection = side === 'left' ? 'right' : 'left';
-        this.player.anims.stop();
-        this.player.setFrame(getIdleFrame(this.currentDirection));
+        this.localIdle();
       },
     });
 
@@ -1707,8 +1750,7 @@ export class WorldScene extends Phaser.Scene {
     this.currentWaypointIndex = 0;
     this.finalDestination = null;
     this.matter.body.setVelocity(this.playerBody, { x: 0, y: 0 });
-    this.player.anims.stop();
-    this.player.setFrame(getIdleFrame(this.currentDirection));
+    this.localIdle();
 
     if (arenaId) {
       const arena = this.arenas.find(a => a.id === arenaId);
@@ -1933,10 +1975,8 @@ export class WorldScene extends Phaser.Scene {
 
     if (anchors) {
       // Restore walking spritesheet before exit animation
-      const charDef = getCharacter();
-      this.player.setTexture(charDef.id);
+      this.restoreLocalWalkTexture();
       this.player.setRotation(0);
-      this.player.setFrame(getIdleFrame(this.currentDirection));
 
       const exit = getExitAnchor(anchors, role, seat);
       if (exit && exit.x !== 0) {
@@ -1966,8 +2006,7 @@ export class WorldScene extends Phaser.Scene {
             this.player.x = Math.round(exit.x);
             this.player.y = Math.round(exit.y);
             this.currentDirection = exit.direction as any;
-            this.player.anims.stop();
-            this.player.setFrame(getIdleFrame(this.currentDirection));
+            this.localIdle();
             this.seatTween = null;
             // Restore body to dynamic and re-enable collisions
             this.matter.body.setStatic(this.playerBody, false);
@@ -2012,8 +2051,7 @@ export class WorldScene extends Phaser.Scene {
     this.matter.body.setVelocity(this.playerBody, { x: 0, y: 0 });
 
     // Restore texture and rotation
-    const charDef = getCharacter();
-    this.player.setTexture(charDef.id);
+    this.restoreLocalWalkTexture();
     this.player.setRotation(0);
 
     // Find a safe position in the reception center
@@ -2032,8 +2070,7 @@ export class WorldScene extends Phaser.Scene {
 
     // Set direction and idle frame
     this.currentDirection = 'down';
-    this.player.anims.stop();
-    this.player.setFrame(getIdleFrame(this.currentDirection));
+    this.localIdle();
 
     // Restore camera and unlock movement
     this.targetZoom = this.defaultZoom;
@@ -2088,7 +2125,7 @@ export class WorldScene extends Phaser.Scene {
     const th = tmjData.tileheight || 32;
     const mapWidthPx = tmjData.width * tw;
     const mapHeightPx = tmjData.height * th;
-    const bodyRadius = getBodyConfig().radius;
+    const bodyRadius = this.localDef?.bodyRadius ?? 10;
 
     const tryRegion = (xMin: number, xMax: number, yMin: number, yMax: number): { x: number; y: number } | null => {
       const colStart = Math.max(0, Math.floor(xMin / tw));
@@ -2579,8 +2616,7 @@ export class WorldScene extends Phaser.Scene {
     // Apply direction
     this.currentDirection = direction as any;
     if (this.player) {
-      this.player.anims.stop();
-      this.player.setFrame(getIdleFrame(this.currentDirection));
+      this.localIdle();
     }
 
     // Snap camera
@@ -2602,8 +2638,7 @@ export class WorldScene extends Phaser.Scene {
     }
     if (this.player) {
       this.tweens.killTweensOf(this.player);
-      const charDef = getCharacter();
-      this.player.setTexture(charDef.id);
+      this.restoreLocalWalkTexture();
     }
     this.currentSeatInfo = null;
     this.target = null;
@@ -2616,11 +2651,389 @@ export class WorldScene extends Phaser.Scene {
     if (this.player) {
       this.player.setPosition(x, y);
       this.player.setRotation(0);
-      this.player.anims.stop();
-      this.player.setFrame(getIdleFrame(this.currentDirection));
+      this.localIdle();
     }
     this.cameraTargetX = x;
     this.cameraTargetY = y;
     this.cameras.main.centerOn(x, y);
+  }
+
+  // ------------------------------------------------------------------
+  // Character system helpers (manifest/config driven)
+  // ------------------------------------------------------------------
+
+  /** Maps any incoming direction string onto a direction this def supports. */
+  private dirForDef(def: WorldCharacterDef, direction: string): Direction8 {
+    return def.directionRows[rowIndexFor(def, direction)];
+  }
+
+  private queueCharacterTextures(def: WorldCharacterDef) {
+    for (const m of def.movements.values()) {
+      if (this.textures.exists(m.textureKey)) continue;
+      this.load.spritesheet(m.textureKey, m.url, {
+        frameWidth: m.frameWidth,
+        frameHeight: m.frameHeight,
+      });
+    }
+  }
+
+  /** Creates every movement × direction animation for a character (idempotent). */
+  private ensureCharacterAnimations(def: WorldCharacterDef) {
+    const LOOPING = new Set(['walk', 'run', 'idle']);
+    for (const m of def.movements.values()) {
+      for (const dir of def.directionRows) {
+        const key = animKeyFor(def.id, m.movement, dir);
+        if (this.anims.exists(key)) continue;
+        if (!this.textures.exists(m.textureKey)) continue;
+        const start = firstFrameIndexFor(def, m, dir);
+        this.anims.create({
+          key,
+          frames: this.anims.generateFrameNumbers(m.textureKey, { start, end: start + m.columns - 1 }),
+          frameRate: 12,
+          repeat: LOOPING.has(m.movement) ? -1 : 0,
+        });
+      }
+    }
+  }
+
+  /** Loads a character's spritesheets on demand (for switch + remote players). */
+  private ensureCharacterLoaded(def: WorldCharacterDef): Promise<void> {
+    const missing = [...def.movements.values()].filter((m) => !this.textures.exists(m.textureKey));
+    if (missing.length === 0) {
+      this.ensureCharacterAnimations(def);
+      return Promise.resolve();
+    }
+    return new Promise((resolve) => {
+      for (const m of missing) {
+        this.load.spritesheet(m.textureKey, m.url, {
+          frameWidth: m.frameWidth,
+          frameHeight: m.frameHeight,
+        });
+      }
+      this.load.once(Phaser.Loader.Events.COMPLETE, () => {
+        this.ensureCharacterAnimations(def);
+        resolve();
+      });
+      this.load.start();
+    });
+  }
+
+  /** Local player: play looping idle animation or freeze on the walk row's first frame. */
+  private localIdle(direction: Direction8 = this.currentDirection) {
+    const def = this.localDef;
+    if (!def || !this.player) return;
+    if (this.attackingUntil > 0) return;
+    const dir = this.dirForDef(def, direction);
+    if (def.movements.has('idle')) {
+      this.player.anims.play(animKeyFor(def.id, 'idle', dir), true);
+      this.player.anims.timeScale = 1;
+      return;
+    }
+    const walk = movementOrFallback(def, 'walk');
+    if (!walk) return;
+    this.player.anims.stop();
+    if (this.player.texture.key !== walk.textureKey) this.player.setTexture(walk.textureKey);
+    this.player.setFrame(firstFrameIndexFor(def, walk, dir));
+  }
+
+  /** Local player: walking animation with speed-scaled playback. */
+  private localWalk(direction: Direction8, timeScale: number) {
+    const def = this.localDef;
+    if (!def || !this.player) return;
+    if (this.attackingUntil > 0) return;
+    const walk = movementOrFallback(def, 'walk');
+    if (!walk) return;
+    this.player.anims.play(animKeyFor(def.id, walk.movement, this.dirForDef(def, direction)), true);
+    this.player.anims.timeScale = timeScale;
+  }
+
+  /** Restores the local player's walking texture + idle frame (no idle anim). */
+  private restoreLocalWalkTexture() {
+    const def = this.localDef;
+    if (!def || !this.player) return;
+    const walk = movementOrFallback(def, 'walk');
+    if (!walk || !this.textures.exists(walk.textureKey)) return;
+    this.player.anims.stop();
+    if (this.player.texture.key !== walk.textureKey) this.player.setTexture(walk.textureKey);
+    this.player.setFrame(firstFrameIndexFor(def, walk, this.dirForDef(def, this.currentDirection)));
+  }
+
+  /** Remote player idle pose (idle anim when the character has one). */
+  private remoteIdle(remote: RemotePlayer) {
+    const def = remote.def;
+    if (def.movements.has('idle')) {
+      const key = animKeyFor(def.id, 'idle', this.dirForDef(def, remote.direction));
+      if (this.anims.exists(key)) {
+        remote.sprite.anims.play(key, true);
+        return;
+      }
+    }
+    const walk = movementOrFallback(def, 'walk');
+    if (!walk || !this.textures.exists(walk.textureKey)) return;
+    remote.sprite.anims.stop();
+    if (remote.sprite.texture.key !== walk.textureKey) remote.sprite.setTexture(walk.textureKey);
+    remote.sprite.setFrame(firstFrameIndexFor(def, walk, this.dirForDef(def, remote.direction)));
+  }
+
+  /** Restores a remote player's own walking texture + idle frame. */
+  private restoreRemoteWalkTexture(remote: RemotePlayer) {
+    const def = remote.def;
+    const walk = movementOrFallback(def, 'walk');
+    if (!walk || !this.textures.exists(walk.textureKey)) return;
+    remote.sprite.anims.stop();
+    remote.sprite.setTexture(walk.textureKey);
+    remote.sprite.setOrigin(def.originX, def.originY);
+    remote.sprite.setFrame(firstFrameIndexFor(def, walk, this.dirForDef(def, remote.direction)));
+  }
+
+  /** Applies a (possibly not yet loaded) character to a remote player. */
+  private applyCharacterToRemote(remote: RemotePlayer, characterId: string) {
+    const def = getWorldCharacter(characterId);
+    if (!def || def.id === remote.characterId) return;
+    remote.characterId = def.id;
+    this.ensureCharacterLoaded(def).then(() => {
+      if (!remote.sprite.scene) return; // destroyed meanwhile
+      if (remote.characterId !== def.id) return; // switched again meanwhile
+      remote.def = def;
+      remote.attackingUntil = 0;
+      if (!remote.seated) this.restoreRemoteWalkTexture(remote);
+    });
+  }
+
+  // ------------------------------------------------------------------
+  // Combat (dev): attack intent + remote attack playback
+  // ------------------------------------------------------------------
+
+  private setupAttackKey() {
+    this.input.keyboard?.on('keydown-F', () => {
+      const el = document.activeElement as HTMLElement | null;
+      if (el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.isContentEditable)) return;
+      this.tryAttack();
+    });
+  }
+
+  /** Plays the local attack animation and sends the attack INTENT to the server. */
+  public tryAttack(): boolean {
+    const def = this.localDef;
+    if (!def || !this.player) return false;
+    if (this.movementLocked || this.inMatch || this.currentSeatInfo || this.seatTween) return false;
+    if (this.attackingUntil > 0 && Date.now() < this.attackingUntil) return false;
+    const attackMv =
+      def.movements.get('attack') ?? def.movements.get('walk-attack') ?? def.movements.get('run-attack');
+    if (!attackMv) {
+      console.warn(`[WorldScene] ${def.id} has no attack movement`);
+      return false;
+    }
+    // Stop and settle movement
+    this.target = null;
+    this.pathWaypoints = [];
+    this.currentWaypointIndex = 0;
+    this.finalDestination = null;
+    this.matter.body.setVelocity(this.playerBody, { x: 0, y: 0 });
+
+    const dir = this.dirForDef(def, this.currentDirection);
+    this.attackingUntil = Date.now() + (attackMv.columns / 12) * 1000;
+    this.player.anims.timeScale = 1;
+    this.player.anims.play(animKeyFor(def.id, attackMv.movement, dir));
+    this.emitMovement(false, dir);
+    // Intent only — the server owns validation, timing and hit detection.
+    this.attackSender?.({ type: 'attack', movement: attackMv.movement, direction: dir, characterId: def.id });
+    return true;
+  }
+
+  /** Plays another player's attack animation (server broadcast). */
+  public playRemoteAttack(sessionId: string, movement: string, direction: string) {
+    const remote = this.otherPlayers.get(sessionId);
+    if (!remote || remote.seated) return;
+    const def = remote.def;
+    const mv =
+      def.movements.get(movement) ??
+      def.movements.get('attack') ??
+      movementOrFallback(def, movement);
+    if (!mv) return;
+    const dir = this.dirForDef(def, direction);
+    const key = animKeyFor(def.id, mv.movement, dir);
+    if (!this.anims.exists(key)) return;
+    remote.direction = dir;
+    remote.attackingUntil = Date.now() + (mv.columns / 12) * 1000;
+    remote.sprite.anims.timeScale = 1;
+    remote.sprite.anims.play(key);
+  }
+
+  /** Brief red flash on a hit player (sessionId null = local player). */
+  public flashHitPlayer(sessionId: string | null) {
+    const sprite = sessionId ? this.otherPlayers.get(sessionId)?.sprite : this.player;
+    if (!sprite || !sprite.scene) return;
+    // Phaser 4: fill-tint is set via setTint + setTintMode (setTintFill is a no-op)
+    sprite.setTint(0xff4444);
+    sprite.setTintMode(Phaser.TintModes.FILL);
+    this.time.delayedCall(140, () => {
+      if (sprite.scene) {
+        sprite.clearTint();
+        sprite.setTintMode(Phaser.TintModes.MULTIPLY);
+      }
+    });
+  }
+
+  // ------------------------------------------------------------------
+  // Character switching (dev tool)
+  // ------------------------------------------------------------------
+
+  public getLocalCharacterId(): string | null {
+    return this.localDef?.id ?? null;
+  }
+
+  public setAttackSender(sender: AttackSender | null) {
+    this.attackSender = sender;
+  }
+
+  public setCharacterSetSender(sender: CharacterSetSender | null) {
+    this.characterSetSender = sender;
+  }
+
+  /**
+   * Swaps the local player to another character, preserving position.
+   * Blocked while seated / in a match / locked. Rebuilds the physics body
+   * with the new character's collision config and notifies the server.
+   */
+  public async switchCharacter(nextId: string): Promise<boolean> {
+    const def = getWorldCharacter(nextId);
+    if (!def || !this.player || !this.playerBody) return false;
+    if (def.id === this.localDef?.id) return false;
+    if (this.movementLocked || this.inMatch || this.currentSeatInfo || this.seatTween) return false;
+
+    await this.ensureCharacterLoaded(def);
+    if (!this.player.scene) return false;
+    // Re-check guards — the world may have changed while textures loaded
+    if (this.movementLocked || this.inMatch || this.currentSeatInfo || this.seatTween) return false;
+
+    // Stop movement
+    this.target = null;
+    this.pathWaypoints = [];
+    this.currentWaypointIndex = 0;
+    this.finalDestination = null;
+    this.attackingUntil = 0;
+
+    const spriteX = this.player.x;
+    const spriteY = this.player.y;
+
+    this.localDef = def;
+    setSelectedCharacterId(def.id);
+
+    // Rebuild the physics body with the new character's collision config
+    const feetOffsetX = Math.round(def.bodyOffsetX);
+    const feetOffsetY = Math.round(def.bodyOffsetY);
+    this.matter.world.remove(this.playerBody);
+    this.playerBody = this.matter.add.circle(spriteX + feetOffsetX, spriteY + feetOffsetY, def.bodyRadius, {
+      label: 'player',
+      friction: 0,
+      frictionAir: 0,
+      frictionStatic: 0,
+      restitution: 0,
+    });
+    this.matter.body.setInertia(this.playerBody, Infinity);
+    this.savedCollisionFilter = null;
+    this.playerFeetOffset = feetOffsetY;
+    this.playerFeetOffsetX = feetOffsetX;
+
+    this.player.setOrigin(def.originX, def.originY);
+    this.restoreLocalWalkTexture();
+    this.emitMovement(false);
+    this.characterSetSender?.(def.id);
+    console.log(`[WorldScene] Switched character -> ${def.id}`);
+    return true;
+  }
+
+  // ------------------------------------------------------------------
+  // Combat debug visuals
+  // ------------------------------------------------------------------
+
+  /**
+   * Resolves which asset/direction/frame a sprite is showing right now.
+   * Returns null when the sprite is on a foreign texture (sitting poses).
+   */
+  private currentSpriteCombatState(
+    sprite: Phaser.GameObjects.Sprite,
+    def: WorldCharacterDef,
+    fallbackDirection: string,
+  ): { assetKey: string; direction: string; frameInDir: number } | null {
+    const anim = sprite.anims.currentAnim;
+    if (anim && sprite.anims.isPlaying) {
+      const parts = anim.key.split(':'); // char:<id>:<movement>:<direction>
+      if (parts.length !== 4 || parts[0] !== 'char' || parts[1] !== def.id) return null;
+      const m = def.movements.get(parts[2]);
+      if (!m) return null;
+      const globalIdx = parseInt(sprite.frame.name, 10);
+      if (!Number.isFinite(globalIdx)) return null;
+      const frameInDir = globalIdx - rowIndexFor(def, parts[3]) * m.columns;
+      return { assetKey: m.assetKey, direction: parts[3], frameInDir: Math.max(0, frameInDir) };
+    }
+    // Frozen pose — only meaningful when the sprite sits on one of our sheets
+    const walk = movementOrFallback(def, 'walk');
+    if (!walk || sprite.texture.key !== walk.textureKey) return null;
+    const dir = this.dirForDef(def, fallbackDirection);
+    const globalIdx = parseInt(sprite.frame.name, 10);
+    const frameInDir = Number.isFinite(globalIdx) ? globalIdx - rowIndexFor(def, dir) * walk.columns : 0;
+    return { assetKey: walk.assetKey, direction: dir, frameInDir: Math.max(0, frameInDir) };
+  }
+
+  private drawCombatDebug() {
+    let labelText = '';
+
+    const drawFor = (
+      sprite: Phaser.GameObjects.Sprite,
+      def: WorldCharacterDef | null,
+      fallbackDirection: string,
+      originWorldX: number,
+      originWorldY: number,
+      isLocal: boolean,
+    ) => {
+      if (!def?.combat?.combatBoxesEnabled) return;
+      const state = this.currentSpriteCombatState(sprite, def, fallbackDirection);
+      if (!state) return;
+      const hurt = getActiveHurtboxRects(def.combat, state.assetKey, state.direction, state.frameInDir);
+      const hit = getActiveHitboxRects(def.combat, state.assetKey, state.direction, state.frameInDir);
+      this.debugGfx.lineStyle(1, 0x00ff66, 0.95); // lime = hurtbox
+      for (const r of hurt) {
+        const w = localShapeToWorldCoordinates(r, originWorldX, originWorldY);
+        this.debugGfx.strokeRect(w.x, w.y, w.width, w.height);
+      }
+      this.debugGfx.lineStyle(1, 0xff00ff, 0.95); // magenta = hitbox
+      for (const r of hit) {
+        const w = localShapeToWorldCoordinates(r, originWorldX, originWorldY);
+        this.debugGfx.strokeRect(w.x, w.y, w.width, w.height);
+      }
+      if (isLocal) {
+        labelText = `${state.assetKey.split('/')[0]} ${state.direction} #${state.frameInDir}`;
+      }
+    };
+
+    if (this.player && this.localDef) {
+      drawFor(this.player, this.localDef, this.currentDirection, this.player.x, this.player.y, true);
+    }
+    this.otherPlayers.forEach((remote) => {
+      if (remote.seated) return;
+      drawFor(remote.sprite, remote.def, remote.direction, remote.container.x, remote.container.y, false);
+    });
+
+    if (labelText) {
+      if (!this.combatDebugLabel) {
+        this.combatDebugLabel = this.add
+          .text(0, 0, '', {
+            fontFamily: 'monospace',
+            fontSize: '8px',
+            color: '#a5f3fc',
+            backgroundColor: '#0f172acc',
+          })
+          .setDepth(9000)
+          .setOrigin(0.5, 1);
+      }
+      this.combatDebugLabel
+        .setVisible(true)
+        .setPosition(this.player.x, this.player.y - 44)
+        .setText(labelText);
+    } else if (this.combatDebugLabel) {
+      this.combatDebugLabel.setVisible(false);
+    }
   }
 }

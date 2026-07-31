@@ -18,6 +18,8 @@ interface GameSettingsState {
   boardZoomDesktop: number;
   boardZoomMobile: number;
   chatPreviewSeconds: number;
+  /** Shows the dev "Switch Character" button outside dev builds. */
+  characterSwitchEnabled: boolean;
   loaded: boolean;
   load: () => Promise<void>;
   subscribe: () => () => void;
@@ -30,6 +32,7 @@ type SettingsRow = {
   board_zoom_desktop?: number | null;
   board_zoom_mobile?: number | null;
   chat_preview_seconds?: number | null;
+  character_switch_enabled?: boolean | null;
 };
 
 function mapRow(row: SettingsRow) {
@@ -42,6 +45,9 @@ function mapRow(row: SettingsRow) {
     ...(row.chat_preview_seconds != null
       ? { chatPreviewSeconds: Math.min(10, Math.max(2, Number(row.chat_preview_seconds))) }
       : {}),
+    ...(row.character_switch_enabled != null
+      ? { characterSwitchEnabled: Boolean(row.character_switch_enabled) }
+      : {}),
   };
 }
 
@@ -52,6 +58,7 @@ export const useGameSettingsStore = create<GameSettingsState>((set) => ({
   boardZoomDesktop: BOARD_ZOOM_DESKTOP_DEFAULT,
   boardZoomMobile: BOARD_ZOOM_MOBILE_DEFAULT,
   chatPreviewSeconds: CHAT_PREVIEW_SECONDS_DEFAULT,
+  characterSwitchEnabled: false,
   loaded: false,
 
   load: async () => {

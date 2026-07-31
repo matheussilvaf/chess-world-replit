@@ -10,6 +10,7 @@ import { AccessToken } from "livekit-server-sdk";
 import { tournamentRouter } from "./tournament/routes.js";
 import { coordinatorRouter } from "./tournament/coordinatorRoutes.js";
 import { startCoordinator } from "./tournament/coordinator.js";
+import { getCharacterConfig } from "./combat/characterConfigService.js";
 
 const config: ConfigOptions = {
   // Explicit liveness probing: without app-level pings a half-open socket
@@ -74,6 +75,23 @@ const config: ConfigOptions = {
     // Platform health probe endpoint expected by artifact config
     app.get("/api/healthz", (_req: Request, res: Response) => {
       res.json({ status: "ok", uptime: process.uptime() });
+    });
+
+    // Character combat config (read-only; written by the /admin/characters
+    // editor straight to Supabase — this endpoint exposes the validated,
+    // server-cached view of it).
+    app.get("/api/characters/:characterId/config", async (req: Request, res: Response) => {
+      const characterId = String(req.params.characterId || "");
+      if (!/^character\d{2,4}$/.test(characterId)) {
+        res.status(400).json({ error: "characterId inválido (esperado character01, character02, …)" });
+        return;
+      }
+      const config = await getCharacterConfig(characterId);
+      if (!config) {
+        res.status(404).json({ error: `Nenhuma config válida para ${characterId}` });
+        return;
+      }
+      res.json(config);
     });
 
     app.post("/voice/token", async (req: Request, res: Response) => {

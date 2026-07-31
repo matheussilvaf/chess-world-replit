@@ -17,10 +17,11 @@ import {
 } from '../game/network/colyseusClient';
 import { seatTournamentPlayerWhenReady } from '../game/tournamentSeatClient';
 import { useColyseusStore } from '../hooks/useColyseusConnection';
-import { loadCharacterConfigs } from '../config/loadCharacterConfigs';
+import { initCharacterSystem, getDefaultCharacterId } from '../game/characters/characterCatalog';
 import type { WorldScene } from '../game/scenes/WorldScene';
 import type { Room } from 'colyseus.js';
 import { PlayerNameTags } from './game/PlayerNameTags';
+import { SwitchCharacterButton } from './game/SwitchCharacterButton';
 
 export function GameCanvas() {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -35,10 +36,7 @@ export function GameCanvas() {
   useEffect(() => {
     if (!containerRef.current || gameRef.current) return;
 
-    loadCharacterConfigs();
-
-    const game = createPhaserGame(containerRef.current);
-    gameRef.current = game;
+    let cancelled = false;
 
     const setupScene = () => {
       if (!gameRef.current) return;
@@ -196,9 +194,17 @@ export function GameCanvas() {
       tryAttachListeners(scene);
     };
 
-    setTimeout(setupScene, 500);
+    (async () => {
+      // Manifest + saved configs must be ready BEFORE Phaser boots — the
+      // scene preload reads the character definitions synchronously.
+      await initCharacterSystem();
+      if (cancelled || !containerRef.current || gameRef.current) return;
+      gameRef.current = createPhaserGame(containerRef.current);
+      setTimeout(setupScene, 500);
+    })();
 
     return () => {
+      cancelled = true;
       attachedRoomIdRef.current = null;
       sceneReadyRef.current = false;
       if (gameRef.current) {
@@ -415,6 +421,19 @@ export function GameCanvas() {
       sendMovement(data);
     });
 
+    scene.setAttackSender((payload) => {
+      room.send('attack', payload);
+    });
+    scene.setCharacterSetSender((characterId) => {
+      room.send('set_character', { characterId });
+    });
+    // Always announce our character on (re)join: the server needs it for
+    // authoritative combat (hurtbox lookup) even when it's the default one.
+    const localCharId = scene.getLocalCharacterId();
+    if (localCharId) {
+      room.send('set_character', { characterId: localCharId });
+    }
+
     const arenas = scene.getArenas();
     if (arenas.length > 0) {
       const payload = arenas.map((a: any) => ({ id: a.id, name: a.title, x: a.x, y: a.y, width: a.width, height: a.height }));
@@ -440,6 +459,7 @@ export function GameCanvas() {
         targetY: player.targetY,
         direction: player.direction,
         isMoving: player.isMoving,
+        characterId: player.characterId || undefined,
       });
 
       player.onChange(() => {
@@ -456,6 +476,7 @@ export function GameCanvas() {
           targetY: player.targetY,
           direction: player.direction,
           isMoving: player.isMoving,
+          characterId: player.characterId || undefined,
         });
       });
 
@@ -666,6 +687,26 @@ export function GameCanvas() {
       console.warn('[Colyseus] Error:', data.message);
     });
 
+    // Combat: another player's attack animation (server-validated broadcast)
+    room.onMessage('player_attack', (data: any) => {
+      if (!data || data.sessionId === room.sessionId) return;
+      scene.playRemoteAttack(data.sessionId, data.movement, data.direction);
+    });
+
+    // Combat: a hit was confirmed by the server
+    room.onMessage('combat_hit', (data: any) => {
+      if (!data) return;
+      const isMe = data.targetSessionId === room.sessionId;
+      scene.flashHitPlayer(isMe ? null : data.targetSessionId);
+      console.log(
+        `[Combat] ${data.attackerName || '?'} acertou ${isMe ? 'você' : data.targetName || '?'} (-${data.damage} HP → ${data.targetHp})`,
+      );
+    });
+
+    room.onMessage('combat_ko', (data: any) => {
+      console.log(`[Combat] KO: ${data?.targetName || '?'} (HP resetado)`);
+    });
+
     room.onMessage('chat', (data: any) => {
       useGameStore.getState().addChatMessage({
         id: data.id,
@@ -693,6 +734,10 @@ export function GameCanvas() {
       />
       {/* HTML player name-tag overlay — sits above canvas, no pointer events */}
       <PlayerNameTags />
+      {/* Dev tool: cycle through valid characters (gated by env/flag inside) */}
+      <SwitchCharacterButton
+        getScene={() => (gameRef.current ? getWorldScene(gameRef.current) : null)}
+      />
     </div>
   );
 }

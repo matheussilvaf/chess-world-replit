@@ -1,2 +1,3 @@
 - [ChessWorld MMO port](chessworld-port.md) — Colyseus/Supabase quirks: stale deploys, engine ownership, decoy trap, presence=world-rooms, DB CHECK vocab, PostgREST traps, client pinning, /server↔api-server mirror rule.
 - [gitPush provider](gitpush-provider.md) — sempre usar `gitPush({ provider: "github" })`, sem o parâmetro vai pro backup interno.
+- [Same-file edit batching](edit-batching.md) — many Edit calls to one file in one batch can silently drop some; batch small, sed for repeats, grep/tsc-verify after.

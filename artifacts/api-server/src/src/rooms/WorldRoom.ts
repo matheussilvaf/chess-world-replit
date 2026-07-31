@@ -8,6 +8,8 @@ import { MatchState } from '../schemas/MatchState.js';
 import { VoiceParticipantState } from '../schemas/VoiceParticipantState.js';
 import * as coordinator from '../tournament/coordinator.js';
 import type { TournamentMatchCreateParams, TournamentMatchFinishParams, PendingPairing } from '../tournament/coordinator.js';
+import { CombatResolver } from '../combat/combatResolver.js';
+import { isCharacterSwitchEnabled } from '../combat/characterConfigService.js';
 
 interface JoinOptions {
   playerId: string;
@@ -30,6 +32,8 @@ export class WorldRoom extends Room<WorldState> {
   private drawOfferCounts = new Map<string, { white: number; black: number }>();
   // matchId -> color of the player whose draw offer is currently awaiting an answer
   private pendingDrawOffers = new Map<string, 'w' | 'b'>();
+  /** Server-authoritative combat (client only sends attack intents). */
+  private combatResolver = new CombatResolver(this);
 
   onCreate(options: any) {
     this.setState(new WorldState());
@@ -46,12 +50,15 @@ export class WorldRoom extends Room<WorldState> {
     this.onMessage('move_to', (client, data) => {
       const player = this.state.players.get(client.sessionId);
       if (!player) return;
+      // Combat resolves hitboxes from these values — never let NaN/Infinity
+      // or non-numeric junk poison authoritative state.
+      if (!Number.isFinite(data?.x) || !Number.isFinite(data?.y)) return;
       player.x = data.x;
       player.y = data.y;
-      player.targetX = data.targetX;
-      player.targetY = data.targetY;
-      player.direction = data.direction;
-      player.isMoving = data.isMoving;
+      if (Number.isFinite(data.targetX)) player.targetX = data.targetX;
+      if (Number.isFinite(data.targetY)) player.targetY = data.targetY;
+      if (typeof data.direction === 'string' && data.direction.length <= 16) player.direction = data.direction;
+      player.isMoving = !!data.isMoving;
     });
 
     this.onMessage('register_boards', (client, data) => {
@@ -529,6 +536,28 @@ export class WorldRoom extends Room<WorldState> {
         client.send('tournament_seated', { boardId, color, seat });
       }
     });
+
+    this.onMessage('attack', (client, data) => {
+      void this.combatResolver.handleAttack(client, data);
+    });
+
+    this.onMessage('set_character', async (client, data) => {
+      const player = this.state.players.get(client.sessionId);
+      if (!player) return;
+      const raw = typeof data?.characterId === 'string' ? data.characterId.trim() : '';
+      if (!/^character\d{2,4}$/.test(raw)) return;
+      if (player.characterId === raw) return;
+      // The first announce is always accepted (the server must know who you
+      // are); *switching* afterwards is gated in production by game_settings
+      // (isCharacterSwitchEnabled caches the flag for ~60s).
+      if (player.characterId && process.env.NODE_ENV === 'production') {
+        const enabled = await isCharacterSwitchEnabled();
+        if (!enabled) return;
+      }
+      const current = this.state.players.get(client.sessionId);
+      if (!current) return; // left during the await
+      current.characterId = raw;
+    });
   }
 
   onJoin(client: Client, options: JoinOptions) {
@@ -622,6 +651,7 @@ export class WorldRoom extends Room<WorldState> {
     });
     this.state.voiceParticipants.delete(client.sessionId);
     this.state.players.delete(client.sessionId);
+    this.combatResolver.clearSession(client.sessionId);
     console.log(`[WorldRoom] Player removed: ${username} | remaining: ${this.state.players.size}`);
 
     const affected: [string, MatchState][] = [];

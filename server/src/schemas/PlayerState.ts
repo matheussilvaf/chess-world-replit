@@ -13,6 +13,8 @@ export class PlayerState extends Schema {
   direction!: string;
   isMoving!: boolean;
   currentBoardId!: string;
+  characterId!: string;
+  hp!: number;
 
   constructor() {
     super();
@@ -28,6 +30,8 @@ export class PlayerState extends Schema {
     this.direction = 'down';
     this.isMoving = false;
     this.currentBoardId = '';
+    this.characterId = '';
+    this.hp = 100;
   }
 }
 
@@ -44,4 +48,6 @@ defineTypes(PlayerState, {
   direction: 'string',
   isMoving: 'boolean',
   currentBoardId: 'string',
+  characterId: 'string',
+  hp: 'number',
 });
