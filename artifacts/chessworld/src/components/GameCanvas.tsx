@@ -22,6 +22,7 @@ import type { WorldScene } from '../game/scenes/WorldScene';
 import type { Room } from 'colyseus.js';
 import { PlayerNameTags } from './game/PlayerNameTags';
 import { SwitchCharacterButton } from './game/SwitchCharacterButton';
+import { AttackButton } from './game/AttackButton';
 
 export function GameCanvas() {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -771,6 +772,10 @@ export function GameCanvas() {
       <PlayerNameTags />
       {/* Dev tool: cycle through valid characters (gated by env/flag inside) */}
       <SwitchCharacterButton
+        getScene={() => (gameRef.current ? getWorldScene(gameRef.current) : null)}
+      />
+      {/* Mobile: circular attack button (touch devices only) */}
+      <AttackButton
         getScene={() => (gameRef.current ? getWorldScene(gameRef.current) : null)}
       />
     </div>
