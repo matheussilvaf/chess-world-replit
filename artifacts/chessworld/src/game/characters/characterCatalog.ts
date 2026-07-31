@@ -22,6 +22,7 @@ import {
   detectGrid,
   validateCharacterConfig,
   directionForVector,
+  characterMaxHp,
 } from '../../shared/combat/CharacterCombatShapes';
 
 export type { Direction4, Direction8, CharacterConfigV1 };
@@ -56,6 +57,8 @@ export interface WorldCharacterDef {
   bodyOffsetX: number;
   bodyOffsetY: number;
   bodyRadius: number;
+  /** Total HP configured for this character (default 100). */
+  maxHp: number;
   /** Full combat config (null when none saved / combat disabled). */
   combat: CharacterConfigV1 | null;
   warnings: string[];
@@ -222,6 +225,7 @@ function buildDef(
     bodyOffsetX,
     bodyOffsetY,
     bodyRadius,
+    maxHp: characterMaxHp(combat),
     combat,
     warnings,
   };

@@ -60,6 +60,10 @@ export function SwitchCharacterButton({ getScene }: { getScene: () => WorldScene
         setCurrentId(nextId);
       } else {
         showDenial(scene.lastSwitchDenial ?? 'Não foi possível trocar agora.');
+        // A denial often means our localStorage id was stale ("já é o
+        // personagem ativo") — resync with the scene's actual character.
+        const actual = scene.getLocalCharacterId();
+        if (actual && actual !== currentId) setCurrentId(actual);
       }
     } catch (err) {
       console.error('[SwitchCharacterButton] switch failed:', err);

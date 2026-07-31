@@ -9,6 +9,7 @@
  */
 import { supabase } from '../../../lib/supabase';
 import {
+  DEFAULT_MAX_HP,
   defaultCharacterConfig,
   detectGrid,
   directionRowsFor,
@@ -120,6 +121,11 @@ export function buildWorkingConfig(
       `Removida(s) ${junkKeys.length} config(s) de asset que não pertencem a este personagem: ` +
         `${junkKeys.join(', ')} — salve para limpar definitivamente.`,
     );
+  }
+
+  // Combat stats default (configs saved before HP/dano existirem).
+  if (typeof config.maxHp !== 'number' || !Number.isFinite(config.maxHp)) {
+    config.maxHp = DEFAULT_MAX_HP;
   }
   return { config, issues };
 }

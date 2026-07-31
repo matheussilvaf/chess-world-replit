@@ -23,6 +23,9 @@ import {
   unionHurtboxRects,
   type CharacterConfigV1,
   type LocalRectangle,
+  DEFAULT_MAX_HP,
+  assetDamage,
+  assetDamageEnabled,
 } from '../shared/combat/CharacterCombatShapes.js';
 import { getCharacterConfig } from './characterConfigService.js';
 
@@ -30,8 +33,6 @@ const FPS = 12;
 const ATTACK_MOVEMENTS = new Set(['attack', 'walk-attack', 'run-attack']);
 const DIRECTIONS = new Set<string>(DIRECTION_ROWS_8);
 const CHARACTER_ID_RE = /^character\d{2,4}$/;
-const DAMAGE_PER_HIT = 10; // placeholder until real combat stats exist
-const MAX_HP = 100;
 const COOLDOWN_PAD_MS = 200;
 
 export interface AttackIntent {
@@ -95,6 +96,12 @@ export class CombatResolver {
     // but are inert in gameplay: no damage dealt.
     if (!config || !config.combatBoxesEnabled || !assetKey) return;
 
+    // Per-movement damage: the swing always animates for everyone, but only
+    // movements with "dano ativo" (and damage > 0) schedule hit resolution.
+    const attackAsset = config.assets[assetKey];
+    const damage = assetDamageEnabled(attackAsset) ? assetDamage(attackAsset) : 0;
+    if (damage <= 0) return;
+
     const frames = hitboxFrameIndices(config, assetKey, direction);
     if (frames.length === 0) return;
 
@@ -102,7 +109,7 @@ export class CombatResolver {
     for (const frameIdx of frames) {
       const delayMs = (frameIdx / FPS) * 1000;
       this.room.clock.setTimeout(() => {
-        void this.resolveFrame(client.sessionId, config, assetKey, direction, frameIdx, hitTargets).catch(
+        void this.resolveFrame(client.sessionId, config, assetKey, direction, frameIdx, hitTargets, damage).catch(
           (e) => console.warn('[combat] frame resolution failed:', e instanceof Error ? e.message : e),
         );
       }, delayMs);
@@ -116,6 +123,7 @@ export class CombatResolver {
     direction: string,
     frameIdx: number,
     hitTargets: Set<string>,
+    damage: number,
   ): Promise<void> {
     const attacker = this.room.state.players.get(attackerSessionId);
     if (!attacker) return; // attacker left mid-swing
@@ -147,17 +155,19 @@ export class CombatResolver {
       if (!hit) continue;
 
       hitTargets.add(sessionId);
-      target.hp = Math.max(0, target.hp - DAMAGE_PER_HIT);
+      const targetMaxHp = Math.max(1, target.maxHp || DEFAULT_MAX_HP);
+      target.hp = Math.max(0, target.hp - damage);
       this.room.broadcast('combat_hit', {
         attackerSessionId,
         attackerName: attacker.username,
         targetSessionId: sessionId,
         targetName: target.username,
-        damage: DAMAGE_PER_HIT,
+        damage,
         targetHp: target.hp,
+        targetMaxHp,
       });
       if (target.hp <= 0) {
-        target.hp = MAX_HP; // instant "respawn" placeholder — no death state yet
+        target.hp = targetMaxHp; // instant "respawn" placeholder — no death state yet
         this.room.broadcast('combat_ko', {
           targetSessionId: sessionId,
           targetName: target.username,

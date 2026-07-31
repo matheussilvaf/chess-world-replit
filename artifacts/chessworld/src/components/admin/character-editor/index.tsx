@@ -622,6 +622,60 @@ export function CharacterConfigEditor() {
             </div>
           )}
 
+          {/* Per-movement damage settings (saved with Salvar) */}
+          {working && assetKey && working.assets[assetKey] && (
+            <div className="mb-4 flex flex-wrap items-center gap-4 rounded-lg bg-slate-800/60 border border-slate-700/60 px-3 py-2">
+              <label className="flex items-center gap-2 text-xs text-slate-300 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={working.assets[assetKey].damageEnabled === true}
+                  onChange={(e) => {
+                    const on = e.target.checked;
+                    setWorking((prev) => {
+                      if (!prev || !assetKey) return prev;
+                      const aCfg = prev.assets[assetKey];
+                      if (!aCfg) return prev;
+                      return {
+                        ...prev,
+                        assets: { ...prev.assets, [assetKey]: { ...aCfg, damageEnabled: on } },
+                      };
+                    });
+                    markDirty();
+                  }}
+                  className="accent-red-500"
+                />
+                Dano ativo neste movimento
+              </label>
+              <label className="flex items-center gap-2 text-xs text-slate-400">
+                Dano por acerto
+                <input
+                  type="number"
+                  min={0}
+                  max={1000}
+                  value={working.assets[assetKey].damage ?? 10}
+                  disabled={working.assets[assetKey].damageEnabled !== true}
+                  onChange={(e) => {
+                    const v = Math.max(0, Math.min(1000, Math.round(Number(e.target.value) || 0)));
+                    setWorking((prev) => {
+                      if (!prev || !assetKey) return prev;
+                      const aCfg = prev.assets[assetKey];
+                      if (!aCfg) return prev;
+                      return {
+                        ...prev,
+                        assets: { ...prev.assets, [assetKey]: { ...aCfg, damage: v } },
+                      };
+                    });
+                    markDirty();
+                  }}
+                  className="w-20 bg-slate-900 border border-slate-700 rounded px-2 py-1 text-xs text-white disabled:opacity-40"
+                />
+              </label>
+              <span className="text-[10px] text-slate-500">
+                Só causa dano com hitbox desenhada + "Ativas no jogo" ligado
+              </span>
+            </div>
+          )}
+
           {/* PNG selector (only when the movement has multiple files) */}
           {assets.length > 1 && (
             <div className="mb-4">
@@ -766,6 +820,36 @@ export function CharacterConfigEditor() {
 
         {/* -------------------------------------------------- right: panels */}
         <div className="space-y-6">
+          {/* Character attributes (HP) */}
+          <div className="bg-slate-900 rounded-xl border border-slate-800 p-6">
+            <div className="flex items-center justify-between gap-4">
+              <div className="flex items-center gap-3">
+                <div className="w-8 h-8 rounded-lg bg-emerald-500/10 flex items-center justify-center">
+                  <span className="text-emerald-400 text-sm font-bold">HP</span>
+                </div>
+                <div>
+                  <h2 className="text-sm font-medium text-white">Atributos</h2>
+                  <p className="text-xs text-slate-400">Vida total do personagem (padrão 100)</p>
+                </div>
+              </div>
+              <label className="flex items-center gap-2 text-xs text-slate-300">
+                HP máximo
+                <input
+                  type="number"
+                  min={1}
+                  max={10000}
+                  value={working?.maxHp ?? 100}
+                  onChange={(e) => {
+                    const v = Math.max(1, Math.min(10000, Math.round(Number(e.target.value) || 0)));
+                    setWorking((prev) => (prev ? { ...prev, maxHp: v } : prev));
+                    markDirty();
+                  }}
+                  className="w-24 bg-slate-800 border border-slate-700 rounded px-2 py-1 text-sm text-white text-right"
+                />
+              </label>
+            </div>
+          </div>
+
           {/* Combat boxes */}
           <div className="bg-slate-900 rounded-xl border border-slate-800 p-6">
             <div className="flex items-center justify-between mb-4">

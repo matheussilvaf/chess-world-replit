@@ -132,3 +132,10 @@ The tester's headless browser has no WebGL context; Phaser 4 is WebGL-only (no C
 - Movement (`move_to`) is client-driven by original design — server only sanitizes (finite numbers, string caps). Full server-side movement is a known open item, NOT a bug to "fix" casually; it would change game feel and the live cloud protocol.
 - Any async gap in a message handler (e.g. cooldown set after `await getConfig`) is a burst-bypass: reserve cooldowns/locks synchronously before the first await, re-check seated/left state inside every scheduled callback.
 - Characters auto-discovered from `public/assets/characters/character NN - 4/8 directions/<movement>/*.png` by a Vite plugin serving `assets/characters/manifest.json`; combat config JSON (schemaVersion 1) lives in Supabase `character_configs.config` jsonb (user must run the ALTER TABLE — editor shows the SQL banner until then) with legacy origin/body columns kept in sync for the old cloud server.
+
+## Combat stats (HP/dano) — design decisions
+- HP/damage live in the character config jsonb: root `maxHp` + per-asset `damageEnabled`/`damage`, all OPTIONAL with lenient validation — old saved configs stay valid, and the previously deployed server ignores the new fields (validators skip unknown keys). Read through the clamped helpers (`characterMaxHp`/`assetDamage`), never raw fields.
+- **Why:** editor saves happen against the LIVE cloud server; a strict validator would brick combat for players until the next deploy.
+- `set_character` has two awaits (switch flag + config fetch) → guarded by a per-session seq map (last-request-wins). Any new await added to that handler must re-check the seq before mutating state, or rapid switches let a stale request win (architect-found race).
+- HP bar visibility is TEST-GATED to character01 (`HP_BAR_TEST_CHARACTER` in WorldScene) — deliberate temporary rule; flip it to always-on/config when the system is approved.
+- Hurt anim: `hurtUntil` gates ONLY animation (local + remote), never movement; attack anims take priority over hurt. Stationary 'attack' blocks movement, walk/run-attack don't (`attackLocksMovement`).

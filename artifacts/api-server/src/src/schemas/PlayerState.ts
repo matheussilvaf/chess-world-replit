@@ -15,6 +15,7 @@ export class PlayerState extends Schema {
   currentBoardId!: string;
   characterId!: string;
   hp!: number;
+  maxHp!: number;
 
   constructor() {
     super();
@@ -32,6 +33,7 @@ export class PlayerState extends Schema {
     this.currentBoardId = '';
     this.characterId = '';
     this.hp = 100;
+    this.maxHp = 100;
   }
 }
 
@@ -50,4 +52,7 @@ defineTypes(PlayerState, {
   currentBoardId: 'string',
   characterId: 'string',
   hp: 'number',
+  // Appended last on purpose: schema field order is part of the wire
+  // protocol for the pinned colyseus.js 0.15 clients — additive only.
+  maxHp: 'number',
 });

@@ -9,7 +9,8 @@ import { VoiceParticipantState } from '../schemas/VoiceParticipantState.js';
 import * as coordinator from '../tournament/coordinator.js';
 import type { TournamentMatchCreateParams, TournamentMatchFinishParams, PendingPairing } from '../tournament/coordinator.js';
 import { CombatResolver } from '../combat/combatResolver.js';
-import { isCharacterSwitchEnabled } from '../combat/characterConfigService.js';
+import { getCharacterConfig, isCharacterSwitchEnabled } from '../combat/characterConfigService.js';
+import { characterMaxHp } from '../shared/combat/CharacterCombatShapes.js';
 
 interface JoinOptions {
   playerId: string;
@@ -34,6 +35,8 @@ export class WorldRoom extends Room<WorldState> {
   private pendingDrawOffers = new Map<string, 'w' | 'b'>();
   /** Server-authoritative combat (client only sends attack intents). */
   private combatResolver = new CombatResolver(this);
+  /** Per-session stamp for set_character: last request wins across awaits. */
+  private characterSwitchSeq = new Map<string, number>();
 
   onCreate(options: any) {
     this.setState(new WorldState());
@@ -547,16 +550,35 @@ export class WorldRoom extends Room<WorldState> {
       const raw = typeof data?.characterId === 'string' ? data.characterId.trim() : '';
       if (!/^character\d{2,4}$/.test(raw)) return;
       if (player.characterId === raw) return;
+      // Last-request-wins: two rapid switches interleave across the awaits
+      // below; every authoritative mutation must re-check this stamp so a
+      // stale (older) request can never overwrite a newer one.
+      const seq = (this.characterSwitchSeq.get(client.sessionId) ?? 0) + 1;
+      this.characterSwitchSeq.set(client.sessionId, seq);
       // The first announce is always accepted (the server must know who you
       // are); *switching* afterwards is gated in production by game_settings
       // (isCharacterSwitchEnabled caches the flag for ~60s).
       if (player.characterId && process.env.NODE_ENV === 'production') {
         const enabled = await isCharacterSwitchEnabled();
         if (!enabled) return;
+        if (this.characterSwitchSeq.get(client.sessionId) !== seq) return; // superseded
       }
       const current = this.state.players.get(client.sessionId);
       if (!current) return; // left during the await
       current.characterId = raw;
+      // HP scales with the character: apply its configured max HP and start
+      // the (new) character at full health. Same-id re-announces returned
+      // early above, so this can't be abused as a mid-fight self-heal.
+      try {
+        const cfg = await getCharacterConfig(raw);
+        if (this.characterSwitchSeq.get(client.sessionId) !== seq) return; // superseded
+        const still = this.state.players.get(client.sessionId);
+        if (!still || still.characterId !== raw) return;
+        still.maxHp = characterMaxHp(cfg);
+        still.hp = still.maxHp;
+      } catch {
+        /* keep previous hp/maxHp when the config lookup fails */
+      }
     });
   }
 
@@ -652,6 +674,7 @@ export class WorldRoom extends Room<WorldState> {
     this.state.voiceParticipants.delete(client.sessionId);
     this.state.players.delete(client.sessionId);
     this.combatResolver.clearSession(client.sessionId);
+    this.characterSwitchSeq.delete(client.sessionId);
     console.log(`[WorldRoom] Player removed: ${username} | remaining: ${this.state.players.size}`);
 
     const affected: [string, MatchState][] = [];

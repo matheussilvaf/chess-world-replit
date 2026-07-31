@@ -455,6 +455,11 @@ export function GameCanvas() {
     // All players in this room are on the same map - show them unconditionally
     state.players.onAdd((player: any, sessionId: string) => {
       if (sessionId === room.sessionId) {
+        // Local HP is server-authoritative: mirror it into the scene's HP bar.
+        scene.updateLocalHp(player.hp ?? 100, player.maxHp || 100);
+        player.onChange(() => {
+          scene.updateLocalHp(player.hp ?? 100, player.maxHp || 100);
+        });
         updateOnlineCount(room);
         return;
       }
@@ -472,6 +477,8 @@ export function GameCanvas() {
         direction: player.direction,
         isMoving: player.isMoving,
         characterId: player.characterId || undefined,
+        hp: typeof player.hp === 'number' ? player.hp : undefined,
+        maxHp: typeof player.maxHp === 'number' ? player.maxHp : undefined,
       });
 
       player.onChange(() => {
@@ -489,6 +496,8 @@ export function GameCanvas() {
           direction: player.direction,
           isMoving: player.isMoving,
           characterId: player.characterId || undefined,
+          hp: typeof player.hp === 'number' ? player.hp : undefined,
+          maxHp: typeof player.maxHp === 'number' ? player.maxHp : undefined,
         });
       });
 
@@ -710,6 +719,7 @@ export function GameCanvas() {
       if (!data) return;
       const isMe = data.targetSessionId === room.sessionId;
       scene.flashHitPlayer(isMe ? null : data.targetSessionId);
+      scene.playHurt(isMe ? null : data.targetSessionId);
       console.log(
         `[Combat] ${data.attackerName || '?'} acertou ${isMe ? 'você' : data.targetName || '?'} (-${data.damage} HP → ${data.targetHp})`,
       );

@@ -41,6 +41,17 @@ interface ChessArenaZone {
   statusIndicator?: Phaser.GameObjects.Container;
 }
 
+// ---------------------------------------------------------------------------
+// Barra de HP — REGRA DE TESTE: por enquanto a barra só aparece em jogadores
+// usando o personagem abaixo. Quando o sistema for aprovado, troque esta
+// regra por "sempre visível" (ou por config).
+// ---------------------------------------------------------------------------
+const HP_BAR_TEST_CHARACTER = 'character01';
+const HP_BAR_WIDTH = 28;
+const HP_BAR_HEIGHT = 4;
+/** Y offset of the HP bar above the sprite origin (name tags sit at -32). */
+const HP_BAR_OFFSET_Y = -26;
+
 interface RemotePlayer {
   container: Phaser.GameObjects.Container;
   sprite: Phaser.GameObjects.Sprite;
@@ -60,6 +71,12 @@ interface RemotePlayer {
   def: WorldCharacterDef;
   /** While in the future, an attack animation owns this sprite. */
   attackingUntil: number;
+  /** While in the future, the hurt animation owns this sprite (anim only). */
+  hurtUntil: number;
+  hp: number;
+  maxHp: number;
+  /** HP bar inside the container (visibility: HP_BAR_TEST_CHARACTER rule). */
+  hpBar: Phaser.GameObjects.Graphics;
 }
 
 type MovementSender = (data: {
@@ -106,6 +123,13 @@ export class WorldScene extends Phaser.Scene {
   private characterSetSender: CharacterSetSender | null = null;
   private localDef: WorldCharacterDef | null = null;
   private attackingUntil = 0;
+  /** False while swinging walk-attack/run-attack: those allow moving. */
+  private attackLocksMovement = true;
+  /** While in the future, the hurt animation owns the local sprite (anim only). */
+  private hurtUntil = 0;
+  private localHp = 100;
+  private localMaxHp = 100;
+  private localHpBar: Phaser.GameObjects.Graphics | null = null;
   private combatDebugLabel: Phaser.GameObjects.Text | null = null;
   private currentDirection: Direction8 = 'down';
   private playerSpeed = MAP_CONFIG.playerSpeed;
@@ -1090,11 +1114,17 @@ export class WorldScene extends Phaser.Scene {
     // to guarantee they read the FINAL physics position for this frame.
 
     this.otherPlayers.forEach((remote) => {
+      // TESTE: barra de HP visível apenas para o personagem de teste.
+      remote.hpBar.setVisible(!remote.seated && remote.characterId === HP_BAR_TEST_CHARACTER);
       if (remote.seated) return;
       if (remote.attackingUntil > 0 && Date.now() >= remote.attackingUntil) {
         remote.attackingUntil = 0;
       }
       if (remote.attackingUntil > 0) return; // attack animation owns the sprite
+      if (remote.hurtUntil > 0 && Date.now() >= remote.hurtUntil) {
+        remote.hurtUntil = 0;
+      }
+      if (remote.hurtUntil > 0) return; // hurt animation owns the sprite
       const walk = movementOrFallback(remote.def, 'walk');
       if (!walk) return;
       if (remote.isMoving) {
@@ -1107,9 +1137,16 @@ export class WorldScene extends Phaser.Scene {
     // Local attack animation finished → settle back to idle pose
     if (this.attackingUntil > 0 && Date.now() >= this.attackingUntil) {
       this.attackingUntil = 0;
-      this.localIdle();
+      if (!this.target) this.localIdle();
     }
-    if (this.attackingUntil > 0) return; // no movement while attacking
+    // Hurt animation finished → settle (hurt never blocks movement)
+    if (this.hurtUntil > 0 && Date.now() >= this.hurtUntil) {
+      this.hurtUntil = 0;
+      if (!this.target && this.attackingUntil <= 0) this.localIdle();
+    }
+    this.updateLocalHpBar();
+    // Stationary 'attack' blocks movement; walk-attack/run-attack don't.
+    if (this.attackingUntil > 0 && this.attackLocksMovement) return;
 
     if (!this.target) {
       if (this.playerBody.speed > 0.1) {
@@ -1255,7 +1292,7 @@ export class WorldScene extends Phaser.Scene {
     return this.currentMapKey;
   }
 
-  public handlePlayerJoined(p: { id: string; socketId: string; username: string; rating: number; region: string; x: number; y: number; targetX: number; targetY: number; direction: string; isMoving: boolean; characterId?: string }) {
+  public handlePlayerJoined(p: { id: string; socketId: string; username: string; rating: number; region: string; x: number; y: number; targetX: number; targetY: number; direction: string; isMoving: boolean; characterId?: string; hp?: number; maxHp?: number }) {
     if (p.id === this.localPlayerId) return;
     const sessionId = p.socketId;
     if (this.otherPlayers.has(sessionId)) return;
@@ -1297,11 +1334,20 @@ export class WorldScene extends Phaser.Scene {
     this.otherPlayers.clear();
   }
 
-  public updateRemotePlayerState(sessionId: string, state: { x: number; y: number; targetX: number; targetY: number; direction: string; isMoving: boolean; characterId?: string }) {
+  public updateRemotePlayerState(sessionId: string, state: { x: number; y: number; targetX: number; targetY: number; direction: string; isMoving: boolean; characterId?: string; hp?: number; maxHp?: number }) {
     const remote = this.otherPlayers.get(sessionId);
     if (!remote) return;
     if (state.characterId && state.characterId !== remote.characterId) {
       this.applyCharacterToRemote(remote, state.characterId);
+    }
+    if (typeof state.hp === 'number' || typeof state.maxHp === 'number') {
+      const hp = typeof state.hp === 'number' ? state.hp : remote.hp;
+      const maxHp = typeof state.maxHp === 'number' && state.maxHp > 0 ? state.maxHp : remote.maxHp;
+      if (hp !== remote.hp || maxHp !== remote.maxHp) {
+        remote.hp = hp;
+        remote.maxHp = maxHp;
+        this.drawHpBar(remote.hpBar, hp, maxHp);
+      }
     }
     if (remote.seated) return;
     remote.interpolator.pushSnapshot(state.x, state.y);
@@ -1398,7 +1444,7 @@ export class WorldScene extends Phaser.Scene {
     }
   }
 
-  private addRemotePlayer(sessionId: string, p: { id: string; username: string; rating: number; x: number; y: number; direction: string; isMoving: boolean; characterId?: string }) {
+  private addRemotePlayer(sessionId: string, p: { id: string; username: string; rating: number; x: number; y: number; direction: string; isMoving: boolean; characterId?: string; hp?: number; maxHp?: number }) {
     const def = getWorldCharacter(p.characterId);
     if (!def) {
       console.error('[WorldScene] addRemotePlayer: no character definitions available');
@@ -1422,6 +1468,9 @@ export class WorldScene extends Phaser.Scene {
 
     const interpolator = new RemotePlayerInterpolator(p.x, p.y);
     const direction = (p.direction as Direction8) || 'down';
+    const hpBar = this.add.graphics();
+    hpBar.setPosition(0, HP_BAR_OFFSET_Y);
+    c.add(hpBar);
     const remote: RemotePlayer = {
       container: c,
       sprite: s,
@@ -1438,7 +1487,13 @@ export class WorldScene extends Phaser.Scene {
       characterId: def.id,
       def,
       attackingUntil: 0,
+      hurtUntil: 0,
+      hp: typeof p.hp === 'number' ? p.hp : 100,
+      maxHp: typeof p.maxHp === 'number' && p.maxHp > 0 ? p.maxHp : 100,
+      hpBar,
     };
+    this.drawHpBar(hpBar, remote.hp, remote.maxHp);
+    hpBar.setVisible(def.id === HP_BAR_TEST_CHARACTER);
     this.otherPlayers.set(sessionId, remote);
 
     // The remote may use a character whose sheets we haven't loaded yet
@@ -2724,7 +2779,7 @@ export class WorldScene extends Phaser.Scene {
   private localIdle(direction: Direction8 = this.currentDirection) {
     const def = this.localDef;
     if (!def || !this.player) return;
-    if (this.attackingUntil > 0) return;
+    if (this.attackingUntil > 0 || this.hurtUntil > 0) return;
     const dir = this.dirForDef(def, direction);
     if (def.movements.has('idle')) {
       this.player.anims.play(animKeyFor(def.id, 'idle', dir), true);
@@ -2742,7 +2797,7 @@ export class WorldScene extends Phaser.Scene {
   private localWalk(direction: Direction8, timeScale: number) {
     const def = this.localDef;
     if (!def || !this.player) return;
-    if (this.attackingUntil > 0) return;
+    if (this.attackingUntil > 0 || this.hurtUntil > 0) return;
     const walk = movementOrFallback(def, 'walk');
     if (!walk) return;
     this.player.anims.play(animKeyFor(def.id, walk.movement, this.dirForDef(def, direction)), true);
@@ -2798,6 +2853,10 @@ export class WorldScene extends Phaser.Scene {
       if (remote.characterId !== def.id) return; // switched again meanwhile
       remote.def = def;
       remote.attackingUntil = 0;
+      remote.hurtUntil = 0;
+      // HP is server-authoritative and re-synced on switch; redraw with the
+      // new character's proportions right away.
+      this.drawHpBar(remote.hpBar, remote.hp, remote.maxHp);
       if (!remote.seated) this.restoreRemoteWalkTexture(remote);
     });
   }
@@ -2820,24 +2879,34 @@ export class WorldScene extends Phaser.Scene {
     if (!def || !this.player) return false;
     if (this.movementLocked || this.inMatch || this.currentSeatInfo || this.seatTween) return false;
     if (this.attackingUntil > 0 && Date.now() < this.attackingUntil) return false;
+    // Moving with a walk-attack sheet available → attack WHILE walking
+    // (animation + server damage timeline use the walk-attack asset).
+    const moving = !!this.target;
+    const walkAttack = def.movements.get('walk-attack');
     const attackMv =
-      def.movements.get('attack') ?? def.movements.get('walk-attack') ?? def.movements.get('run-attack');
+      (moving && walkAttack ? walkAttack : undefined) ??
+      def.movements.get('attack') ??
+      walkAttack ??
+      def.movements.get('run-attack');
     if (!attackMv) {
       console.warn(`[WorldScene] ${def.id} has no attack movement`);
       return false;
     }
-    // Stop and settle movement
-    this.target = null;
-    this.pathWaypoints = [];
-    this.currentWaypointIndex = 0;
-    this.finalDestination = null;
-    this.matter.body.setVelocity(this.playerBody, { x: 0, y: 0 });
+    this.attackLocksMovement = attackMv.movement === 'attack';
+    if (this.attackLocksMovement) {
+      // Stationary swing: stop and settle movement
+      this.target = null;
+      this.pathWaypoints = [];
+      this.currentWaypointIndex = 0;
+      this.finalDestination = null;
+      this.matter.body.setVelocity(this.playerBody, { x: 0, y: 0 });
+    }
 
     const dir = this.dirForDef(def, this.currentDirection);
     this.attackingUntil = Date.now() + (attackMv.columns / 12) * 1000;
     this.player.anims.timeScale = 1;
     this.player.anims.play(animKeyFor(def.id, attackMv.movement, dir));
-    this.emitMovement(false, dir);
+    if (this.attackLocksMovement) this.emitMovement(false, dir);
     // Intent only — the server owns validation, timing and hit detection.
     this.attackSender?.({ type: 'attack', movement: attackMv.movement, direction: dir, characterId: def.id });
     return true;
@@ -2875,6 +2944,75 @@ export class WorldScene extends Phaser.Scene {
         sprite.setTintMode(Phaser.TintModes.MULTIPLY);
       }
     });
+  }
+
+  // ------------------------------------------------------------------
+  // HP bars + hurt animation
+  // ------------------------------------------------------------------
+
+  /** Redraws an HP bar (centered on 0,0 of the graphics object). */
+  private drawHpBar(gfx: Phaser.GameObjects.Graphics, hp: number, maxHp: number) {
+    const pct = Math.max(0, Math.min(1, maxHp > 0 ? hp / maxHp : 0));
+    gfx.clear();
+    gfx.fillStyle(0x000000, 0.65);
+    gfx.fillRect(-HP_BAR_WIDTH / 2 - 1, -HP_BAR_HEIGHT / 2 - 1, HP_BAR_WIDTH + 2, HP_BAR_HEIGHT + 2);
+    const color = pct > 0.5 ? 0x22c55e : pct > 0.25 ? 0xeab308 : 0xef4444;
+    gfx.fillStyle(color, 1);
+    gfx.fillRect(-HP_BAR_WIDTH / 2, -HP_BAR_HEIGHT / 2, HP_BAR_WIDTH * pct, HP_BAR_HEIGHT);
+  }
+
+  /** Server-authoritative local HP (from the Colyseus player state). */
+  public updateLocalHp(hp: number, maxHp: number) {
+    const safeMax = typeof maxHp === 'number' && maxHp > 0 ? maxHp : this.localMaxHp;
+    const safeHp = typeof hp === 'number' && Number.isFinite(hp) ? hp : this.localHp;
+    if (safeHp === this.localHp && safeMax === this.localMaxHp && this.localHpBar) return;
+    this.localHp = safeHp;
+    this.localMaxHp = safeMax;
+    if (this.localHpBar) this.drawHpBar(this.localHpBar, safeHp, safeMax);
+  }
+
+  /** Lazily creates + positions the local HP bar every frame (see update()). */
+  private updateLocalHpBar() {
+    if (!this.player || !this.player.scene) return;
+    if (!this.localHpBar) {
+      this.localHpBar = this.add.graphics().setDepth(100);
+      this.drawHpBar(this.localHpBar, this.localHp, this.localMaxHp);
+    }
+    // TESTE: barra de HP visível apenas para o personagem de teste.
+    const visible =
+      this.localDef?.id === HP_BAR_TEST_CHARACTER && !this.currentSeatInfo && !this.inMatch;
+    this.localHpBar.setVisible(!!visible);
+    if (visible) this.localHpBar.setPosition(this.player.x, this.player.y + HP_BAR_OFFSET_Y);
+  }
+
+  /** Plays the 'hurt' animation on a confirmed hit (sessionId null = local). */
+  public playHurt(sessionId: string | null) {
+    const now = Date.now();
+    if (sessionId === null) {
+      const def = this.localDef;
+      if (!def || !this.player) return;
+      if (this.attackingUntil > now) return; // attack anim has priority
+      const hurt = def.movements.get('hurt');
+      if (!hurt) return; // no hurt sheet — red flash only
+      const dir = this.dirForDef(def, this.currentDirection);
+      const key = animKeyFor(def.id, hurt.movement, dir);
+      if (!this.anims.exists(key)) return;
+      this.hurtUntil = now + (hurt.columns / 12) * 1000;
+      this.player.anims.timeScale = 1;
+      this.player.anims.play(key);
+      return;
+    }
+    const remote = this.otherPlayers.get(sessionId);
+    if (!remote || remote.seated) return;
+    if (remote.attackingUntil > now) return; // attack anim has priority
+    const hurt = remote.def.movements.get('hurt');
+    if (!hurt) return;
+    const dir = this.dirForDef(remote.def, remote.direction);
+    const key = animKeyFor(remote.def.id, hurt.movement, dir);
+    if (!this.anims.exists(key)) return;
+    remote.hurtUntil = now + (hurt.columns / 12) * 1000;
+    remote.sprite.anims.timeScale = 1;
+    remote.sprite.anims.play(key);
   }
 
   // ------------------------------------------------------------------
@@ -2932,6 +3070,7 @@ export class WorldScene extends Phaser.Scene {
     this.currentWaypointIndex = 0;
     this.finalDestination = null;
     this.attackingUntil = 0;
+    this.hurtUntil = 0;
 
     const spriteX = this.player.x;
     const spriteY = this.player.y;

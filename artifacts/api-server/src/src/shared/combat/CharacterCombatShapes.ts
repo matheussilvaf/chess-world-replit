@@ -89,6 +89,10 @@ export interface CharacterAssetConfig {
   manualGrid?: boolean;
   directionOrder: Direction8[];
   directions: Record<string, AssetDirectionConfig>;
+  /** When true, this movement's hitboxes deal damage in-game. Default false. */
+  damageEnabled?: boolean;
+  /** Damage dealt per confirmed hit of this movement. Default 10. */
+  damage?: number;
 }
 
 export interface CharacterConfigV1 {
@@ -99,6 +103,8 @@ export interface CharacterConfigV1 {
   spriteOrigin: SpriteOriginConfig;
   collisionBody: CollisionBodyConfig;
   combatBoxesEnabled: boolean;
+  /** Total HP of this character. Default 100. */
+  maxHp?: number;
   /** Keyed by `<movement>/<fileName>`, e.g. `attack/Attack.png`. */
   assets: Record<string, CharacterAssetConfig>;
 }
@@ -107,6 +113,35 @@ export const EMPTY_FRAME_CONFIG: CombatFrameConfig = {
   hurtbox: { enabled: false, rectangles: [] },
   hitbox: { enabled: false, rectangles: [] },
 };
+
+// ---------------------------------------------------------------------------
+// Combat stats (HP / damage) — optional fields with safe defaults so that
+// configs saved before these fields existed keep working everywhere.
+// ---------------------------------------------------------------------------
+
+export const DEFAULT_MAX_HP = 100;
+export const DEFAULT_DAMAGE = 10;
+export const MAX_HP_LIMIT = 10000;
+export const DAMAGE_LIMIT = 1000;
+
+/** Character total HP with clamping + fallback to the default (100). */
+export function characterMaxHp(config: Pick<CharacterConfigV1, 'maxHp'> | null | undefined): number {
+  const raw = config?.maxHp;
+  if (typeof raw !== 'number' || !Number.isFinite(raw)) return DEFAULT_MAX_HP;
+  return Math.min(MAX_HP_LIMIT, Math.max(1, Math.round(raw)));
+}
+
+/** True when this movement's hitboxes should deal damage in-game. */
+export function assetDamageEnabled(asset: Pick<CharacterAssetConfig, 'damageEnabled'> | null | undefined): boolean {
+  return asset?.damageEnabled === true;
+}
+
+/** Damage per confirmed hit for a movement asset, clamped, defaulting to 10. */
+export function assetDamage(asset: Pick<CharacterAssetConfig, 'damage'> | null | undefined): number {
+  const raw = asset?.damage;
+  if (typeof raw !== 'number' || !Number.isFinite(raw)) return DEFAULT_DAMAGE;
+  return Math.min(DAMAGE_LIMIT, Math.max(0, Math.round(raw)));
+}
 
 // ---------------------------------------------------------------------------
 // Geometry
@@ -335,6 +370,13 @@ export function validateCharacterConfig(input: unknown): ValidationResult {
 
   if (typeof c.combatBoxesEnabled !== 'boolean') errors.push('combatBoxesEnabled must be boolean');
 
+  // Optional (older configs don't have it): character total HP.
+  if (c.maxHp !== undefined) {
+    if (!isFiniteNumber(c.maxHp) || (c.maxHp as number) < 1 || (c.maxHp as number) > MAX_HP_LIMIT) {
+      errors.push(`maxHp must be a number between 1 and ${MAX_HP_LIMIT}`);
+    }
+  }
+
   const validDirections =
     c.directions === 4 || c.directions === 8
       ? new Set<string>(directionRowsFor(c.directions as 4 | 8))
@@ -359,6 +401,15 @@ export function validateCharacterConfig(input: unknown): ValidationResult {
       }
       if (!Array.isArray(asset.directionOrder)) {
         errors.push(`${where}.directionOrder must be an array`);
+      }
+      // Optional per-movement damage settings (absent on older configs).
+      if (asset.damageEnabled !== undefined && typeof asset.damageEnabled !== 'boolean') {
+        errors.push(`${where}.damageEnabled must be a boolean`);
+      }
+      if (asset.damage !== undefined) {
+        if (!isFiniteNumber(asset.damage) || (asset.damage as number) < 0 || (asset.damage as number) > DAMAGE_LIMIT) {
+          errors.push(`${where}.damage must be a number between 0 and ${DAMAGE_LIMIT}`);
+        }
       }
       if (typeof asset.directions !== 'object' || asset.directions === null) {
         errors.push(`${where}.directions must be an object`);
@@ -411,6 +462,7 @@ export function defaultCharacterConfig(
     spriteOrigin: { x: 0.5, y: 0.5 },
     collisionBody: { shape: 'circle', offsetX: 0, offsetY: 21, radius: 10 },
     combatBoxesEnabled: false,
+    maxHp: DEFAULT_MAX_HP,
     assets: {},
   };
 }
