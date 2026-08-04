@@ -96,6 +96,27 @@ export interface WeaponFamilyConfig {
   familyId: string;
   displayName?: string;
   weaponHitboxProfileId: string | null;
+  /**
+   * Stats por ITEM da família (variante `default`, `c2`, …): levels dinâmicos
+   * com dano e velocidade de animação. Ausente = o item usa o padrão implícito
+   * (level 1, dano do perfil da família ou 10, velocidade 1×).
+   */
+  variants?: Record<string, WeaponVariantConfig>;
+}
+
+/** Um level de um item de arma: dano por hit + multiplicador de velocidade. */
+export interface WeaponLevelStats {
+  /** 1..N, contíguo (o level 1 sempre existe). */
+  level: number;
+  /** Dano por hit (inteiro, 0..1000). Padrão: 10. */
+  damage: number;
+  /** Multiplicador da velocidade da animação de ataque (0.1..10; 1 = padrão do jogo). */
+  speed: number;
+}
+
+/** Levels de um item (variante) específico de uma família. */
+export interface WeaponVariantConfig {
+  levels: WeaponLevelStats[];
 }
 
 /** PUT payload for an association change (spec §30: ProfileAssociation). */
@@ -376,6 +397,48 @@ export function validateWeaponHitboxProfile(
   return { ok: true, config: value as unknown as WeaponHitboxProfile };
 }
 
+// ---------------------------------------------------------------- item levels
+
+export const DEFAULT_WEAPON_DAMAGE = 10;
+/** 1 = velocidade padrão da animação de ataque no jogo (12 fps). */
+export const DEFAULT_WEAPON_SPEED = 1;
+export const WEAPON_VARIANT_ID_RE = /^(default|c[1-9][0-9]*)$/;
+
+/** Level 1 implícito de todo item: dano padrão (ou do perfil) e velocidade 1×. */
+export function defaultWeaponLevels(damage: number = DEFAULT_WEAPON_DAMAGE): WeaponLevelStats[] {
+  return [{ level: 1, damage, speed: DEFAULT_WEAPON_SPEED }];
+}
+
+/**
+ * Levels de um item: os salvos, ou o padrão implícito. `fallbackDamage` deixa
+ * o chamador preservar o dano do perfil da família para itens não configurados
+ * (evita renivelar famílias já ajustadas).
+ */
+export function getWeaponVariantLevels(
+  family: { variants?: Record<string, WeaponVariantConfig> } | null | undefined,
+  variantId: string,
+  fallbackDamage: number = DEFAULT_WEAPON_DAMAGE,
+): WeaponLevelStats[] {
+  const levels = family?.variants?.[variantId]?.levels;
+  return levels && levels.length > 0 ? levels : defaultWeaponLevels(fallbackDamage);
+}
+
+/** Stats de um item em um level: exato; senão o maior level ≤ pedido; senão o level 1. */
+export function resolveWeaponLevelStats(
+  family: { variants?: Record<string, WeaponVariantConfig> } | null | undefined,
+  variantId: string,
+  level: number,
+  fallbackDamage: number = DEFAULT_WEAPON_DAMAGE,
+): WeaponLevelStats {
+  const levels = getWeaponVariantLevels(family, variantId, fallbackDamage);
+  let best = levels[0];
+  for (const entry of levels) {
+    if (entry.level === level) return entry;
+    if (entry.level < level && entry.level > best.level) best = entry;
+  }
+  return best;
+}
+
 export function validateWeaponFamilyConfig(value: unknown): WeaponFamilyValidationResult {
   const errors: string[] = [];
   if (!isRecord(value)) return { ok: false, errors: ['config deve ser um objeto JSON'] };
@@ -388,6 +451,46 @@ export function validateWeaponFamilyConfig(value: unknown): WeaponFamilyValidati
   const profileId = value.weaponHitboxProfileId;
   if (profileId !== null && (typeof profileId !== 'string' || !WEAPON_PROFILE_ID_RE.test(profileId))) {
     errors.push('weaponHitboxProfileId: deve ser null ou um id de perfil válido');
+  }
+  const variants = value.variants;
+  if (variants !== undefined) {
+    if (!isRecord(variants)) {
+      errors.push('variants: deve ser um objeto { variantId: { levels: [...] } }');
+    } else if (Object.keys(variants).length > 64) {
+      errors.push('variants: no máximo 64 itens');
+    } else {
+      for (const [variantId, raw] of Object.entries(variants)) {
+        const where = `variants["${variantId}"]`;
+        if (!WEAPON_VARIANT_ID_RE.test(variantId)) {
+          errors.push(`${where}: id de item inválido (use "default" ou "cN")`);
+          continue;
+        }
+        if (!isRecord(raw) || !Array.isArray(raw.levels)) {
+          errors.push(`${where}.levels: deve ser uma lista de levels`);
+          continue;
+        }
+        if (raw.levels.length === 0 || raw.levels.length > 99) {
+          errors.push(`${where}.levels: entre 1 e 99 levels`);
+          continue;
+        }
+        raw.levels.forEach((entry, i) => {
+          const lw = `${where}.levels[${i}]`;
+          if (!isRecord(entry)) {
+            errors.push(`${lw}: deve ser um objeto {level, damage, speed}`);
+            return;
+          }
+          if (entry.level !== i + 1) {
+            errors.push(`${lw}.level: deve ser ${i + 1} (levels contíguos a partir do 1)`);
+          }
+          if (typeof entry.damage !== 'number' || !Number.isInteger(entry.damage) || entry.damage < 0 || entry.damage > 1000) {
+            errors.push(`${lw}.damage: inteiro entre 0 e 1000`);
+          }
+          if (typeof entry.speed !== 'number' || !Number.isFinite(entry.speed) || entry.speed < 0.1 || entry.speed > 10) {
+            errors.push(`${lw}.speed: número entre 0.1 e 10 (1 = padrão)`);
+          }
+        });
+      }
+    }
   }
   if (errors.length > 0) return { ok: false, errors };
   return { ok: true, config: value as unknown as WeaponFamilyConfig };

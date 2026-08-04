@@ -20,6 +20,7 @@ import {
   validateWeaponHitboxProfile,
   weaponFamiliesUsingProfile,
   type WeaponHitboxProfile,
+  type WeaponVariantConfig,
 } from '../shared/combat/WeaponShapes.js';
 import { getRig } from './rigConfigRepository.js';
 import {
@@ -312,9 +313,18 @@ weaponProfilesAdminRouter.delete('/:profileId', async (req: Request, res: Respon
 /** GET /api/weapon-families — familyId → { weaponHitboxProfileId } (cached). */
 export async function publicWeaponFamiliesHandler(_req: Request, res: Response): Promise<void> {
   const map = await getWeaponFamiliesCached();
-  const families: Record<string, { weaponHitboxProfileId: string | null }> = {};
+  const families: Record<
+    string,
+    { weaponHitboxProfileId: string | null; variants?: Record<string, WeaponVariantConfig> }
+  > = {};
   for (const [familyId, config] of Object.entries(map)) {
-    families[familyId] = { weaponHitboxProfileId: config.weaponHitboxProfileId };
+    families[familyId] = {
+      weaponHitboxProfileId: config.weaponHitboxProfileId,
+      // Levels por item (dano/velocidade) viajam no endpoint público: o
+      // cliente do jogo usa a velocidade na animação; o dano autoritativo
+      // continua sendo resolvido pelo servidor via repositório.
+      ...(config.variants ? { variants: config.variants } : {}),
+    };
   }
   res.json({ families });
 }

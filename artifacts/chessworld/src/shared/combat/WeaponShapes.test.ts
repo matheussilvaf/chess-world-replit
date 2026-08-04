@@ -15,6 +15,11 @@ import {
   parseWeaponFileName,
   resolveWeaponProfileId,
   rigAnimationsWithLegacyHitboxes,
+  DEFAULT_WEAPON_DAMAGE,
+  DEFAULT_WEAPON_SPEED,
+  defaultWeaponLevels,
+  getWeaponVariantLevels,
+  resolveWeaponLevelStats,
   validateWeaponFamilyConfig,
   validateWeaponHitboxProfile,
   weaponAssetId,
@@ -311,5 +316,119 @@ describe('buildWeaponMigration', () => {
     for (const p of buildWeaponMigration(rig, []).profiles) {
       expect(validateWeaponHitboxProfile(JSON.parse(JSON.stringify(p)), rig).ok).toBe(true);
     }
+  });
+});
+
+// ------------------------------------------------------------ item levels (variants)
+
+function familyWith(variants?: WeaponFamilyConfig['variants']): WeaponFamilyConfig {
+  return { familyId: 'fam-a', weaponHitboxProfileId: null, ...(variants ? { variants } : {}) };
+}
+
+describe('validateWeaponFamilyConfig — variants/levels', () => {
+  const base = { familyId: 'fam-a', weaponHitboxProfileId: null };
+
+  it('aceita config sem variants (retrocompatível — linhas antigas intactas)', () => {
+    expect(validateWeaponFamilyConfig(base).ok).toBe(true);
+  });
+
+  it('aceita variants válidos ("default" e "cN") com levels contíguos', () => {
+    const res = validateWeaponFamilyConfig({
+      ...base,
+      variants: {
+        default: { levels: [{ level: 1, damage: 10, speed: 1 }] },
+        c2: {
+          levels: [
+            { level: 1, damage: 12, speed: 1 },
+            { level: 2, damage: 20, speed: 1.5 },
+          ],
+        },
+      },
+    });
+    expect(res.ok).toBe(true);
+  });
+
+  it('rejeita id de item fora do padrão default/cN', () => {
+    for (const key of ['x9', 'c0', 'C2', 'default2']) {
+      const res = validateWeaponFamilyConfig({
+        ...base,
+        variants: { [key]: { levels: [{ level: 1, damage: 1, speed: 1 }] } },
+      });
+      expect(res.ok).toBe(false);
+    }
+  });
+
+  it('rejeita levels não contíguos ou que não começam em 1', () => {
+    for (const levels of [
+      [{ level: 2, damage: 1, speed: 1 }],
+      [
+        { level: 1, damage: 1, speed: 1 },
+        { level: 3, damage: 2, speed: 1 },
+      ],
+    ]) {
+      expect(validateWeaponFamilyConfig({ ...base, variants: { default: { levels } } }).ok).toBe(false);
+    }
+  });
+
+  it('rejeita damage não inteiro ou fora de 0..1000', () => {
+    for (const damage of [-1, 2.5, 1001]) {
+      const res = validateWeaponFamilyConfig({
+        ...base,
+        variants: { default: { levels: [{ level: 1, damage, speed: 1 }] } },
+      });
+      expect(res.ok).toBe(false);
+    }
+  });
+
+  it('rejeita speed fora de 0.1..10 (1 = padrão do jogo)', () => {
+    for (const speed of [0, 0.05, 11, Number.NaN]) {
+      const res = validateWeaponFamilyConfig({
+        ...base,
+        variants: { default: { levels: [{ level: 1, damage: 1, speed }] } },
+      });
+      expect(res.ok).toBe(false);
+    }
+  });
+
+  it('rejeita lista de levels vazia', () => {
+    expect(validateWeaponFamilyConfig({ ...base, variants: { default: { levels: [] } } }).ok).toBe(false);
+  });
+});
+
+describe('getWeaponVariantLevels / resolveWeaponLevelStats', () => {
+  it('sem variants salvos: level 1 implícito com dano padrão (10) e speed 1', () => {
+    const levels = getWeaponVariantLevels(familyWith(), 'default');
+    expect(levels).toEqual([{ level: 1, damage: DEFAULT_WEAPON_DAMAGE, speed: DEFAULT_WEAPON_SPEED }]);
+  });
+
+  it('fallbackDamage preserva o dano do perfil para item não configurado', () => {
+    expect(getWeaponVariantLevels(familyWith(), 'c3', 25)[0].damage).toBe(25);
+    expect(defaultWeaponLevels(25)[0].damage).toBe(25);
+    expect(getWeaponVariantLevels(null, 'default', 7)[0].damage).toBe(7);
+  });
+
+  it('cada item da MESMA família tem seus próprios levels', () => {
+    const fam = familyWith({
+      default: { levels: [{ level: 1, damage: 10, speed: 1 }] },
+      c2: { levels: [{ level: 1, damage: 30, speed: 2 }] },
+    });
+    expect(getWeaponVariantLevels(fam, 'default')[0].damage).toBe(10);
+    expect(getWeaponVariantLevels(fam, 'c2')[0].damage).toBe(30);
+    expect(getWeaponVariantLevels(fam, 'c3')[0].damage).toBe(DEFAULT_WEAPON_DAMAGE);
+  });
+
+  it('resolve level exato; acima do salvo degrada para o maior ≤ pedido; abaixo vai ao level 1', () => {
+    const fam = familyWith({
+      default: {
+        levels: [
+          { level: 1, damage: 10, speed: 1 },
+          { level: 2, damage: 18, speed: 1.3 },
+          { level: 3, damage: 28, speed: 1.6 },
+        ],
+      },
+    });
+    expect(resolveWeaponLevelStats(fam, 'default', 2).damage).toBe(18);
+    expect(resolveWeaponLevelStats(fam, 'default', 99)).toEqual({ level: 3, damage: 28, speed: 1.6 });
+    expect(resolveWeaponLevelStats(fam, 'default', 0).level).toBe(1);
   });
 });

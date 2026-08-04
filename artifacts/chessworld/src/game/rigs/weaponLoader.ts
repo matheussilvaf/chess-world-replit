@@ -15,13 +15,18 @@ import { getColyseusHttpUrl, isColyseusConfigured } from '../../config/colyseus'
 import type { RigConfig } from '../../shared/combat/RigShapes';
 import {
   parseWeaponAssetId,
+  resolveWeaponLevelStats,
   resolveWeaponProfileId,
   validateWeaponHitboxProfile,
   type WeaponFamilyConfig,
   type WeaponHitboxProfile,
+  type WeaponLevelStats,
 } from '../../shared/combat/WeaponShapes';
 
-type FamilyAssociationMap = Record<string, Pick<WeaponFamilyConfig, 'weaponHitboxProfileId'>>;
+type FamilyAssociationMap = Record<
+  string,
+  Pick<WeaponFamilyConfig, 'weaponHitboxProfileId' | 'variants'>
+>;
 
 // `null` em cache = referência pendurada (perfil excluído no servidor): a arma
 // simplesmente fica sem hitboxes até clearWeaponCache()/nova associação.
@@ -125,6 +130,23 @@ export async function resolveWeaponProfileForAsset(
 }
 
 /** Drops all cached weapon data (e.g. after editing in /admin/rigs). */
+/**
+ * Stats (dano + velocidade) de um item de arma em um level — resolvidos do
+ * catálogo público de famílias. Level sem entrada salva degrada para o maior
+ * level ≤ pedido (nunca quebra). O dano aqui é para PREVIEW/UI; em combate o
+ * servidor continua sendo a autoridade (spec §23). A velocidade alimenta o
+ * timeScale da animação de ataque quando o sistema de equipamento ligar.
+ */
+export async function resolveWeaponItemStats(
+  weaponAssetId: string,
+  level: number = 1,
+  fallbackDamage?: number,
+): Promise<WeaponLevelStats> {
+  const { familyId, variantId } = parseWeaponAssetId(weaponAssetId);
+  const families = await loadWeaponFamiliesMap();
+  return resolveWeaponLevelStats(families[familyId] ?? null, variantId, level, fallbackDamage);
+}
+
 export function clearWeaponCache(): void {
   profileCache.clear();
   profileInflight.clear();

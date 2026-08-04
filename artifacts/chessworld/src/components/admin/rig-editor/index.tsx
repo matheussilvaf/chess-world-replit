@@ -71,6 +71,7 @@ import {
   type WeaponFamilyConfig,
   type WeaponHitboxFrameConfig,
   type WeaponHitboxProfile,
+  type WeaponLevelStats,
 } from '../../../shared/combat/WeaponShapes';
 
 /**
@@ -169,6 +170,8 @@ export function RigControllerPage() {
   const [weaponTableSql, setWeaponTableSql] = useState<string | null>(null);
   const [weaponError, setWeaponError] = useState<string | null>(null);
   const [weaponBusy, setWeaponBusy] = useState(false);
+  /** Bump a cada recarga de famílias/perfis — o painel descarta rascunhos de níveis. */
+  const [weaponDataEpoch, setWeaponDataEpoch] = useState(0);
   const [generatorManifest, setGeneratorManifest] = useState<GeneratorManifest | null>(null);
   const [previewWeapon, setPreviewWeapon] = useState<PreviewWeapon | null>(null);
   const [workingProfile, setWorkingProfile] = useState<WeaponHitboxProfile | null>(null);
@@ -272,6 +275,7 @@ export function RigControllerPage() {
       const [famRes, profRes] = await Promise.all([weaponApi.families.list(), weaponApi.profiles.list()]);
       setFamilies(famRes.families ?? {});
       setProfiles(profRes.profiles ?? []);
+      setWeaponDataEpoch((n) => n + 1);
       const missing = famRes.tableMissing || profRes.tableMissing;
       setWeaponTablesMissing(missing);
       setWeaponTableSql(
@@ -1070,12 +1074,41 @@ export function RigControllerPage() {
         const config: WeaponFamilyConfig = {
           familyId,
           ...(existing?.displayName ? { displayName: existing.displayName } : {}),
+          // Preserva os levels por item já salvos — associação e níveis são
+          // campos independentes do mesmo registro.
+          ...(existing?.variants ? { variants: existing.variants } : {}),
           weaponHitboxProfileId: profileId,
         };
         await weaponApi.families.save(config);
         setFamilies((prev) => ({ ...prev, [familyId]: config }));
       } catch (e) {
         applyWeaponApiError(e);
+      } finally {
+        setWeaponBusy(false);
+      }
+    },
+    [applyWeaponApiError],
+  );
+
+  /** Salva os levels (dano/velocidade) de UM item específico da família. */
+  const handleSaveVariantLevels = useCallback(
+    async (familyId: string, variantId: string, levels: WeaponLevelStats[]) => {
+      setWeaponBusy(true);
+      setWeaponError(null);
+      try {
+        const existing = familiesRef.current[familyId];
+        const config: WeaponFamilyConfig = {
+          familyId,
+          ...(existing?.displayName ? { displayName: existing.displayName } : {}),
+          weaponHitboxProfileId: existing?.weaponHitboxProfileId ?? null,
+          variants: { ...(existing?.variants ?? {}), [variantId]: { levels } },
+        };
+        const res = await weaponApi.families.save(config);
+        setFamilies((prev) => ({ ...prev, [familyId]: res.family ?? config }));
+        return true;
+      } catch (e) {
+        applyWeaponApiError(e);
+        return false;
       } finally {
         setWeaponBusy(false);
       }
@@ -1732,6 +1765,8 @@ export function RigControllerPage() {
                 onMutateProfile={mutateProfile}
                 onChangeProfileAnimation={handleChangeProfileAnimation}
                 onAssociateFamily={handleAssociateFamily}
+                onSaveVariantLevels={handleSaveVariantLevels}
+                weaponDataEpoch={weaponDataEpoch}
                 onSetRigDefaultProfile={handleSetRigDefaultProfile}
                 onGoToProfileAnimation={handleGoToProfileAnimation}
               />
