@@ -75,6 +75,7 @@ The Colyseus Cloud server was found running MONTHS-stale code: GitHub pushes "su
 **How to apply:** any store hydrated from a room message must ALSO backfill from the schema later: call the sync handler immediately inside `matches.onAdd` (registering onChange alone waits for the NEXT field change, i.e. the first move) and make the sync handler update identity fields with truthy guards (Colyseus schema zero-values '' / 0 mean "unset" — never overwrite good data with them).
 
 ## Supabase/PostgREST + esbuild quirks (this DB specifically)
+- Tabela AUSENTE via supabase-js/REST retorna código `PGRST205` ("Could not find the table ... in the schema cache"), NÃO `42P01`. Detectar ambos (42703 = coluna ausente continua valendo).
 - `matches.colyseus_match_id` has NO unique constraint → `upsert(onConflict)` errors; use check-then-insert. Optional hardening: user can run `CREATE UNIQUE INDEX` in the SQL editor.
 - uuid columns reject `.like()` filters → use `.eq()` (a `.like` once produced a false "row deleted" diagnosis).
 - SELECTing a nonexistent column ALSO fails silently (`data=null`, error only in `{error}`) — burned twice: once produced a false "standings deleted" diagnosis. `tournament_standings` has `updated_at`, NOT `created_at`. Check `{error}` on READS too, not just writes.
@@ -146,3 +147,8 @@ The tester's headless browser has no WebGL context; Phaser 4 is WebGL-only (no C
 - Invariante morte×xadrez: sentado não toma dano (revalidado pós-await) e morto não senta/desafia (gates em create/accept_challenge, sit_spectator, tournament_seat) ⇒ chess_move/resign/draw não precisam de gate de morto.
 - Morte é broadcast-only (`player_died`/`player_revived` + hp no schema) — sem campo novo no PlayerState. Cliente usa timestamps `deadUntil` que auto-expiram (rede perdida = auto-cura). Anim `death` é non-looping (repeat:0 congela no último frame); sem sheet = mantém pose.
 - Hold-to-move: tap intacto (pointerup); segurar ≥150ms ou arrastar >8px = re-path contínuo (150ms throttle, delta mín 6px); `navigateTo(..., { keepPathOnFail: true })` mantém caminho anterior ao passar sobre parede — NÃO usar stopMovement nesse caso (congela o boneco).
+
+## Rotas HTTP custom: sempre COM prefixo /api
+Rotas Express custom do servidor devem ser registradas COM o prefixo `/api` (ex.: `app.use('/api/admin/rigs', ...)`). O proxy :80 encaminha o path PRESERVADO ao api-server; apenas `/api/matchmake/*` e `/api/voice/*` têm rewrite (Colyseus monta essas na raiz).
+**Why:** review externo (architect) já apontou "double /api → 404" como bug grave — falso positivo; curls via `localhost:80/api/...` provam 401/200/404 corretos. Não "consertar" isso.
+**How to apply:** ao adicionar rota nova, registre com `/api/...` e valide com curl no proxy :80, não direto na porta do serviço.

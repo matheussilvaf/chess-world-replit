@@ -1,41 +1,14 @@
-import { Router, Request, Response, NextFunction } from 'express';
+import { Router } from 'express';
 import * as service from './service.js';
 import { PRESETS } from './presets.js';
 import { checkPersistenceHealth, isPersistenceAvailable } from './persistence.js';
 import { getEngineStatus, getEngineDiagnostics, runFixtureTest, resetEngineCache } from './engine.js';
 import type { GameResult, RoundMode, Color } from './types.js';
-import { createClient } from '@supabase/supabase-js';
+import { requireSupabaseAuth } from '../auth/supabaseAuth.js';
 
 export const tournamentRouter = Router();
 
-// --- Auth middleware ---
-// Validates Supabase JWT from Authorization header
-async function requireAuth(req: Request, res: Response, next: NextFunction): Promise<void> {
-  const authHeader = req.headers.authorization;
-  if (!authHeader || !authHeader.startsWith('Bearer ')) {
-    res.status(401).json({ error: 'Missing authorization token' });
-    return;
-  }
-  const token = authHeader.replace('Bearer ', '');
-  const url = process.env.SUPABASE_URL;
-  const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
-  if (!url || !key) {
-    res.status(500).json({ error: 'Server auth not configured' });
-    return;
-  }
-  try {
-    const supabase = createClient(url, key);
-    const { data, error } = await supabase.auth.getUser(token);
-    if (error || !data.user) {
-      res.status(401).json({ error: 'Invalid token' });
-      return;
-    }
-    (req as any).userId = data.user.id;
-    next();
-  } catch (e: any) {
-    res.status(401).json({ error: 'Auth verification failed' });
-  }
-}
+// Auth middleware shared with the rig admin routes (see ../auth/supabaseAuth).
 
 // --- Health check (no auth required) ---
 tournamentRouter.get('/health', async (_req, res) => {
@@ -102,7 +75,7 @@ tournamentRouter.get('/engine-diagnostics', async (_req, res) => {
 });
 
 // All mutation routes require auth
-tournamentRouter.use(requireAuth);
+tournamentRouter.use(requireSupabaseAuth);
 
 // Engine status (detailed, requires auth)
 tournamentRouter.get('/engine-status', async (_req, res) => {

@@ -24,6 +24,7 @@ import {
   type DirectionId,
 } from '../../../lib/character-generator/constants';
 import { SKIN_TONES, getSkinTone } from '../../../lib/character-generator/skinTones';
+import { DEFAULT_RIG_ID } from '../../../shared/combat/RigShapes';
 import { fetchGeneratorManifest } from '../../../lib/character-generator/manifest';
 import {
   loadLayerCanvases,
@@ -224,6 +225,12 @@ export function CharacterGeneratorPage() {
             </span>
             <span className="px-2 py-1 rounded bg-slate-800 border border-slate-700">
               {SHEET_ROWS} linhas × {SHEET_COLS} colunas
+            </span>
+            <span
+              className="px-2 py-1 rounded bg-slate-800 border border-cyan-800 text-cyan-300"
+              title="Estrutura de sheet compatível com este rig — caixas de combate em /admin/rigs"
+            >
+              rig: {DEFAULT_RIG_ID}
             </span>
           </div>
         </div>

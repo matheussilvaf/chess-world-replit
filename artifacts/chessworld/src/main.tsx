@@ -1,6 +1,6 @@
 import { lazy, Suspense } from 'react';
 import { createRoot } from 'react-dom/client';
-import { BrowserRouter, Routes, Route } from 'react-router-dom';
+import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import App from './App.tsx';
 import './index.css';
 
@@ -8,9 +8,9 @@ import './index.css';
 const AdminPage = lazy(() =>
   import('./components/admin/AdminPage.tsx').then((m) => ({ default: m.AdminPage })),
 );
-const CharacterConfigEditor = lazy(() =>
-  import('./components/admin/CharacterConfigEditor.tsx').then((m) => ({
-    default: m.CharacterConfigEditor,
+const RigControllerPage = lazy(() =>
+  import('./components/admin/rig-editor/index.tsx').then((m) => ({
+    default: m.RigControllerPage,
   })),
 );
 const SwissTestPage = lazy(() =>
@@ -37,7 +37,9 @@ createRoot(document.getElementById('root')!).render(
     <Suspense fallback={<RouteFallback />}>
       <Routes>
         <Route path="/admin" element={<AdminPage />} />
-        <Route path="/admin/characters" element={<CharacterConfigEditor />} />
+        <Route path="/admin/rigs" element={<RigControllerPage />} />
+        {/* Old editor URL — kept as a permanent redirect (spec §3) */}
+        <Route path="/admin/characters" element={<Navigate to="/admin/rigs" replace />} />
         <Route path="/admin/character-generator" element={<CharacterGeneratorPage />} />
         <Route path="/swiss-test" element={<SwissTestPage />} />
         <Route path="*" element={<App />} />

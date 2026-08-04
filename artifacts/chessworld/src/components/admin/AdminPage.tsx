@@ -617,15 +617,15 @@ export function AdminPage() {
             </div>
           </a>
           <a
-            href="/admin/characters"
+            href="/admin/rigs"
             className="flex items-center gap-3 px-5 py-4 rounded-xl bg-slate-900 border border-slate-800 hover:border-cyan-500/30 hover:bg-slate-800/80 transition-all group"
           >
             <div className="w-9 h-9 rounded-lg bg-cyan-500/10 flex items-center justify-center group-hover:bg-cyan-500/20 transition-colors">
               <Crosshair className="w-4 h-4 text-cyan-400" />
             </div>
             <div>
-              <h3 className="text-sm font-medium text-white">Character Configuration</h3>
-              <p className="text-xs text-slate-400">Edit origin, collision body, and frame positions</p>
+              <h3 className="text-sm font-medium text-white">Character Rig Controller</h3>
+              <p className="text-xs text-slate-400">Rigs v2 — origin, collision body, hurt/hitboxes and damage per animation</p>
             </div>
           </a>
         </div>

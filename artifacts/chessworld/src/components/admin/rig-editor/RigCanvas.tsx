@@ -1,13 +1,18 @@
 /**
- * Interactive frame canvas: draws one spritesheet frame with origin marker,
- * collision body, hurtboxes (lime) and hitboxes (magenta), and handles all
- * mouse interactions (drag origin/body, draw/move/resize rectangles).
+ * Interactive rig frame canvas: draws one composed-sheet frame with origin
+ * marker, collision body, hurtboxes (lime) and hitboxes (magenta), and
+ * handles all mouse interactions (drag origin/body, draw/move/resize boxes).
  *
- * Box coordinates are ORIGIN-RELATIVE sprite pixels (shared combat contract);
- * this component converts to/from frame coordinates internally.
+ * Box coordinates are ORIGIN-RELATIVE frame pixels (shared rig contract,
+ * spec §25); this component converts to/from frame coordinates internally
+ * and NEVER reports scaled (canvas) pixels upward.
+ *
+ * The image is any CanvasImageSource — here, the spritesheet composed live
+ * by the Character Generator compositor (real assets, not a static PNG).
  */
 import { useEffect, useRef, useState } from 'react';
-import type { CombatFrameConfig, LocalRectangle } from '../../../shared/combat/CharacterCombatShapes';
+import type { LocalRectangle, RigFrameConfig } from '../../../shared/combat/RigShapes';
+import { frameToScreenCoordinates, screenToFrameCoordinates } from '../../../shared/combat/RigShapes';
 import type { BoxKind, BoxSelection, EditorTool } from './types';
 
 const HURT_COLOR = '#00ff66';
@@ -25,20 +30,24 @@ interface DragState {
   startRect?: LocalRectangle; // origin-relative
 }
 
-interface FrameCanvasProps {
-  image: HTMLImageElement | null;
+interface RigCanvasProps {
+  image: CanvasImageSource | null;
   frameWidth: number;
   frameHeight: number;
+  /** Sheet row of the current direction. */
   rowIndex: number;
-  frameInDir: number;
+  /** Absolute sheet column of the current animation frame. */
+  sheetColumn: number;
   scale: number;
   origin: { x: number; y: number };
   body: { offsetX: number; offsetY: number; radius: number };
-  frame: CombatFrameConfig;
+  frame: RigFrameConfig;
   showBoxes: boolean;
   selection: BoxSelection | null;
   tool: EditorTool;
   snap1px: boolean;
+  /** Fired once at the start of any drag/draw — the page snapshots undo here. */
+  onInteractionStart: () => void;
   onOriginChange: (x: number, y: number, committed: boolean) => void;
   onBodyChange: (offsetX: number, offsetY: number, committed: boolean) => void;
   onRectChange: (kind: BoxKind, index: number, rect: LocalRectangle) => void;
@@ -80,16 +89,16 @@ function resizeRect(
   if (y2 < y1) [y1, y2] = [y2, y1];
   if (x2 - x1 < 1) x2 = x1 + 1;
   if (y2 - y1 < 1) y2 = y1 + 1;
-  return { x: x1, y: y1, width: x2 - x1, height: y2 - y1 };
+  return { ...start, x: x1, y: y1, width: x2 - x1, height: y2 - y1 };
 }
 
-export function FrameCanvas(props: FrameCanvasProps) {
+export function RigCanvas(props: RigCanvasProps) {
   const {
     image,
     frameWidth: fw,
     frameHeight: fh,
     rowIndex,
-    frameInDir,
+    sheetColumn,
     scale: s,
     origin,
     body,
@@ -110,16 +119,14 @@ export function FrameCanvas(props: FrameCanvasProps) {
 
   const snap = (v: number) => (snap1px ? Math.round(v) : Math.round(v * 10) / 10);
   const rectToFrame = (r: LocalRectangle): LocalRectangle => ({
+    ...r,
     x: opx + r.x,
     y: opy + r.y,
-    width: r.width,
-    height: r.height,
   });
   const frameToRect = (r: LocalRectangle): LocalRectangle => ({
+    ...r,
     x: r.x - opx,
     y: r.y - opy,
-    width: r.width,
-    height: r.height,
   });
 
   // ------------------------------------------------------------ drawing
@@ -141,10 +148,10 @@ export function FrameCanvas(props: FrameCanvasProps) {
       }
     }
 
-    // Sprite frame
+    // Sprite frame (from the live-composed generator sheet)
     if (image) {
       ctx.imageSmoothingEnabled = false;
-      ctx.drawImage(image, frameInDir * fw, rowIndex * fh, fw, fh, 0, 0, fw * s, fh * s);
+      ctx.drawImage(image, sheetColumn * fw, rowIndex * fh, fw, fh, 0, 0, fw * s, fh * s);
     }
 
     // Frame border + center dashes
@@ -279,15 +286,15 @@ export function FrameCanvas(props: FrameCanvasProps) {
 
   const handleMouseDown = (e: React.MouseEvent) => {
     const pos = getPos(e);
-    const fx = pos.x / s;
-    const fy = pos.y / s;
+    const { x: fx, y: fy } = screenToFrameCoordinates(pos.x, pos.y, s);
 
     // Draw tool: start a new rectangle
     if (tool !== 'select') {
       const kind: BoxKind = tool === 'draw-hitbox' ? 'hitbox' : 'hurtbox';
       const start = { x: snap(fx), y: snap(fy) };
+      props.onInteractionStart();
       dragRef.current = { mode: 'draw', kind, start };
-      setGhost({ x: start.x, y: start.y, width: 0, height: 0 });
+      setGhost({ id: 'ghost', x: start.x, y: start.y, width: 0, height: 0 });
       return;
     }
 
@@ -297,7 +304,9 @@ export function FrameCanvas(props: FrameCanvasProps) {
       if (selRect) {
         const fr = rectToFrame(selRect);
         for (const h of handleList(fr)) {
-          if (Math.abs(pos.x - h.x * s) <= HANDLE_HIT_PX && Math.abs(pos.y - h.y * s) <= HANDLE_HIT_PX) {
+          const hs = frameToScreenCoordinates(h.x, h.y, s);
+          if (Math.abs(pos.x - hs.x) <= HANDLE_HIT_PX && Math.abs(pos.y - hs.y) <= HANDLE_HIT_PX) {
+            props.onInteractionStart();
             dragRef.current = {
               mode: 'resize',
               kind: selection.kind,
@@ -316,6 +325,7 @@ export function FrameCanvas(props: FrameCanvasProps) {
     const oxS = opx * s;
     const oyS = opy * s;
     if (Math.hypot(pos.x - oxS, pos.y - oyS) < 14) {
+      props.onInteractionStart();
       dragRef.current = { mode: 'origin', start: { x: fx, y: fy } };
       return;
     }
@@ -326,6 +336,7 @@ export function FrameCanvas(props: FrameCanvasProps) {
     const br = body.radius * s;
     const dBody = Math.hypot(pos.x - bx, pos.y - by);
     if (dBody < 12 || Math.abs(dBody - br) < 7) {
+      props.onInteractionStart();
       dragRef.current = { mode: 'body', start: { x: fx, y: fy } };
       return;
     }
@@ -335,6 +346,7 @@ export function FrameCanvas(props: FrameCanvasProps) {
       const hitIdx = findTopRect(frame.hitbox.rectangles, fx, fy);
       if (hitIdx >= 0) {
         props.onSelect({ kind: 'hitbox', index: hitIdx });
+        props.onInteractionStart();
         dragRef.current = {
           mode: 'move',
           kind: 'hitbox',
@@ -347,6 +359,7 @@ export function FrameCanvas(props: FrameCanvasProps) {
       const hurtIdx = findTopRect(frame.hurtbox.rectangles, fx, fy);
       if (hurtIdx >= 0) {
         props.onSelect({ kind: 'hurtbox', index: hurtIdx });
+        props.onInteractionStart();
         dragRef.current = {
           mode: 'move',
           kind: 'hurtbox',
@@ -365,8 +378,7 @@ export function FrameCanvas(props: FrameCanvasProps) {
     const d = dragRef.current;
     if (!d) return;
     const pos = getPos(e);
-    const fx = pos.x / s;
-    const fy = pos.y / s;
+    const { x: fx, y: fy } = screenToFrameCoordinates(pos.x, pos.y, s);
 
     if (d.mode === 'origin') {
       let nx = fx / fw;
@@ -385,6 +397,7 @@ export function FrameCanvas(props: FrameCanvasProps) {
       const x1 = snap(fx);
       const y1 = snap(fy);
       setGhost({
+        id: 'ghost',
         x: Math.min(d.start.x, x1),
         y: Math.min(d.start.y, y1),
         width: Math.abs(x1 - d.start.x),
@@ -413,7 +426,10 @@ export function FrameCanvas(props: FrameCanvasProps) {
       const g = ghost;
       setGhost(null);
       if (g && d.kind && g.width >= 2 && g.height >= 2) {
-        props.onRectAdd(d.kind, frameToRect({ x: snap(g.x), y: snap(g.y), width: snap(g.width), height: snap(g.height) }));
+        props.onRectAdd(
+          d.kind,
+          frameToRect({ id: '', x: snap(g.x), y: snap(g.y), width: snap(g.width), height: snap(g.height) }),
+        );
       }
       return;
     }

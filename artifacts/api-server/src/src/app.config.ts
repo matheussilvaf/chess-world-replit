@@ -11,6 +11,7 @@ import { tournamentRouter } from "./tournament/routes.js";
 import { coordinatorRouter } from "./tournament/coordinatorRoutes.js";
 import { startCoordinator } from "./tournament/coordinator.js";
 import { getCharacterConfig } from "./combat/characterConfigService.js";
+import { rigsAdminRouter, publicRigConfigHandler } from "./rigs/routes.js";
 
 const config: ConfigOptions = {
   // Explicit liveness probing: without app-level pings a half-open socket
@@ -133,6 +134,11 @@ const config: ConfigOptions = {
         roomName,
       });
     });
+
+    // Character Rig Controller (spec: /admin/rigs). Admin CRUD requires a
+    // Supabase JWT; the public GET is the read-only view game clients use.
+    app.get("/api/rigs/:rigId", publicRigConfigHandler);
+    app.use("/api/admin/rigs", rigsAdminRouter);
 
     app.use("/api/tournament", tournamentRouter);
     app.use("/api/coordinator", coordinatorRouter);

@@ -1,0 +1,1174 @@
+antes de mais nada, nao apague a pagina /admin/character-generator
+
+Refatore o sistema atual de `/admin/characters` para transformá-lo em um controlador final e reutilizável de rigs de personagens.
+
+Não crie outro editor paralelo e não descarte o que já foi implementado. Reutilize e refatore os componentes, serviços, APIs, tipos, ferramentas de arrastar/redimensionar, debug visual e persistência que já existem na página atual.
+
+==================================================
+1. CONTEXTO E MUDANÇA DE ARQUITETURA
+==================================================
+
+Anteriormente, `/admin/characters` configurava personagens fixos descobertos dentro de:
+
+`public/assets/characters`
+
+Esse modelo deixa de ser a arquitetura principal.
+
+Os jogadores passarão a criar personagens visuais dinamicamente por meio do Character Generator. Cada jogador poderá ter sua própria spritesheet PNG montada e salva no servidor.
+
+Esses PNGs personalizados não devem possuir configurações individuais de colisão.
+
+A nova arquitetura deve separar:
+
+1. APARÊNCIA:
+   - PNG composto e personalizado de cada jogador;
+   - cabelo;
+   - cabeça;
+   - top;
+   - bottom;
+   - chapéu;
+   - arma;
+   - tom de pele;
+   - demais camadas.
+
+2. RIG:
+   - Sprite Origin;
+   - Collision Body;
+   - Hurtboxes;
+   - Hitboxes;
+   - mapeamento de animações;
+   - mapeamento de direções e frames.
+
+Todo personagem gerado pelo Character Generator deve possuir um `rigId`.
+
+Exemplo:
+
+{
+  "characterId": "player-character-483",
+  "rigId": "time-elements-humanoid-v1",
+  "spriteUrl": "/api/characters/player-character-483/sprite",
+  "appearanceVersion": 4
+}
+
+Todos os personagens que utilizarem:
+
+`time-elements-humanoid-v1`
+
+devem herdar exatamente as mesmas configurações físicas e de combate, independentemente da aparência visual.
+
+==================================================
+2. NOVA ROTA E NOME DA PÁGINA
+==================================================
+
+Crie a rota principal:
+
+`/admin/rigs`
+
+Nome visual da ferramenta:
+
+`Character Rig Controller`
+
+ou em português:
+
+`Controlador de Rig de Personagem`
+
+A rota antiga:
+
+`/admin/characters`
+
+deve redirecionar para:
+
+`/admin/rigs`
+
+Não mantenha dois editores diferentes.
+
+A interface atual deve ser migrada e adaptada, não duplicada.
+
+A antiga leitura automática de personagens em:
+
+`public/assets/characters`
+
+deixa de ser a fonte de verdade.
+
+Não apagar automaticamente essa pasta durante a implementação. Primeiro remova as dependências, migre o que for necessário e marque o sistema antigo como deprecated.
+
+==================================================
+3. RIG INICIAL
+==================================================
+
+Crie inicialmente este rig:
+
+- ID: `time-elements-humanoid-v1`
+- Nome: `Time Elements Humanoid V1`
+- Quantidade de direções: `4`
+- Largura da spritesheet: `2208`
+- Altura da spritesheet: `384`
+- Frame width: `96`
+- Frame height: `96`
+- Colunas: `23`
+- Linhas: `4`
+
+A arquitetura deve permitir criar outros rigs futuramente.
+
+A página deve ter um seletor de rig no topo.
+
+Exemplo:
+
+- Time Elements Humanoid V1
+- Outros rigs futuros
+
+Adicionar ações:
+
+- Novo Rig;
+- Duplicar Rig;
+- Renomear Rig;
+- Salvar;
+- Recarregar;
+- Excluir Rig, com confirmação.
+
+Não permitir IDs duplicados.
+
+==================================================
+4. ASSETS USADOS NO PREVIEW DO RIG
+==================================================
+
+Para visualizar o rig, utilize os mesmos assets e a mesma lógica do Character Generator localizado em:
+
+`public/character-generator/assets`
+
+Categorias:
+
+- `shadow`
+- `backextra`
+- `backhair`
+- `bottom`
+- `top`
+- `head`
+- `hair`
+- `hat`
+- `weapon`
+- `frontextra`
+
+A página `/admin/rigs` deve possuir um painel de aparência de teste.
+
+Esse painel não representa um jogador real e não cria um personagem no banco.
+
+Ele existe apenas para:
+
+- montar visualmente um personagem completo;
+- testar o Origin;
+- testar o Collision Body;
+- desenhar Hurtboxes;
+- desenhar Hitboxes;
+- verificar as caixas sobre diferentes roupas, cabelos, armas e acessórios.
+
+Reutilize integralmente:
+
+- o manifest já criado para o Character Generator;
+- o parser de famílias e variantes `_cN`;
+- o carregador e cache de imagens;
+- a composição em Canvas;
+- a substituição de tom de pele;
+- a ordem das camadas;
+- o Random;
+- os controles de visibilidade.
+
+Não reimplementar essas funcionalidades de forma duplicada.
+
+==================================================
+5. APARÊNCIA DE TESTE NA PÁGINA DO RIG
+==================================================
+
+Na página `/admin/rigs`, permitir escolher:
+
+- Shadow;
+- Back Extra;
+- Back Hair;
+- Bottom;
+- Top;
+- Head;
+- Hair;
+- Hat;
+- Weapon;
+- Front Extra;
+- Skin Tone.
+
+Para cada categoria:
+
+- selecionar a família;
+- selecionar a variante;
+- navegar com anterior/próximo;
+- mostrar ou esconder com botão de olho.
+
+Adicionar:
+
+- Random Appearance;
+- Reset Appearance;
+- Save Preview Recipe.
+
+A receita de preview pode ser salva dentro do próprio rig apenas para conveniência administrativa.
+
+Ela não deve interferir na configuração física.
+
+Exemplo:
+
+{
+  "previewAppearance": {
+    "shadow": "shadow1",
+    "backhair": "backhair4_c3",
+    "bottom": "bottom8",
+    "top": "top25_c2",
+    "head": "head4",
+    "hair": "hair12_c4",
+    "hat": "crown1_c3",
+    "weapon": "weapon7",
+    "skinTone": "tone2"
+  }
+}
+
+Trocar a aparência do preview nunca deve apagar ou deslocar automaticamente as caixas configuradas.
+
+==================================================
+6. ORDEM DAS CAMADAS
+==================================================
+
+Utilize esta ordem de composição, do fundo para frente:
+
+1. shadow
+2. backextra
+3. backhair
+4. bottom
+5. top
+6. head
+7. hair
+8. hat
+9. weapon
+10. frontextra
+
+Centralize essa ordem em uma constante compartilhada.
+
+==================================================
+7. TONS DE PELE
+==================================================
+
+Reutilize o sistema de recolorização em Canvas já implementado no Character Generator.
+
+Cores-base:
+
+- `f4d29c`
+- `dba463`
+- `73172d`
+- `bb7547`
+
+Paletas:
+
+GREEN:
+- f4d29c → afe356
+- dba463 → 6cb328
+- 73172d → 184e3a
+- bb7547 → 3d8a3e
+
+RED:
+- f4d29c → e96564
+- dba463 → c74934
+- 73172d → 4e2218
+- bb7547 → 8f2416
+
+TONE 1:
+- f4d29c → d49149
+- dba463 → b4723c
+- 73172d → 561f2d
+- bb7547 → 9d5534
+
+TONE 2:
+- f4d29c → b97e50
+- dba463 → 955123
+- 73172d → 481c0e
+- bb7547 → 774128
+
+TONE 3:
+- f4d29c → 986743
+- dba463 → 7b4c2d
+- 73172d → 36150c
+- bb7547 → 583322
+
+BONE:
+- f4d29c → e6e1e1
+- dba463 → b6acaa
+- 73172d → 51393f
+- bb7547 → 89786c
+
+O tom de pele deve mudar em tempo real no preview sem alterar as coordenadas do rig.
+
+==================================================
+8. DIREÇÕES DA SPRITESHEET
+==================================================
+
+O rig inicial possui quatro linhas nesta ordem fixa:
+
+- linha 0: South
+- linha 1: West
+- linha 2: East
+- linha 3: North
+
+Mapeamento interno:
+
+- `south`
+- `west`
+- `east`
+- `north`
+
+A interface deve permitir selecionar uma direção.
+
+Não usar os nomes antigos:
+
+- down-right;
+- up-right;
+- up-left;
+- down-left;
+
+no rig atual de quatro direções.
+
+A arquitetura pode suportar rigs de oito direções futuramente, mas o rig inicial é de quatro.
+
+==================================================
+9. MAPEAMENTO DAS ANIMAÇÕES
+==================================================
+
+A spritesheet possui 23 colunas de 96 pixels.
+
+Utilize o mesmo mapeamento que esta sendo utilizado no gerador de persongaem atual:
+
+
+Não criar Dash.
+
+Centralize esse layout em um arquivo de definição do rig.
+
+Não espalhar números de colunas pelos componentes.
+
+==================================================
+10. NAVEGAÇÃO NO EDITOR
+==================================================
+
+A interface deve permitir selecionar nesta ordem:
+
+1. Rig;
+2. Aparência de preview;
+3. Animação;
+4. Direção;
+5. Frame local da animação.
+
+Exemplo:
+
+- Rig: Time Elements Humanoid V1;
+- Animation: Attack Full;
+- Direction: South;
+- Frame: 2/4.
+
+Ao trocar de frame, atualizar imediatamente:
+
+- imagem exibida;
+- Hurtboxes daquele frame;
+- Hitboxes daquele frame;
+- labels de debug;
+- informações numéricas.
+
+Adicionar:
+
+- slider de frames;
+- botão frame anterior;
+- botão próximo frame;
+- botão Play/Pause Animation;
+- controle de FPS do preview;
+- opção Loop.
+
+O preview animado não deve dificultar a edição. Ao selecionar, mover ou redimensionar uma caixa, pausar automaticamente a animação.
+
+==================================================
+11. SPRITE ORIGIN
+==================================================
+
+Preserve o editor atual de Sprite Origin.
+
+O Origin é uma propriedade global do rig.
+
+Ele não pertence à aparência do jogador.
+
+Ele não deve ser duplicado em cada animação ou frame.
+
+Estrutura:
+
+{
+  "x": 0.5,
+  "y": 0.5
+}
+
+Manter:
+
+- crosshair ciano;
+- arrastar;
+- campos X e Y;
+- botão Centralizar;
+- valores normalizados entre 0 e 1;
+- snap configurável;
+- preview em tempo real.
+
+No jogo, o Origin deve continuar sendo o ponto usado para posicionar o personagem no mundo e para o destino do click-to-move.
+
+Não usar o centro geométrico do PNG quando o Origin configurado for diferente.
+
+==================================================
+12. COLLISION BODY
+==================================================
+
+Preserve o editor circular atual de Collision Body.
+
+O Collision Body é global do rig.
+
+Ele representa colisão com:
+
+- mapa;
+- paredes;
+- objetos;
+- construções;
+- obstáculos sólidos.
+
+Ele não representa dano.
+
+Estrutura:
+
+{
+  "shape": "circle",
+  "offsetX": -0.8,
+  "offsetY": 15,
+  "radius": 10
+}
+
+Manter:
+
+- círculo vermelho;
+- arrastar;
+- ajuste de radius;
+- campos numéricos;
+- linha verde de contato com os pés.
+
+O Collision Body deve ser relativo ao Sprite Origin.
+
+Não confundir Collision Body com Hurtbox.
+
+==================================================
+13. HURTBOXES
+==================================================
+
+Hurtbox representa a área que pode receber dano.
+
+As Hurtboxes pertencem ao rig e devem ser configuráveis por:
+
+- animação;
+- direção;
+- frame.
+
+Permitir uma ou várias Hurtboxes retangulares por frame.
+
+Por padrão:
+
+- Hurtbox desabilitada;
+- lista vazia.
+
+Estrutura:
+
+{
+  "enabled": true,
+  "rectangles": [
+    {
+      "id": "hurtbox-1",
+      "x": -12,
+      "y": -32,
+      "width": 24,
+      "height": 36
+    }
+  ]
+}
+
+As coordenadas são relativas ao Sprite Origin.
+
+Usar pixels originais do frame 96×96.
+
+Não salvar coordenadas ampliadas do Canvas.
+
+Cor visual:
+
+- verde ou verde-limão.
+
+Permitir:
+
+- criar;
+- selecionar;
+- arrastar;
+- redimensionar;
+- duplicar;
+- excluir;
+- editar X/Y/Width/Height;
+- múltiplas caixas;
+- copiar de outro frame.
+
+==================================================
+14. HITBOXES
+==================================================
+
+Hitbox representa a área que causa dano.
+
+As Hitboxes devem ser configuráveis por:
+
+- animação;
+- direção;
+- frame.
+
+Por padrão:
+
+- Hitbox desabilitada;
+- lista vazia.
+
+Estrutura:
+
+{
+  "enabled": true,
+  "rectangles": [
+    {
+      "id": "hitbox-1",
+      "x": -30,
+      "y": 2,
+      "width": 60,
+      "height": 24
+    }
+  ]
+}
+
+Cor visual:
+
+- magenta, roxo forte ou laranja.
+
+Não utilizar a mesma cor do Collision Body.
+
+Permitir:
+
+- criar;
+- selecionar;
+- arrastar;
+- redimensionar;
+- duplicar;
+- excluir;
+- múltiplas caixas;
+- edição numérica;
+- copiar entre frames.
+
+A Hitbox nunca deve ser criada automaticamente com base nos pixels da arma.
+
+Ela deve existir somente nos frames configurados manualmente.
+
+==================================================
+15. METADADOS DE DANO DA ANIMAÇÃO
+==================================================
+
+Preserve e adapte os controles atualmente existentes:
+
+- `Dano ativo neste movimento`;
+- `Dano por acerto`;
+- `Ativas no jogo`.
+
+Esses dados devem pertencer à configuração da animação dentro do rig.
+
+Exemplo:
+
+{
+  "combat": {
+    "enabled": true,
+    "damagePerHit": 10,
+    "singleHitPerTarget": true
+  }
+}
+
+Regras:
+
+- sem Hitbox ativa em nenhum frame, a animação não causa dano;
+- `combat.enabled = false` impede o dano, mesmo que existam caixas para debug;
+- cada ataque deve atingir o mesmo alvo apenas uma vez por execução, salvo configuração futura explícita;
+- o cliente não decide o dano;
+- o servidor Colyseus deve ser a autoridade.
+
+==================================================
+16. FERRAMENTAS DE CÓPIA
+==================================================
+
+Reutilize e complete os controles existentes:
+
+- Copiar do frame anterior;
+- Copiar do próximo frame;
+- Copiar Hurtbox para todos os frames da direção;
+- Copiar Hurtbox para todas as direções;
+- Copiar Hitbox para a direção oposta com espelhamento;
+- Copiar todas as caixas do frame;
+- Colar no frame atual;
+- Limpar frame;
+- Limpar animação.
+
+Antes de limpar uma animação inteira, pedir confirmação.
+
+Adicionar suporte a espelhamento horizontal:
+
+- West ↔ East.
+
+O espelhamento deve usar o eixo do Sprite Origin.
+
+==================================================
+17. SELEÇÃO E EDIÇÃO DAS CAIXAS
+==================================================
+
+Preserve os modos:
+
+- Selecionar;
+- + Hurtbox;
+- + Hitbox.
+
+A caixa selecionada deve mostrar:
+
+- tipo;
+- ID;
+- X;
+- Y;
+- largura;
+- altura;
+- animação;
+- direção;
+- frame.
+
+Adicionar alças visíveis para redimensionamento.
+
+Adicionar:
+
+- Delete/Backspace para remover;
+- setas para mover 1 pixel;
+- Shift + seta para mover 5 pixels;
+- Snap 1px;
+- Undo;
+- Redo.
+
+Nunca permitir:
+
+- width <= 0;
+- height <= 0;
+- NaN;
+- Infinity;
+- caixa inválida sem aviso.
+
+==================================================
+18. ESTRUTURA DO ARQUIVO DO RIG
+==================================================
+
+Persistir uma configuração semelhante a:
+
+{
+  "schemaVersion": 2,
+  "rigId": "time-elements-humanoid-v1",
+  "displayName": "Time Elements Humanoid V1",
+
+  "sheet": {
+    "width": 2208,
+    "height": 384,
+    "frameWidth": 96,
+    "frameHeight": 96,
+    "columns": 23,
+    "rows": 4
+  },
+
+  "directions": {
+    "south": 0,
+    "west": 1,
+    "east": 2,
+    "north": 3
+  },
+
+  "animations": {
+    "stand": [1],
+    "walk": [0, 1, 2],
+    "arms-up": [3, 4, 5],
+    "crouch": [6],
+    "jump": [7, 8, 9],
+    "wind-up": [10],
+    "attack": [11, 12, 13],
+    "attack-full": [10, 11, 12, 13],
+    "knock": [14],
+    "bow": [15, 16, 17],
+    "knock-and-bow": [14, 15, 16, 17],
+    "climb": [18, 19, 20],
+    "sleep": [21],
+    "dead": [22]
+  },
+
+  "origin": {
+    "x": 0.5,
+    "y": 0.5
+  },
+
+  "collisionBody": {
+    "shape": "circle",
+    "offsetX": -0.8,
+    "offsetY": 15,
+    "radius": 10
+  },
+
+  "previewAppearance": {},
+
+  "animationConfigs": {
+    "attack-full": {
+      "combat": {
+        "enabled": true,
+        "damagePerHit": 10,
+        "singleHitPerTarget": true
+      },
+
+      "directions": {
+        "south": {
+          "frames": {
+            "0": {
+              "hurtbox": {
+                "enabled": false,
+                "rectangles": []
+              },
+              "hitbox": {
+                "enabled": false,
+                "rectangles": []
+              }
+            },
+
+            "2": {
+              "hurtbox": {
+                "enabled": true,
+                "rectangles": [
+                  {
+                    "id": "hurtbox-1",
+                    "x": -12,
+                    "y": -32,
+                    "width": 24,
+                    "height": 36
+                  }
+                ]
+              },
+              "hitbox": {
+                "enabled": true,
+                "rectangles": [
+                  {
+                    "id": "hitbox-1",
+                    "x": -30,
+                    "y": 2,
+                    "width": 60,
+                    "height": 24
+                  }
+                ]
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
+Frames ausentes devem ser interpretados como:
+
+- Hurtbox desabilitada;
+- Hitbox desabilitada.
+
+Validar esse JSON com schema estrito.
+
+==================================================
+19. PERSISTÊNCIA
+==================================================
+
+O controlador de rig agora é uma ferramenta final, não apenas de teste.
+
+As configurações devem ser persistidas no servidor.
+
+Reutilize o sistema de persistência existente, caso já tenha sido criado para `/admin/characters`.
+
+Refatore para:
+
+`RigConfigRepository`
+
+Endpoints sugeridos:
+
+GET `/api/admin/rigs`
+
+POST `/api/admin/rigs`
+
+GET `/api/admin/rigs/:rigId`
+
+PUT `/api/admin/rigs/:rigId`
+
+DELETE `/api/admin/rigs/:rigId`
+
+Somente administradores podem modificar rigs.
+
+Clientes do jogo podem consultar somente as configurações necessárias por uma rota segura de leitura.
+
+Não permitir escrita anônima.
+
+==================================================
+20. MIGRAÇÃO DA PÁGINA ANTIGA
+==================================================
+
+Antes de remover o sistema antigo:
+
+1. localizar toda a implementação de `/admin/characters`;
+2. identificar componentes reutilizáveis;
+3. identificar APIs;
+4. identificar repositories;
+5. identificar arquivos de configuração existentes;
+6. identificar o debug renderer;
+7. identificar integração com Phaser e Colyseus.
+
+Reaproveitar:
+
+- editor visual;
+- seleção;
+- drag;
+- resize;
+- Origin;
+- Collision Body;
+- Hurtbox;
+- Hitbox;
+- cópia entre frames;
+- validações;
+- salvamento;
+- Debug Visuals.
+
+Não copiar e colar arquivos inteiros criando versões paralelas.
+
+Refatorar nomes:
+
+- CharacterConfig → RigConfig;
+- CharacterConfigRepository → RigConfigRepository;
+- CharacterEditor → RigController;
+- characterId → rigId onde fizer sentido.
+
+Não migrar automaticamente configurações incompatíveis.
+
+Caso exista uma configuração válida do personagem antigo com o mesmo grid 96×96 e mesmas animações, oferecer uma migração explícita para o novo rig.
+
+==================================================
+21. INTEGRAÇÃO COM PERSONAGENS GERADOS
+==================================================
+
+Todo personagem criado futuramente deve possuir:
+
+`rigId: "time-elements-humanoid-v1"`
+
+Quando o Phaser carregar um jogador:
+
+1. carregar o PNG personalizado;
+2. consultar o rig pelo `rigId`;
+3. aplicar o Origin;
+4. aplicar o Collision Body;
+5. acompanhar animação, direção e frame;
+6. recuperar Hurtboxes do frame;
+7. recuperar Hitboxes do frame;
+8. desenhar debug, quando habilitado.
+
+O sistema não deve procurar caixas dentro do PNG do jogador.
+
+O sistema não deve salvar as caixas junto ao PNG.
+
+A aparência pode mudar sem alterar o rig.
+
+Exemplos que não devem alterar as caixas:
+
+- trocar cabelo;
+- trocar roupa;
+- trocar chapéu;
+- trocar cor de pele;
+- trocar variação `_cN`;
+- mostrar ou esconder sombra;
+- trocar acessório puramente visual.
+
+==================================================
+22. ARMAS E PERFIS FUTUROS
+==================================================
+
+Não acople permanentemente todas as armas ao mesmo perfil de ataque.
+
+Prepare a estrutura para que, futuramente, uma arma possa definir:
+
+{
+  "weaponAssetId": "sword1_c3",
+  "rigId": "time-elements-humanoid-v1",
+  "attackAnimation": "attack-full",
+  "combatProfileId": "humanoid-sword-basic-v1"
+}
+
+Neste momento, pode ser usado o perfil configurado diretamente na animação do rig.
+
+Mas mantenha a implementação preparada para perfis de combate específicos por classe de arma.
+
+Não implementar todo o sistema de equipamentos agora.
+
+==================================================
+23. DEBUG VISUALS
+==================================================
+
+A opção existente:
+
+`Debug Visuals`
+
+deve continuar mostrando no jogo:
+
+- Origin ciano;
+- Collision Body vermelho;
+- linha dos pés verde;
+- Hurtboxes verdes;
+- Hitboxes magenta/laranja;
+- rigId;
+- animação atual;
+- direção;
+- frame local.
+
+As caixas devem acompanhar corretamente:
+
+- posição;
+- Origin;
+- zoom;
+- câmera;
+- animação;
+- direção;
+- frame.
+
+A aparência personalizada do jogador não deve alterar as coordenadas do debug.
+
+Não confundir `Debug Visuals` com `Interaction Debug`.
+
+==================================================
+24. COLYSEUS E AUTORIDADE DO SERVIDOR
+==================================================
+
+O Phaser pode mostrar as caixas e prever visualmente o ataque.
+
+O Colyseus deve decidir o dano.
+
+Ao atacar, o cliente envia apenas uma intenção:
+
+{
+  "type": "attack",
+  "animation": "attack-full",
+  "direction": "south"
+}
+
+O servidor obtém:
+
+- jogador;
+- rigId;
+- configuração do rig;
+- animação;
+- direção;
+- frame autoritativo;
+- Hitboxes do frame;
+- Hurtboxes dos possíveis alvos.
+
+O servidor converte as caixas locais para coordenadas do mundo e testa interseções.
+
+Não confiar em:
+
+- dano enviado pelo cliente;
+- targetId declarado como acertado;
+- Hitboxes enviadas pelo cliente;
+- posição de caixa enviada pelo cliente.
+
+Criar geometria compartilhada sem dependência de Phaser no servidor.
+
+==================================================
+25. ORIGEM E COORDENADAS
+==================================================
+
+Todas as formas devem ser salvas em pixels relativos ao Origin.
+
+O preview ampliado pode ter qualquer escala visual.
+
+Conversões obrigatórias:
+
+- screenToFrameCoordinates;
+- frameToScreenCoordinates;
+- localRectToWorldRect;
+- mirrorRectAcrossOrigin;
+
+Nunca salvar coordenadas CSS ou coordenadas do Canvas ampliado.
+
+O sistema deve continuar correto com zoom da página e zoom da câmera.
+
+==================================================
+26. CONTROLE DE ALTERAÇÕES
+==================================================
+
+Preserve o aviso:
+
+`alterações não salvas`
+
+O estado dirty deve ser ativado quando houver mudança em:
+
+- Origin;
+- Collision Body;
+- Hurtbox;
+- Hitbox;
+- dano;
+- animação;
+- recipe de preview;
+- metadados do rig.
+
+Ao sair da página com alterações não salvas, solicitar confirmação.
+
+Salvar deve mostrar:
+
+- loading;
+- sucesso;
+- erro;
+- última data de salvamento.
+
+==================================================
+27. REQUISITOS TÉCNICOS
+==================================================
+
+Usar TypeScript estrito.
+
+Evitar `any`.
+
+Criar tipos claros:
+
+- RigManifest;
+- RigConfig;
+- RigSheetConfig;
+- RigDirection;
+- RigAnimationDefinition;
+- RigAnimationConfig;
+- RigFrameConfig;
+- SpriteOriginConfig;
+- CollisionBodyConfig;
+- HurtboxConfig;
+- HitboxConfig;
+- LocalRectangle;
+- PreviewAppearanceRecipe.
+
+Separar:
+
+- manifest dos assets;
+- composição do preview;
+- estado do editor;
+- geometria;
+- persistência;
+- APIs;
+- integração Phaser;
+- integração Colyseus;
+- debug renderer.
+
+Não colocar toda a lógica dentro de um único componente React ou arquivo de rota.
+
+==================================================
+28. FORA DO ESCOPO DESTA TAREFA
+==================================================
+
+Não implementar agora:
+
+- criação de personagem por usuário;
+- seleção de personagem na conta;
+- inventário final;
+- compra de cosméticos;
+- upload permanente do PNG dos jogadores;
+- fluxo completo de edição do jogador;
+- equipamento completo;
+- rigs de monstros;
+- rigs de oito direções;
+- Dash.
+
+Esta tarefa é exclusivamente:
+
+- transformar o editor existente em um controlador final de rig;
+- integrar o Character Generator como preview;
+- persistir as configurações do rig;
+- fazer o jogo usar essas configurações.
+
+==================================================
+29. CRITÉRIOS DE ACEITAÇÃO
+==================================================
+
+A tarefa somente estará concluída quando:
+
+1. `/admin/characters` redirecionar para `/admin/rigs`.
+
+2. A página estiver visualmente identificada como controlador de rig.
+
+3. O sistema não depender mais de personagens descobertos em `public/assets/characters`.
+
+4. O rig `time-elements-humanoid-v1` existir.
+
+5. O preview for montado com assets reais de:
+   `public/character-generator/assets`.
+
+6. For possível trocar todas as camadas e variantes.
+
+7. For possível trocar o tom de pele.
+
+8. For possível ocultar camadas.
+
+9. O preview manter o frame exato de 96×96.
+
+10. As quatro direções funcionarem na ordem:
+    South, West, East, North.
+
+11. Todas as animações configuradas aparecerem no seletor.
+
+12. For possível navegar frame a frame.
+
+13. Origin continuar editável.
+
+14. Collision Body continuar editável.
+
+15. Hurtboxes puderem ser criadas por animação, direção e frame.
+
+16. Hitboxes puderem ser criadas por animação, direção e frame.
+
+17. Múltiplas caixas por frame funcionarem.
+
+18. Copiar caixas entre frames funcionar.
+
+19. Espelhar West/East funcionar.
+
+20. Configuração persistir após recarregar a página.
+
+21. Debug Visuals mostrar as caixas no jogo.
+
+22. Um personagem gerado com `rigId` usar a configuração correta.
+
+23. Mudar a aparência não alterar as caixas.
+
+24. O Colyseus continuar sendo autoridade do dano.
+
+25. Nenhum sistema existente sofrer regressão.
+
+==================================================
+30. RELATÓRIO FINAL
+==================================================
+
+Ao terminar, apresente:
+
+1. arquivos criados;
+2. arquivos alterados;
+3. arquivos removidos ou deprecated;
+4. componentes reutilizados da página antiga;
+5. rota final;
+6. endpoints finais;
+7. estrutura final do RigConfig;
+8. como criar ou editar um rig;
+9. como testar Origin;
+10. como testar Collision Body;
+11. como testar Hurtboxes;
+12. como testar Hitboxes;
+13. como testar animações e frames;
+14. como testar Debug Visuals;
+15. como associar um personagem gerado ao `rigId`;
+16. limitações reais ou pendências encontradas.
