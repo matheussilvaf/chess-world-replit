@@ -24,6 +24,7 @@ export const LAYER_ORDER = [
   'hair',
   'hat',
   'weapon',
+  'crafttools',
   'frontextra',
 ] as const;
 
@@ -37,6 +38,7 @@ export const CATEGORY_LABELS: Record<string, string> = {
   hair: 'Cabelo',
   hat: 'Chapéu',
   weapon: 'Arma',
+  crafttools: 'Ferramenta',
   frontextra: 'Extra (frente)',
 };
 
@@ -51,13 +53,15 @@ export const DIRECTIONS = [
 export type DirectionId = (typeof DIRECTIONS)[number]['id'];
 
 /**
- * North (back view) draw order: same as LAYER_ORDER, but with the weapon moved
- * to just below the head — weapon effects must not cover the head when the
- * character faces away. Derived from LAYER_ORDER so the two never drift.
+ * North (back view) draw order: same as LAYER_ORDER, but with held items
+ * (weapon/craft tool) moved to just below the head — they must not cover the
+ * head when the character faces away. Derived from LAYER_ORDER so they never drift.
  */
+const HELD_ITEM_CATEGORIES = ['weapon', 'crafttools'] as const;
 const LAYER_ORDER_NORTH: readonly string[] = (() => {
-  const order = LAYER_ORDER.filter((c) => c !== 'weapon') as string[];
-  order.splice(order.indexOf('head'), 0, 'weapon');
+  const held = HELD_ITEM_CATEGORIES as readonly string[];
+  const order = LAYER_ORDER.filter((c) => !held.includes(c)) as string[];
+  order.splice(order.indexOf('head'), 0, ...held);
   return order;
 })();
 

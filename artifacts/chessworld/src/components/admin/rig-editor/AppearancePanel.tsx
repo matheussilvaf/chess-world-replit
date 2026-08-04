@@ -7,7 +7,7 @@
  * as background; it never touches origin/body/boxes. "Salvar receita" hands
  * the recipe to the page, which stores it in rig.previewAppearance on save.
  */
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Dices, RotateCcw, Save } from 'lucide-react';
 import type {
   GeneratorManifest,
@@ -26,7 +26,7 @@ import {
 } from '../../../lib/character-generator/compositor';
 import { CategoryRow } from '../character-generator/CategoryRow';
 import type { PreviewAppearanceRecipe } from '../../../shared/combat/RigShapes';
-import { WEAPON_CATEGORY } from '../../../shared/combat/WeaponShapes';
+import { WEAPON_LIKE_CATEGORIES } from '../../../shared/combat/WeaponShapes';
 
 function pickRandom<T>(list: readonly T[]): T {
   return list[Math.floor(Math.random() * list.length)];
@@ -173,19 +173,35 @@ export function AppearancePanel({ recipe, rigId, onSaveRecipe, onSheetChange, on
     };
   }, [layerSpecs, toneId, onSheetChange]);
 
-  // Report the equipped weapon to the page (drives the weapon profile panel).
+  // Report the equipped weapon-LIKE item (weapon OR craft tool) to the page —
+  // it drives the profile panel. With both equipped, the last CHANGED wins.
+  const reportedWeaponLikeRef = useRef<string | null>(null);
+  const prevWeaponLikeRef = useRef<Record<string, string | null>>({});
   useEffect(() => {
     if (!manifest || !onWeaponChange) return;
-    const sel = selection[WEAPON_CATEGORY];
-    if (!sel?.visible || !sel.familyId) {
-      onWeaponChange(null);
-      return;
+    const pick = (category: string) => {
+      const sel = selection[category];
+      if (!sel?.visible || !sel.familyId) return null;
+      return {
+        familyId: sel.familyId,
+        variantId: sel.variantId,
+        assetId: assetIdFor(sel.familyId, sel.variantId),
+      };
+    };
+    const equipped = WEAPON_LIKE_CATEGORIES.map((category) => ({ category, item: pick(category) }));
+    const changed = equipped.filter(
+      ({ category, item }) => (item?.assetId ?? null) !== (prevWeaponLikeRef.current[category] ?? null),
+    );
+    for (const { category, item } of equipped) {
+      prevWeaponLikeRef.current[category] = item?.assetId ?? null;
     }
-    onWeaponChange({
-      familyId: sel.familyId,
-      variantId: sel.variantId,
-      assetId: assetIdFor(sel.familyId, sel.variantId),
-    });
+    const stillReported =
+      equipped.find(({ item }) => item !== null && item.assetId === reportedWeaponLikeRef.current)?.item ?? null;
+    const changedEquipped = changed.find(({ item }) => item !== null)?.item ?? null;
+    const firstEquipped = equipped.find(({ item }) => item !== null)?.item ?? null;
+    const next = changedEquipped ?? stillReported ?? firstEquipped;
+    reportedWeaponLikeRef.current = next?.assetId ?? null;
+    onWeaponChange(next);
   }, [manifest, selection, onWeaponChange]);
 
   const patchCategory = useCallback((category: string, patch: Partial<GeneratorSelection[string]>) => {

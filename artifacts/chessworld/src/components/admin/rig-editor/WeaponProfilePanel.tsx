@@ -263,14 +263,14 @@ export function WeaponProfilePanel(props: WeaponProfilePanelProps) {
       {/* Equipped weapon (from the preview) + resolution */}
       <div className="mt-2.5 border border-slate-800 rounded p-2 bg-slate-950/40 text-[11px] space-y-1">
         <div className="text-slate-400">
-          Arma no preview:{' '}
+          Item no preview (arma/ferramenta):{' '}
           {previewWeapon ? (
             <span className="font-mono text-white">
               {previewWeapon.familyId}
               <span className="text-slate-500"> · variação {previewWeapon.variantId}</span>
             </span>
           ) : (
-            <span className="text-slate-500">nenhuma (categoria weapon oculta)</span>
+            <span className="text-slate-500">nenhum (categorias weapon/crafttools ocultas)</span>
           )}
         </div>
         {previewWeapon && (
@@ -653,7 +653,7 @@ export function WeaponProfilePanel(props: WeaponProfilePanelProps) {
         </div>
       )}
       <p className="text-[10px] text-slate-600 mt-1.5">
-        Famílias e variações vêm do scan da pasta weapon (nada é hardcoded). Novos PNGs aparecem após
+        Famílias e variações vêm do scan das pastas weapon e crafttools (nada é hardcoded). Novos PNGs aparecem após
         recarregar a página.
       </p>
     </div>

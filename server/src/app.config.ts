@@ -18,6 +18,11 @@ import {
   publicWeaponFamiliesHandler,
   publicWeaponProfileHandler,
 } from "./rigs/weaponRoutes.js";
+import {
+  craftItemsAdminRouter,
+  craftRecipesAdminRouter,
+  publicCraftDataHandler,
+} from "./craft/craftRoutes.js";
 
 const config: ConfigOptions = {
   // Explicit liveness probing: without app-level pings a half-open socket
@@ -38,7 +43,8 @@ const config: ConfigOptions = {
   },
 
   initializeExpress: (app) => {
-    app.use(express.json());
+    // 8mb: craft item icons travel as base64 data URLs in JSON (spec /admin/craft).
+    app.use(express.json({ limit: "8mb" }));
 
     const allowedOrigins = [
       process.env.CLIENT_ORIGIN,
@@ -152,6 +158,12 @@ const config: ConfigOptions = {
     app.get("/api/weapon-hitbox-profiles/:profileId", publicWeaponProfileHandler);
     app.use("/api/admin/weapon-families", weaponFamiliesAdminRouter);
     app.use("/api/admin/weapon-hitbox-profiles", weaponProfilesAdminRouter);
+
+    // Craft system (spec: /admin/craft): admin CRUD de craft items + receitas;
+    // GET público read-only e cacheado (o futuro painel de craft do jogador lê daqui).
+    app.get("/api/craft-data", publicCraftDataHandler);
+    app.use("/api/admin/craft-items", craftItemsAdminRouter);
+    app.use("/api/admin/craft-recipes", craftRecipesAdminRouter);
 
     app.use("/api/tournament", tournamentRouter);
     app.use("/api/coordinator", coordinatorRouter);

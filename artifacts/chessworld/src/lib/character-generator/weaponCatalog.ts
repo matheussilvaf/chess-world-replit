@@ -5,7 +5,7 @@
  * and variants come exclusively from the scanned manifest.
  */
 import {
-  WEAPON_CATEGORY,
+  WEAPON_LIKE_CATEGORIES,
   weaponAssetId,
   type WeaponAssetManifestEntry,
   type WeaponFamilyConfig,
@@ -25,24 +25,28 @@ export function buildWeaponFamilyCatalog(
   const entries: WeaponFamilyManifestEntry[] = [];
   const seen = new Set<string>();
 
-  for (const family of manifest?.categories[WEAPON_CATEGORY] ?? []) {
-    const config = families[family.id];
-    seen.add(family.id);
-    const variants: WeaponAssetManifestEntry[] = family.variants.map((v) => ({
-      assetId: weaponAssetId(family.id, v.id),
-      familyId: family.id,
-      variantId: v.id,
-      file: v.file,
-      url: v.url,
-    }));
-    entries.push({
-      familyId: family.id,
-      displayName: config?.displayName?.trim() ? config.displayName : family.id,
-      defaultAssetId: weaponAssetId(family.id, family.default.id),
-      variants,
-      weaponHitboxProfileId: config?.weaponHitboxProfileId ?? null,
-      configured: config !== undefined,
-    });
+  // Weapons AND craft tools: both categories share the same family system.
+  for (const category of WEAPON_LIKE_CATEGORIES) {
+    for (const family of manifest?.categories[category] ?? []) {
+      if (seen.has(family.id)) continue; // same family id in two folders — first wins
+      const config = families[family.id];
+      seen.add(family.id);
+      const variants: WeaponAssetManifestEntry[] = family.variants.map((v) => ({
+        assetId: weaponAssetId(family.id, v.id),
+        familyId: family.id,
+        variantId: v.id,
+        file: v.file,
+        url: v.url,
+      }));
+      entries.push({
+        familyId: family.id,
+        displayName: config?.displayName?.trim() ? config.displayName : family.id,
+        defaultAssetId: weaponAssetId(family.id, family.default.id),
+        variants,
+        weaponHitboxProfileId: config?.weaponHitboxProfileId ?? null,
+        configured: config !== undefined,
+      });
+    }
   }
 
   // Persisted families without matching PNGs (renamed/removed files).

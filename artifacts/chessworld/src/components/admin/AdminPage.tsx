@@ -2,7 +2,7 @@ import { useEffect, useState, useCallback } from 'react';
 import { supabase } from '../../lib/supabase';
 import { useInteractionStore } from '../../stores/interactionStore';
 import { getColyseusHttpUrl } from '../../config/colyseus';
-import { Settings, Gauge, ZoomIn, ArrowLeft, Crosshair, Bug, Waypoints, Monitor, Smartphone, MessageSquare, Wand2 } from 'lucide-react';
+import { Settings, Gauge, ZoomIn, ArrowLeft, Crosshair, Bug, Waypoints, Monitor, Smartphone, MessageSquare, Wand2, Swords, Hammer } from 'lucide-react';
 import { TournamentConfigSection } from './TournamentConfigSection';
 
 interface GameSettings {
@@ -162,6 +162,34 @@ export function AdminPage() {
               <p className="text-sm text-slate-400">Adjust global game parameters in real-time</p>
             </div>
           </div>
+        </div>
+
+        {/* Painéis de administração */}
+        <div className="mb-6 grid grid-cols-1 sm:grid-cols-2 gap-3">
+          <a
+            href="/admin/rigs"
+            className="flex items-center gap-3 rounded-xl border border-slate-800 bg-slate-900 hover:border-cyan-500/50 hover:bg-slate-800/80 transition-colors p-4"
+          >
+            <div className="w-9 h-9 rounded-lg bg-cyan-500/10 flex items-center justify-center">
+              <Swords className="w-4 h-4 text-cyan-400" />
+            </div>
+            <div>
+              <p className="text-sm font-medium text-white">Rigs & Armas</p>
+              <p className="text-xs text-slate-400">Hitboxes, perfis e níveis dos itens</p>
+            </div>
+          </a>
+          <a
+            href="/admin/craft"
+            className="flex items-center gap-3 rounded-xl border border-slate-800 bg-slate-900 hover:border-violet-500/50 hover:bg-slate-800/80 transition-colors p-4"
+          >
+            <div className="w-9 h-9 rounded-lg bg-violet-500/10 flex items-center justify-center">
+              <Hammer className="w-4 h-4 text-violet-400" />
+            </div>
+            <div>
+              <p className="text-sm font-medium text-white">Craft</p>
+              <p className="text-xs text-slate-400">Receitas das ferramentas e craft items</p>
+            </div>
+          </a>
         </div>
 
         {/* Status bar */}

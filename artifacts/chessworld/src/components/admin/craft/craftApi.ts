@@ -1,0 +1,113 @@
+/**
+ * HTTP client for the craft admin API (spec: /admin/craft).
+ *
+ * Same auth model as weaponApi: every call requires a Supabase session
+ * (Bearer JWT). Endpoints:
+ *   GET  {base}/api/admin/craft-items
+ *   PUT  {base}/api/admin/craft-items/:itemId
+ *   DELETE {base}/api/admin/craft-items/:itemId          (409 → usedBy)
+ *   POST {base}/api/admin/craft-items/:itemId/image      ({ dataUrl } → { imageUrl })
+ *   GET  {base}/api/admin/craft-recipes
+ *   PUT  {base}/api/admin/craft-recipes/:targetId
+ *   DELETE {base}/api/admin/craft-recipes/:targetId
+ */
+import { getColyseusHttpUrl } from '../../../config/colyseus';
+import { supabase } from '../../../lib/supabase';
+import type { CraftItemConfig, CraftRecipeConfig } from '../../../shared/craft/CraftShapes';
+import { RigApiError } from '../rig-editor/rigApi';
+
+export interface CraftItemsResponse {
+  items: Record<string, CraftItemConfig>;
+  updatedAt: Record<string, string>;
+  tableMissing: boolean;
+  invalidIds: string[];
+  tableSql?: string;
+}
+
+export interface CraftRecipesResponse {
+  recipes: Record<string, CraftRecipeConfig>;
+  updatedAt: Record<string, string>;
+  tableMissing: boolean;
+  invalidIds: string[];
+  tableSql?: string;
+}
+
+function baseUrl(path: string): string {
+  const httpUrl = getColyseusHttpUrl();
+  if (!httpUrl) throw new RigApiError('Servidor Colyseus não configurado (VITE_COLYSEUS_URL).', 0);
+  // Local dev base may already end with /api — never produce /api/api/…
+  return `${httpUrl.replace(/\/api$/, '')}${path}`;
+}
+
+async function authHeaders(): Promise<Record<string, string>> {
+  const { data } = await supabase.auth.getSession();
+  const token = data.session?.access_token;
+  if (!token) {
+    throw new RigApiError('Faça login no site para configurar o craft (nenhuma sessão ativa).', 401);
+  }
+  return { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` };
+}
+
+async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
+  const headers = await authHeaders();
+  const opts: RequestInit = { method, headers };
+  if (body !== undefined) opts.body = JSON.stringify(body);
+
+  let res: Response;
+  try {
+    res = await fetch(baseUrl(path), opts);
+  } catch (e) {
+    throw new RigApiError(
+      `Sem conexão com o servidor (${e instanceof Error ? e.message : 'rede'}).`,
+      0,
+    );
+  }
+
+  const text = await res.text();
+  let data: Record<string, unknown> | null = null;
+  try {
+    data = text ? (JSON.parse(text) as Record<string, unknown>) : null;
+  } catch {
+    throw new RigApiError(
+      `O servidor respondeu ${res.status} sem JSON — os endpoints de craft ainda não existem nesse servidor (deploy pendente?).`,
+      res.status,
+    );
+  }
+
+  if (!res.ok) {
+    throw new RigApiError(
+      typeof data?.error === 'string' ? data.error : `Falha na requisição (${res.status})`,
+      res.status,
+      {
+        tableMissing: data?.tableMissing === true,
+        tableSql: typeof data?.tableSql === 'string' ? data.tableSql : undefined,
+        // DELETE 409 carries the recipes still using the item.
+        details: Array.isArray(data?.details)
+          ? (data.details as string[])
+          : Array.isArray(data?.usedBy)
+            ? (data.usedBy as string[])
+            : undefined,
+      },
+    );
+  }
+  return data as T;
+}
+
+export const craftApi = {
+  items: {
+    list: (): Promise<CraftItemsResponse> => request<CraftItemsResponse>('GET', '/api/admin/craft-items'),
+    save: (config: CraftItemConfig): Promise<{ item: CraftItemConfig }> =>
+      request<{ item: CraftItemConfig }>('PUT', `/api/admin/craft-items/${encodeURIComponent(config.itemId)}`, config),
+    remove: (itemId: string): Promise<{ ok: boolean }> =>
+      request<{ ok: boolean }>('DELETE', `/api/admin/craft-items/${encodeURIComponent(itemId)}`),
+    uploadImage: (itemId: string, dataUrl: string): Promise<{ imageUrl: string }> =>
+      request<{ imageUrl: string }>('POST', `/api/admin/craft-items/${encodeURIComponent(itemId)}/image`, { dataUrl }),
+  },
+  recipes: {
+    list: (): Promise<CraftRecipesResponse> => request<CraftRecipesResponse>('GET', '/api/admin/craft-recipes'),
+    save: (config: CraftRecipeConfig): Promise<{ recipe: CraftRecipeConfig }> =>
+      request<{ recipe: CraftRecipeConfig }>('PUT', `/api/admin/craft-recipes/${encodeURIComponent(config.targetId)}`, config),
+    remove: (targetId: string): Promise<{ ok: boolean }> =>
+      request<{ ok: boolean }>('DELETE', `/api/admin/craft-recipes/${encodeURIComponent(targetId)}`),
+  },
+};

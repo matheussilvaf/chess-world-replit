@@ -36,6 +36,13 @@ export const WEAPON_PROFILE_SCHEMA_VERSION = 1 as const;
 
 /** Asset category (folder name) that carries weapons in the generator. */
 export const WEAPON_CATEGORY = 'weapon';
+/** Craft tools live in their own generator folder but reuse the whole weapon system. */
+export const CRAFTTOOLS_CATEGORY = 'crafttools';
+/** Generator categories whose PNGs are weapon-like (families + hitbox profiles + levels). */
+export const WEAPON_LIKE_CATEGORIES = [WEAPON_CATEGORY, CRAFTTOOLS_CATEGORY] as const;
+export function isWeaponLikeCategory(category: string): boolean {
+  return (WEAPON_LIKE_CATEGORIES as readonly string[]).includes(category);
+}
 
 /** Profile ids follow the same convention as rig ids. */
 export const WEAPON_PROFILE_ID_RE = RIG_ID_RE;

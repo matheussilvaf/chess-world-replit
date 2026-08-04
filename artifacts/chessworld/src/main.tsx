@@ -23,6 +23,11 @@ const CharacterGeneratorPage = lazy(() =>
     default: m.CharacterGeneratorPage,
   })),
 );
+const CraftAdminPage = lazy(() =>
+  import('./components/admin/craft/CraftAdminPage.tsx').then((m) => ({
+    default: m.CraftAdminPage,
+  })),
+);
 
 function RouteFallback() {
   return (
@@ -38,6 +43,7 @@ createRoot(document.getElementById('root')!).render(
       <Routes>
         <Route path="/admin" element={<AdminPage />} />
         <Route path="/admin/rigs" element={<RigControllerPage />} />
+        <Route path="/admin/craft" element={<CraftAdminPage />} />
         {/* Old editor URL — kept as a permanent redirect (spec §3) */}
         <Route path="/admin/characters" element={<Navigate to="/admin/rigs" replace />} />
         <Route path="/admin/character-generator" element={<CharacterGeneratorPage />} />
