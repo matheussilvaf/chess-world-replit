@@ -15,6 +15,7 @@ import {
   type WorldCharacterDef,
   type Direction8,
 } from '../characters/characterCatalog';
+import { composedDefIdFor, ensureAppearanceDef, pruneComposedAppearances } from '../characters/appearanceRuntime';
 import {
   ATTACK_COOLDOWN_CLIENT_MARGIN_MS,
   ATTACK_COOLDOWN_PAD_MS,
@@ -87,6 +88,10 @@ interface RemotePlayer {
   maxHp: number;
   /** HP bar inside the container (visibility: HP_BAR_TEST_CHARACTER rule). */
   hpBar: Phaser.GameObjects.Graphics;
+  /** Receita canônica renderizada ('' / ausente = personagem legado). */
+  appearanceRaw?: string;
+  /** Ref da arma refletida na textura composta atual ('' = desarmado). */
+  equippedWeaponRef?: string;
 }
 
 type MovementSender = (data: {
@@ -132,6 +137,12 @@ export class WorldScene extends Phaser.Scene {
   private attackSender: AttackSender | null = null;
   private characterSetSender: CharacterSetSender | null = null;
   private localDef: WorldCharacterDef | null = null;
+  /** Composições de remotes em voo: sessionId → defId esperado (dedupe + races). */
+  private pendingAppearanceAdds = new Map<string, string>();
+  /** Stamp do setLocalAppearance: a última chamada vence entre awaits. */
+  private localAppearanceSeq = 0;
+  /** Def alvo da troca local em voo — protege o build da coleta (prune). */
+  private localAppearanceTargetId: string | null = null;
   private attackingUntil = 0;
   /** False while swinging walk-attack/run-attack: those allow moving. */
   private attackLocksMovement = true;
@@ -1140,6 +1151,10 @@ export class WorldScene extends Phaser.Scene {
       this.player.setOrigin(0.5, 0.5);
     }
     this.player.setDepth(100);
+    // Nasce invisível: o sprite só aparece quando a aparência composta do
+    // jogador aplicar (setLocalAppearance). Personagens legados saíram do
+    // jogo — sem personagem criado, ninguém se vê (nem os outros te veem).
+    this.player.setVisible(false);
 
     // Collision body at the character's feet using a circle for smooth sliding.
     // Body config comes from admin-defined values (or fallback defaults).
@@ -1381,19 +1396,33 @@ export class WorldScene extends Phaser.Scene {
     return this.currentMapKey;
   }
 
-  public handlePlayerJoined(p: { id: string; socketId: string; username: string; rating: number; region: string; x: number; y: number; targetX: number; targetY: number; direction: string; isMoving: boolean; characterId?: string; hp?: number; maxHp?: number }) {
+  public handlePlayerJoined(p: { id: string; socketId: string; username: string; rating: number; region: string; x: number; y: number; targetX: number; targetY: number; direction: string; isMoving: boolean; characterId?: string; hp?: number; maxHp?: number; appearance?: string; equippedWeapon?: string }) {
     if (p.id === this.localPlayerId) return;
     const sessionId = p.socketId;
     if (this.otherPlayers.has(sessionId)) return;
-    this.addRemotePlayer(sessionId, p);
+    if (p.appearance) {
+      // Reoferta com receita/arma NOVAS substitui a composição em voo:
+      // addAppearanceRemote re-estampa o pending e o job antigo aborta no
+      // check de stamp. Receita idêntica já em voo → dedupe.
+      const defId = composedDefIdFor(p.appearance, p.equippedWeapon || null);
+      if (defId && this.pendingAppearanceAdds.get(sessionId) === defId) return;
+      void this.addAppearanceRemote(sessionId, p);
+      return;
+    }
+    // Sem aparência criada = invisível para todos (personagens legados
+    // saíram do jogo; quando a receita chegar via onChange, o GameCanvas
+    // reoferece o join e o sprite nasce).
   }
 
   public handlePlayerLeftBySession(sessionId: string) {
+    this.pendingAppearanceAdds.delete(sessionId); // aborta composição em voo
     const remote = this.otherPlayers.get(sessionId);
     if (remote) {
       remote.container.destroy();
       this.otherPlayers.delete(sessionId);
     }
+    // Coleta defs compostos órfãos (cada textura ~3 MB).
+    pruneComposedAppearances(this, this.composedDefsInUse());
   }
 
   public setRemotePlayerVisibility(sessionId: string, visible: boolean) {
@@ -1417,16 +1446,25 @@ export class WorldScene extends Phaser.Scene {
   }
 
   public destroyAllRemotePlayers() {
+    this.pendingAppearanceAdds.clear();
     for (const remote of this.otherPlayers.values()) {
       remote.container.destroy();
     }
     this.otherPlayers.clear();
+    // Troca de mapa/sala: só o def do jogador local continua em uso.
+    pruneComposedAppearances(this, this.composedDefsInUse());
   }
 
-  public updateRemotePlayerState(sessionId: string, state: { x: number; y: number; targetX: number; targetY: number; direction: string; isMoving: boolean; characterId?: string; hp?: number; maxHp?: number }) {
+  public updateRemotePlayerState(sessionId: string, state: { x: number; y: number; targetX: number; targetY: number; direction: string; isMoving: boolean; characterId?: string; hp?: number; maxHp?: number; appearance?: string; equippedWeapon?: string }) {
     const remote = this.otherPlayers.get(sessionId);
     if (!remote) return;
-    if (state.characterId && state.characterId !== remote.characterId) {
+    if (state.appearance) {
+      // Personagem composto: re-compõe quando a receita OU a arma mudam.
+      const weapon = state.equippedWeapon ?? '';
+      if (state.appearance !== remote.appearanceRaw || weapon !== (remote.equippedWeaponRef ?? '')) {
+        this.applyAppearanceToRemote(remote, state.appearance, weapon);
+      }
+    } else if (state.characterId && state.characterId !== remote.characterId) {
       this.applyCharacterToRemote(remote, state.characterId);
     }
     if (typeof state.hp === 'number' || typeof state.maxHp === 'number') {
@@ -2952,6 +2990,147 @@ export class WorldScene extends Phaser.Scene {
       this.drawHpBar(remote.hpBar, remote.hp, remote.maxHp);
       if (!remote.seated) this.restoreRemoteWalkTexture(remote);
     });
+  }
+
+  // ------------------------------------------------------------------
+  // Aparência composta (personagem do jogador)
+  // ------------------------------------------------------------------
+
+  /** True depois que create() montou o mundo (player + corpo físico). */
+  public isWorldReady(): boolean {
+    return !!this.player && !!this.playerBody;
+  }
+
+  /** Monta a folha composta de um remote e o adiciona à cena (assíncrono). */
+  private async addAppearanceRemote(
+    sessionId: string,
+    p: { id: string; username: string; rating: number; x: number; y: number; direction: string; isMoving: boolean; hp?: number; maxHp?: number; appearance?: string; equippedWeapon?: string },
+  ): Promise<void> {
+    const appearanceRaw = p.appearance ?? '';
+    const weaponRef = p.equippedWeapon || null;
+    const defId = composedDefIdFor(appearanceRaw, weaponRef);
+    if (!defId) return;
+    this.pendingAppearanceAdds.set(sessionId, defId);
+    const def = await ensureAppearanceDef(this, appearanceRaw, weaponRef);
+    // Só adiciona se: ainda somos o pedido mais recente (saída do jogador ou
+    // receita mais nova removem/trocam o stamp), o build deu certo e a cena
+    // continua viva.
+    if (this.pendingAppearanceAdds.get(sessionId) !== defId) return;
+    this.pendingAppearanceAdds.delete(sessionId);
+    if (!def || !this.player?.scene || this.otherPlayers.has(sessionId)) return;
+    this.addRemotePlayer(sessionId, { ...p, characterId: def.id });
+    const remote = this.otherPlayers.get(sessionId);
+    if (remote) {
+      remote.appearanceRaw = appearanceRaw;
+      remote.equippedWeaponRef = p.equippedWeapon ?? '';
+    }
+  }
+
+  /**
+   * Defs compostos ainda necessários: local (atual E alvo em transição),
+   * remotes (atual E alvo) e composições pendentes. Ids não-runtime na
+   * lista são inofensivos — a coleta só olha defs `pc-`.
+   */
+  private composedDefsInUse(): Set<string> {
+    const inUse = new Set<string>();
+    const add = (id: string | null | undefined) => {
+      if (id) inUse.add(id);
+    };
+    add(this.localDef?.id);
+    add(this.localAppearanceTargetId);
+    for (const remote of this.otherPlayers.values()) {
+      add(remote.characterId);
+      if (remote.appearanceRaw) {
+        add(composedDefIdFor(remote.appearanceRaw, remote.equippedWeaponRef || null));
+      }
+    }
+    for (const defId of this.pendingAppearanceAdds.values()) inUse.add(defId);
+    return inUse;
+  }
+
+  /** Re-compõe a aparência/arma de um remote existente (equipar em tempo real). */
+  private applyAppearanceToRemote(remote: RemotePlayer, appearanceRaw: string, weaponRef: string): void {
+    // Escreve os alvos ANTES do build: se o estado mudar de novo no meio,
+    // a comparação abaixo invalida este build (última escrita vence).
+    remote.appearanceRaw = appearanceRaw;
+    remote.equippedWeaponRef = weaponRef;
+    void ensureAppearanceDef(this, appearanceRaw, weaponRef || null).then((def) => {
+      if (!def || !remote.sprite.scene) return;
+      if (remote.appearanceRaw !== appearanceRaw || remote.equippedWeaponRef !== weaponRef) return;
+      if (remote.def.id === def.id) return; // nada mudou de verdade
+      remote.characterId = def.id;
+      remote.def = def;
+      remote.attackingUntil = 0;
+      remote.hurtUntil = 0;
+      // Morto: mantém a pose de caído; o update loop restaura depois.
+      if (!remote.seated && Date.now() >= remote.deadUntil) this.restoreRemoteWalkTexture(remote);
+      // Coleta o def anterior deste remote (ninguém mais pode estar usando).
+      pruneComposedAppearances(this, this.composedDefsInUse());
+    });
+  }
+
+  /**
+   * Aplica a aparência composta ao jogador LOCAL (login, criação, equipar).
+   * Modelado no switchCharacter, sem as travas de dev: primeira aplicação
+   * revela o sprite (createPlayer nasce invisível).
+   */
+  public async setLocalAppearance(appearanceRaw: string, weaponRef: string | null): Promise<boolean> {
+    const seq = ++this.localAppearanceSeq;
+    // Marca o alvo ANTES do await: um prune disparado no meio (saída de
+    // remote etc.) não pode coletar o def que estamos construindo.
+    this.localAppearanceTargetId = composedDefIdFor(appearanceRaw, weaponRef);
+    const def = await ensureAppearanceDef(this, appearanceRaw, weaponRef);
+    if (!def) return false;
+    if (seq !== this.localAppearanceSeq) return false; // chamada mais nova venceu
+    if (!this.player || !this.playerBody || !this.player.scene) return false;
+    if (def.id === this.localDef?.id) {
+      this.player.setVisible(true); // idempotente
+      return true;
+    }
+
+    const prev = this.localDef;
+    this.localDef = def;
+
+    // Corpo físico: recria só quando a colisão muda de verdade (defs
+    // compostos usam o corpo padrão — na prática, na 1ª aplicação quando o
+    // legado divergia) e nunca no meio de um assento (filtro especial ativo).
+    if (
+      !this.currentSeatInfo &&
+      !this.seatTween &&
+      (!prev ||
+        prev.bodyRadius !== def.bodyRadius ||
+        prev.bodyOffsetX !== def.bodyOffsetX ||
+        prev.bodyOffsetY !== def.bodyOffsetY)
+    ) {
+      const spriteX = this.player.x;
+      const spriteY = this.player.y;
+      const feetOffsetX = Math.round(def.bodyOffsetX);
+      const feetOffsetY = Math.round(def.bodyOffsetY);
+      this.matter.world.remove(this.playerBody);
+      this.playerBody = this.matter.add.circle(spriteX + feetOffsetX, spriteY + feetOffsetY, def.bodyRadius, {
+        label: 'player',
+        friction: 0,
+        frictionAir: 0,
+        frictionStatic: 0,
+        restitution: 0,
+      });
+      this.matter.body.setInertia(this.playerBody, Infinity);
+      this.savedCollisionFilter = null;
+      this.playerFeetOffset = feetOffsetY;
+      this.playerFeetOffsetX = feetOffsetX;
+    }
+
+    this.player.setOrigin(def.originX, def.originY);
+    this.player.setVisible(true);
+    // Fora de assento/morte, troca já para a pose parada da nova folha.
+    if (!this.currentSeatInfo && !this.seatTween && Date.now() >= this.deadUntil) {
+      this.restoreLocalWalkTexture();
+      this.emitMovement(false);
+    }
+    console.log(`[WorldScene] Aparência aplicada -> ${def.id}`);
+    // Coleta o def local anterior (troca de arma gera um def novo por hash).
+    pruneComposedAppearances(this, this.composedDefsInUse());
+    return true;
   }
 
   // ------------------------------------------------------------------

@@ -8,6 +8,25 @@
 import type { Request, Response, NextFunction } from 'express';
 import { createClient } from '@supabase/supabase-js';
 
+/**
+ * Verifica um JWT do Supabase e devolve o userId (sub) — ou null se
+ * inválido/expirado/não configurado. Compartilhado entre o middleware HTTP
+ * e o onJoin das salas Colyseus (identidade NUNCA vem do cliente).
+ */
+export async function verifySupabaseToken(token: string): Promise<string | null> {
+  const url = process.env.SUPABASE_URL;
+  const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  if (!url || !key || !token) return null;
+  try {
+    const supabase = createClient(url, key);
+    const { data, error } = await supabase.auth.getUser(token);
+    if (error || !data.user) return null;
+    return data.user.id;
+  } catch {
+    return null;
+  }
+}
+
 export async function requireSupabaseAuth(req: Request, res: Response, next: NextFunction): Promise<void> {
   const authHeader = req.headers.authorization;
   if (!authHeader || !authHeader.startsWith('Bearer ')) {
@@ -15,22 +34,15 @@ export async function requireSupabaseAuth(req: Request, res: Response, next: Nex
     return;
   }
   const token = authHeader.replace('Bearer ', '');
-  const url = process.env.SUPABASE_URL;
-  const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
-  if (!url || !key) {
+  if (!process.env.SUPABASE_URL || !process.env.SUPABASE_SERVICE_ROLE_KEY) {
     res.status(500).json({ error: 'Server auth not configured' });
     return;
   }
-  try {
-    const supabase = createClient(url, key);
-    const { data, error } = await supabase.auth.getUser(token);
-    if (error || !data.user) {
-      res.status(401).json({ error: 'Invalid token' });
-      return;
-    }
-    (req as Request & { userId?: string }).userId = data.user.id;
-    next();
-  } catch {
-    res.status(401).json({ error: 'Auth verification failed' });
+  const userId = await verifySupabaseToken(token);
+  if (!userId) {
+    res.status(401).json({ error: 'Invalid token' });
+    return;
   }
+  (req as Request & { userId?: string }).userId = userId;
+  next();
 }

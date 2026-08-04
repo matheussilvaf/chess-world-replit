@@ -41,6 +41,12 @@ export interface MovementDef {
   frameWidth: number;
   frameHeight: number;
   columns: number;
+  /**
+   * Pose estática por LINHA de direção (índice global do frame na textura).
+   * Folhas compostas do gerador têm 23 colunas por linha, mas a pose parada
+   * é a coluna 1 (não a 0) — quando presente, vence firstFrameIndexFor.
+   */
+  poseFrames?: number[];
 }
 
 export interface WorldCharacterDef {
@@ -337,8 +343,39 @@ export function getCharacterManifestCache(): CharacterManifest | null {
   return manifestCache;
 }
 
+/** Prefixo dos personagens compostos em runtime (aparência do jogador). */
+export const RUNTIME_CHARACTER_PREFIX = 'pc-';
+
+export function isRuntimeCharacterId(id: string | null | undefined): boolean {
+  return !!id && id.startsWith(RUNTIME_CHARACTER_PREFIX);
+}
+
+/**
+ * Registra um personagem construído em runtime (folha composta da aparência
+ * do jogador). Idempotente por id; fica fora do ciclo de dev abaixo.
+ */
+export function registerRuntimeCharacter(def: WorldCharacterDef): void {
+  defs.set(def.id, def);
+}
+
+/** Remove um def composto do catálogo (coleta de aparências sem uso). */
+export function unregisterRuntimeCharacter(id: string): void {
+  if (isRuntimeCharacterId(id)) defs.delete(id);
+}
+
+/** Ids de todos os defs compostos registrados em runtime. */
+export function listRuntimeCharacterIds(): string[] {
+  return [...defs.keys()].filter((id) => isRuntimeCharacterId(id));
+}
+
+export function hasCharacterDef(id: string): boolean {
+  return defs.has(id);
+}
+
 export function listWorldCharacters(): WorldCharacterDef[] {
-  return [...defs.values()].sort((a, b) => a.id.localeCompare(b.id));
+  return [...defs.values()]
+    .filter((d) => !isRuntimeCharacterId(d.id))
+    .sort((a, b) => a.id.localeCompare(b.id));
 }
 
 export function getWorldCharacter(id: string | null | undefined): WorldCharacterDef | null {
@@ -367,7 +404,7 @@ export function getSelectedCharacter(): WorldCharacterDef | null {
 
 /** Next valid character in the sorted cycle (for the dev switch button). */
 export function nextCharacterId(currentId: string | null): string | null {
-  const ids = [...defs.keys()].sort();
+  const ids = [...defs.keys()].filter((id) => !isRuntimeCharacterId(id)).sort();
   if (ids.length === 0) return null;
   if (!currentId) return ids[0];
   const idx = ids.indexOf(currentId);
@@ -404,5 +441,7 @@ export function rowIndexFor(def: WorldCharacterDef, direction: string): number {
 
 /** First frame (global sheet index) of a movement row — used as the idle/frozen pose. */
 export function firstFrameIndexFor(def: WorldCharacterDef, movementDef: MovementDef, direction: string): number {
-  return rowIndexFor(def, direction) * movementDef.columns;
+  const row = rowIndexFor(def, direction);
+  const pose = movementDef.poseFrames?.[row];
+  return pose ?? row * movementDef.columns;
 }

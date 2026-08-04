@@ -9,11 +9,20 @@ import { VoiceParticipantState } from '../schemas/VoiceParticipantState.js';
 import * as coordinator from '../tournament/coordinator.js';
 import type { TournamentMatchCreateParams, TournamentMatchFinishParams, PendingPairing } from '../tournament/coordinator.js';
 import { CombatResolver } from '../combat/combatResolver.js';
-import { getCharacterConfig, isCharacterSwitchEnabled } from '../combat/characterConfigService.js';
-import { characterMaxHp } from '../shared/combat/CharacterCombatShapes.js';
+import { getPlayerCharacter, savePlayerEquippedWeapon } from '../characters/playerCharacterRepository.js';
+import { getAssetCategoriesCached } from '../assets/assetCategoryRepository.js';
+import {
+  canonicalAppearanceString,
+  findClassWeaponRef,
+  type PlayerCharacterConfigV1,
+} from '../shared/characters/PlayerCharacterShapes.js';
+import { verifySupabaseToken } from '../auth/supabaseAuth.js';
 
 interface JoinOptions {
-  playerId: string;
+  /** Legado — IGNORADO para identidade (era spoofável). Mantido só por compat. */
+  playerId?: string;
+  /** JWT do Supabase: única fonte da identidade persistente do jogador. */
+  token?: string;
   username: string;
   rating: number;
   region: string;
@@ -35,8 +44,12 @@ export class WorldRoom extends Room<WorldState> {
   private pendingDrawOffers = new Map<string, 'w' | 'b'>();
   /** Server-authoritative combat (client only sends attack intents). */
   private combatResolver = new CombatResolver(this);
-  /** Per-session stamp for set_character: last request wins across awaits. */
-  private characterSwitchSeq = new Map<string, number>();
+  /** Personagem jogável carregado por sessão (classe/aparência/arma). */
+  private playerCharacters = new Map<string, PlayerCharacterConfigV1>();
+  /** Last-request-wins para loads assíncronos do personagem. */
+  private characterLoadSeq = new Map<string, number>();
+  /** Last-request-wins para equipar/desequipar (tem awaits no meio). */
+  private equipSeq = new Map<string, number>();
 
   onCreate(options: any) {
     this.setState(new WorldState());
@@ -549,48 +562,93 @@ export class WorldRoom extends Room<WorldState> {
       void this.combatResolver.handleAttack(client, data);
     });
 
-    this.onMessage('set_character', async (client, data) => {
+    // ---- Personagem jogável (aparência composta + arma da classe) ----
+    // (o antigo set_character morreu: personagens legados ficam no repo mas
+    // fora do jogo — sem troca dinâmica de personagem.)
+
+    // O cliente avisa depois de salvar via PUT /api/me/character: a sala
+    // recarrega do banco e espelha no estado (todos veem em tempo real).
+    this.onMessage('character_ready', (client) => {
+      void this.refreshPlayerCharacter(client.sessionId);
+    });
+
+    // Equipa/desequipa a arma padrão da classe. O servidor decide QUAL arma
+    // (subcategoria da classe em default-weapons) — o cliente só diz se quer.
+    this.onMessage('equip_weapon', async (client, data) => {
+      const equip = data?.equip === true;
+      // Pedidos rápidos em sequência: só o mais novo aplica depois dos
+      // awaits (senão um equipar antigo em voo desfaz um desequipar novo).
+      const seq = (this.equipSeq.get(client.sessionId) ?? 0) + 1;
+      this.equipSeq.set(client.sessionId, seq);
+      let config = this.playerCharacters.get(client.sessionId);
+      if (!config) {
+        // Join-load pode ainda estar em voo (ou ter falhado): tenta de novo.
+        await this.refreshPlayerCharacter(client.sessionId);
+        if (this.equipSeq.get(client.sessionId) !== seq) return; // pedido mais novo venceu
+        config = this.playerCharacters.get(client.sessionId);
+      }
+      if (!config) return; // sem personagem criado (ou sessão anônima)
+      if (!equip) {
+        const player = this.state.players.get(client.sessionId);
+        if (!player) return;
+        player.equippedWeapon = '';
+        config.equippedWeapon = null;
+        void this.persistEquippedWeapon(player.id, null);
+        return;
+      }
+      const categories = await getAssetCategoriesCached();
+      if (this.equipSeq.get(client.sessionId) !== seq) return; // pedido mais novo venceu
+      const ref = findClassWeaponRef(categories, config.classId);
+      if (!ref) return; // classe sem arma liberada no assets-controller
       const player = this.state.players.get(client.sessionId);
-      if (!player) return;
-      const raw = typeof data?.characterId === 'string' ? data.characterId.trim() : '';
-      if (!/^character\d{2,4}$/.test(raw)) return;
-      if (player.characterId === raw) return;
-      // No switch-heal while dead: wait out the respawn first.
-      if (player.characterId && this.combatResolver.isDead(client.sessionId)) return;
-      // Last-request-wins: two rapid switches interleave across the awaits
-      // below; every authoritative mutation must re-check this stamp so a
-      // stale (older) request can never overwrite a newer one.
-      const seq = (this.characterSwitchSeq.get(client.sessionId) ?? 0) + 1;
-      this.characterSwitchSeq.set(client.sessionId, seq);
-      // The first announce is always accepted (the server must know who you
-      // are); *switching* afterwards is gated in production by game_settings
-      // (isCharacterSwitchEnabled caches the flag for ~60s).
-      if (player.characterId && process.env.NODE_ENV === 'production') {
-        const enabled = await isCharacterSwitchEnabled();
-        if (!enabled) return;
-        if (this.characterSwitchSeq.get(client.sessionId) !== seq) return; // superseded
-      }
-      const current = this.state.players.get(client.sessionId);
-      if (!current) return; // left during the await
-      current.characterId = raw;
-      // HP scales with the character: apply its configured max HP and start
-      // the (new) character at full health. Same-id re-announces returned
-      // early above, so this can't be abused as a mid-fight self-heal.
-      try {
-        const cfg = await getCharacterConfig(raw);
-        if (this.characterSwitchSeq.get(client.sessionId) !== seq) return; // superseded
-        const still = this.state.players.get(client.sessionId);
-        if (!still || still.characterId !== raw) return;
-        still.maxHp = characterMaxHp(cfg);
-        still.hp = still.maxHp;
-      } catch {
-        /* keep previous hp/maxHp when the config lookup fails */
-      }
+      if (!player) return; // saiu durante o await
+      player.equippedWeapon = ref;
+      config.equippedWeapon = ref;
+      void this.persistEquippedWeapon(player.id, ref);
     });
   }
 
-  onJoin(client: Client, options: JoinOptions) {
-    const playerId = options.playerId || client.sessionId;
+  /** Carrega o personagem persistido e espelha no estado (last-write-wins). */
+  private async refreshPlayerCharacter(sessionId: string): Promise<void> {
+    const player = this.state.players.get(sessionId);
+    if (!player) return;
+    const seq = (this.characterLoadSeq.get(sessionId) ?? 0) + 1;
+    this.characterLoadSeq.set(sessionId, seq);
+    try {
+      const result = await getPlayerCharacter(player.id);
+      if (this.characterLoadSeq.get(sessionId) !== seq) return; // superseded
+      const still = this.state.players.get(sessionId);
+      if (!still) return; // saiu durante o await
+      if (!result.config) {
+        if (result.error) console.warn(`[WorldRoom] load do personagem falhou: ${result.error}`);
+        return; // sem personagem criado (id anônimo, tabela ausente, etc.)
+      }
+      this.playerCharacters.set(sessionId, result.config);
+      still.appearance = canonicalAppearanceString(result.config.appearance);
+      still.equippedWeapon = result.config.equippedWeapon ?? '';
+    } catch (e) {
+      console.warn(`[WorldRoom] load do personagem falhou: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }
+
+  /** Persistência fire-and-forget da arma (o estado já foi atualizado). */
+  private persistEquippedWeapon(playerId: string, ref: string | null): Promise<void> {
+    return savePlayerEquippedWeapon(playerId, ref).then((r) => {
+      if (!r.ok && r.error) console.warn(`[WorldRoom] persistir arma falhou: ${r.error}`);
+    });
+  }
+
+  async onJoin(client: Client, options: JoinOptions) {
+    // Identidade NUNCA vem do cliente: o playerId das options é ignorado.
+    // Com token Supabase válido, o id é o `sub` verificado; sem token a
+    // sessão é anônima (`anon:<sessionId>`) — não casa com UUID de conta
+    // nenhuma, então nunca lê/escreve personagem nem derruba sessão alheia.
+    let playerId = `anon:${client.sessionId}`;
+    if (options.token) {
+      const verified = await verifySupabaseToken(options.token);
+      if (!verified) throw new Error('token de autenticação inválido');
+      playerId = verified;
+    }
 
     // Kick existing session for same player (stale connection / reconnect)
     this.state.players.forEach((existing, existingSessionId) => {
@@ -620,6 +678,10 @@ export class WorldRoom extends Room<WorldState> {
 
     this.state.players.set(client.sessionId, player);
     console.log(`[WorldRoom] Player joined: ${player.username} (${client.sessionId}) | total: ${this.state.players.size}`);
+
+    // Personagem persistido (aparência/arma) chega de forma assíncrona — o
+    // sprite só nasce visível nos outros clientes quando appearance preenche.
+    void this.refreshPlayerCharacter(client.sessionId);
 
     // If this player had an active match (reconnection), send match info
     this.state.matches.forEach((match, matchId) => {
@@ -681,7 +743,9 @@ export class WorldRoom extends Room<WorldState> {
     this.state.voiceParticipants.delete(client.sessionId);
     this.state.players.delete(client.sessionId);
     this.combatResolver.clearSession(client.sessionId);
-    this.characterSwitchSeq.delete(client.sessionId);
+    this.characterLoadSeq.delete(client.sessionId);
+    this.playerCharacters.delete(client.sessionId);
+    this.equipSeq.delete(client.sessionId);
     console.log(`[WorldRoom] Player removed: ${username} | remaining: ${this.state.players.size}`);
 
     const affected: [string, MatchState][] = [];

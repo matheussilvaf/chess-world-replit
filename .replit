@@ -22,6 +22,7 @@ timeoutMs = 20000
 [userenv]
 
 [userenv.development]
+VITE_COLYSEUS_LOCAL = "1"
 
 [nix]
 channel = "stable-25_05"

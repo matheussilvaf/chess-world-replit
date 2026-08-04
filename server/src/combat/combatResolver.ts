@@ -30,6 +30,7 @@ import {
   assetDamageEnabled,
 } from '../shared/combat/CharacterCombatShapes.js';
 import { getCharacterConfig } from './characterConfigService.js';
+import { COMPOSED_SHEET } from '../shared/characters/PlayerCharacterShapes.js';
 
 const FPS = 12;
 const ATTACK_MOVEMENTS = new Set(['attack', 'walk-attack', 'run-attack']);
@@ -74,13 +75,24 @@ export class CombatResolver {
     const now = Date.now();
     if (now < (this.cooldownUntil.get(client.sessionId) ?? 0)) return;
 
-    // Server state is authoritative for who you are; fall back to the
-    // (format-validated) intent id only when set_character hasn't landed yet.
-    const characterId =
-      (CHARACTER_ID_RE.test(attacker.characterId) && attacker.characterId) ||
-      (typeof intent.characterId === 'string' && CHARACTER_ID_RE.test(intent.characterId) && intent.characterId) ||
-      '';
-    if (!characterId) return;
+    // Server state is authoritative for who you are. (O fallback antigo pelo
+    // characterId do intent morreu junto com o set_character: aceitar o id
+    // vindo do cliente seria deixar qualquer um "vestir" um rig com dano.)
+    const characterId = (CHARACTER_ID_RE.test(attacker.characterId) && attacker.characterId) || '';
+    if (!characterId) {
+      // Personagem composto (aparência do gerador): o swing anima para todos
+      // com cooldown pelo tamanho do ataque do pack — SEM dano nesta fase
+      // (dano continua exclusivo dos rigs legados, spec do round).
+      if (!attacker.appearance) return; // sem personagem criado → nada a animar
+      const durationMs = (COMPOSED_SHEET.attackFrames.length / FPS) * 1000;
+      this.cooldownUntil.set(client.sessionId, now + durationMs + COOLDOWN_PAD_MS);
+      this.room.broadcast('player_attack', {
+        sessionId: client.sessionId,
+        movement,
+        direction,
+      });
+      return;
+    }
 
     // Reserve the cooldown synchronously BEFORE any await — otherwise a burst
     // of attack messages arriving while the config loads all passes the check

@@ -2,6 +2,7 @@ import { useEffect, useRef } from 'react';
 import { useAuthStore } from '../stores/authStore';
 import { useGameStore } from '../stores/gameStore';
 import { joinWorldRoom, leaveWorldRoom, getWorldRoom, isColyseusConfigured, getColyseusEndpoint } from '../game/network/colyseusClient';
+import { supabase } from '../lib/supabase';
 import { create } from 'zustand';
 
 export type ColyseusPhase =
@@ -88,7 +89,10 @@ export function useColyseusConnection() {
       y: playerPosition.y,
     };
 
-    joinWorldRoom(payload)
+    // O servidor deriva a identidade do TOKEN (playerId é só compat legada).
+    supabase.auth
+      .getSession()
+      .then(({ data }) => joinWorldRoom({ ...payload, token: data.session?.access_token ?? null }))
       .then((room) => {
         if (cancelledRef.current) {
           console.log('[Colyseus] Connection succeeded but effect was cancelled, leaving...');

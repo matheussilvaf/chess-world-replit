@@ -16,6 +16,10 @@ export class PlayerState extends Schema {
   characterId!: string;
   hp!: number;
   maxHp!: number;
+  /** Receita canônica da aparência composta ('' = personagem não criado). */
+  appearance!: string;
+  /** Ref da arma equipada (gen:weapon/...; '' = nada equipado). */
+  equippedWeapon!: string;
 
   constructor() {
     super();
@@ -34,6 +38,8 @@ export class PlayerState extends Schema {
     this.characterId = '';
     this.hp = 100;
     this.maxHp = 100;
+    this.appearance = '';
+    this.equippedWeapon = '';
   }
 }
 
@@ -55,4 +61,6 @@ defineTypes(PlayerState, {
   // Appended last on purpose: schema field order is part of the wire
   // protocol for the pinned colyseus.js 0.15 clients — additive only.
   maxHp: 'number',
+  appearance: 'string',
+  equippedWeapon: 'string',
 });

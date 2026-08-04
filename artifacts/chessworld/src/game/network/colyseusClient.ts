@@ -41,6 +41,8 @@ export function getArenaRoom(): Room<any> | null {
 
 export async function joinWorldRoom(options: {
   playerId: string;
+  /** JWT do Supabase — o servidor deriva a identidade DELE, não do playerId. */
+  token: string | null;
   username: string;
   rating: number;
   region: string;
@@ -92,6 +94,8 @@ export async function leaveWorldRoom(): Promise<void> {
 
 export async function joinArenaRoom(options: {
   playerId: string;
+  /** JWT do Supabase — o servidor deriva a identidade DELE, não do playerId. */
+  token: string | null;
   username: string;
   rating: number;
   region: string;

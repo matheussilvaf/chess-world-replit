@@ -26,6 +26,7 @@ import {
   assetCategoriesAdminRouter,
   publicAssetCategoryDataHandler,
 } from "./assets/assetCategoryRoutes.js";
+import { playerCharacterRouter } from "./characters/playerCharacterRoutes.js";
 
 const config: ConfigOptions = {
   // Explicit liveness probing: without app-level pings a half-open socket
@@ -174,6 +175,9 @@ const config: ConfigOptions = {
     // permissão de assets; GET público cacheado para features futuras.
     app.get("/api/asset-category-data", publicAssetCategoryDataHandler);
     app.use("/api/admin/asset-categories", assetCategoriesAdminRouter);
+
+    // Personagem jogável (criação/consulta do próprio) — exige Supabase JWT.
+    app.use("/api/me/character", playerCharacterRouter);
 
     app.use("/api/tournament", tournamentRouter);
     app.use("/api/coordinator", coordinatorRouter);

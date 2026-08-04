@@ -16,13 +16,16 @@ import {
   sendMovement,
 } from '../game/network/colyseusClient';
 import { seatTournamentPlayerWhenReady } from '../game/tournamentSeatClient';
+import { supabase } from '../lib/supabase';
 import { useColyseusStore } from '../hooks/useColyseusConnection';
 import { initCharacterSystem, getDefaultCharacterId } from '../game/characters/characterCatalog';
 import type { WorldScene } from '../game/scenes/WorldScene';
 import type { Room } from 'colyseus.js';
 import { PlayerNameTags } from './game/PlayerNameTags';
-import { SwitchCharacterButton } from './game/SwitchCharacterButton';
 import { AttackButton } from './game/AttackButton';
+import { CharacterCreationModal } from './character-creation/CharacterCreationModal';
+import { EquipmentButton, EquipmentPanel } from './game/EquipmentPanel';
+import { usePlayerCharacterStore } from '../stores/playerCharacterStore';
 
 export function GameCanvas() {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -33,6 +36,15 @@ export function GameCanvas() {
   const { setSelectedBoard } = useGameStore();
   const { user, profile } = useAuthStore();
   const { region } = useGameStore();
+  const pcLoaded = usePlayerCharacterStore((s) => s.loaded);
+  const pcCharacter = usePlayerCharacterStore((s) => s.character);
+  const liveAppearance = usePlayerCharacterStore((s) => s.liveAppearance);
+  const liveWeapon = usePlayerCharacterStore((s) => s.liveWeapon);
+  const worldReady = usePlayerCharacterStore((s) => s.worldReady);
+  // Modal obrigatório: usuário logado, resposta do banco chegou e não há
+  // personagem. Sem resposta (loaded=false) NÃO abre — evita pedir criação
+  // para quem já tem personagem numa falha de rede.
+  const showCreation = !!user && pcLoaded && !pcCharacter;
 
   useEffect(() => {
     if (!containerRef.current || gameRef.current) return;
@@ -208,6 +220,7 @@ export function GameCanvas() {
       cancelled = true;
       attachedRoomIdRef.current = null;
       sceneReadyRef.current = false;
+      usePlayerCharacterStore.getState().reset();
       if (gameRef.current) {
         gameRef.current.destroy(true);
         gameRef.current = null;
@@ -252,6 +265,32 @@ export function GameCanvas() {
       unsubStore();
     };
   }, []);
+
+  // Personagem salvo do usuário (decide se o modal de criação abre).
+  useEffect(() => {
+    if (user) void usePlayerCharacterStore.getState().load();
+  }, [user]);
+
+  // Mundo pronto (create() terminou): habilita aplicar a aparência local.
+  useEffect(() => {
+    const poll = window.setInterval(() => {
+      const scene = gameRef.current ? getWorldScene(gameRef.current) : null;
+      if (scene && scene.isWorldReady()) {
+        usePlayerCharacterStore.getState().setWorldReady(true);
+        window.clearInterval(poll);
+      }
+    }, 300);
+    return () => window.clearInterval(poll);
+  }, []);
+
+  // Estado AO VIVO do servidor → cena. Um único caminho cobre login com
+  // personagem, criação recém-salva e equipar/desequipar arma.
+  useEffect(() => {
+    if (!worldReady || !liveAppearance) return;
+    const scene = gameRef.current ? getWorldScene(gameRef.current) : null;
+    if (!scene) return;
+    void scene.setLocalAppearance(liveAppearance, liveWeapon || null);
+  }, [worldReady, liveAppearance, liveWeapon]);
 
   useEffect(() => {
     const unsubColyseus = useColyseusStore.subscribe((state, prev) => {
@@ -387,8 +426,11 @@ export function GameCanvas() {
 
       // 5. Join the new room
       const pos = scene.getPlayerPosition();
+      // O servidor deriva a identidade do TOKEN (playerId é só compat legada).
+      const { data: sessionData } = await supabase.auth.getSession();
       const options = {
         playerId: user.id,
+        token: sessionData.session?.access_token ?? null,
         username: profile?.username || 'Player',
         rating: profile?.rating || 1200,
         region,
@@ -437,15 +479,12 @@ export function GameCanvas() {
     scene.setAttackSender((payload) => {
       room.send('attack', payload);
     });
-    scene.setCharacterSetSender((characterId) => {
-      room.send('set_character', { characterId });
-    });
-    // Always announce our character on (re)join: the server needs it for
-    // authoritative combat (hurtbox lookup) even when it's the default one.
-    const localCharId = scene.getLocalCharacterId();
-    if (localCharId) {
-      room.send('set_character', { characterId: localCharId });
-    }
+    // Personagem do jogador: equipar/desequipar arma + aviso de "receita
+    // salva" (depois da criação, o servidor recarrega do banco e publica).
+    usePlayerCharacterStore.getState().setSenders(
+      (equip) => room.send('equip_weapon', { equip }),
+      () => room.send('character_ready'),
+    );
 
     const arenas = scene.getArenas();
     if (arenas.length > 0) {
@@ -458,14 +497,18 @@ export function GameCanvas() {
       if (sessionId === room.sessionId) {
         // Local HP is server-authoritative: mirror it into the scene's HP bar.
         scene.updateLocalHp(player.hp ?? 100, player.maxHp || 100);
+        // Aparência/arma AO VIVO do próprio jogador — o efeito do GameCanvas
+        // aplica na cena quando o mundo estiver pronto.
+        usePlayerCharacterStore.getState().setLive(player.appearance ?? '', player.equippedWeapon ?? '');
         player.onChange(() => {
           scene.updateLocalHp(player.hp ?? 100, player.maxHp || 100);
+          usePlayerCharacterStore.getState().setLive(player.appearance ?? '', player.equippedWeapon ?? '');
         });
         updateOnlineCount(room);
         return;
       }
 
-      scene.handlePlayerJoined({
+      const joinPayload = () => ({
         id: player.id,
         socketId: sessionId,
         username: player.username,
@@ -480,9 +523,15 @@ export function GameCanvas() {
         characterId: player.characterId || undefined,
         hp: typeof player.hp === 'number' ? player.hp : undefined,
         maxHp: typeof player.maxHp === 'number' ? player.maxHp : undefined,
+        appearance: player.appearance || undefined,
+        equippedWeapon: player.equippedWeapon || undefined,
       });
+      scene.handlePlayerJoined(joinPayload());
 
       player.onChange(() => {
+        // Jogador que CRIOU o personagem depois de entrar na sala: reoferece
+        // o join com a receita (a cena ignora se o sprite já existe).
+        scene.handlePlayerJoined(joinPayload());
         // If the server cleared this player's board (tournament teleport /
         // teardown) while our sprite still thinks it's seated, unseat and
         // snap BEFORE the regular update — otherwise the seated-skip would
@@ -499,6 +548,8 @@ export function GameCanvas() {
           characterId: player.characterId || undefined,
           hp: typeof player.hp === 'number' ? player.hp : undefined,
           maxHp: typeof player.maxHp === 'number' ? player.maxHp : undefined,
+          appearance: player.appearance || undefined,
+          equippedWeapon: player.equippedWeapon || undefined,
         });
       });
 
@@ -770,14 +821,14 @@ export function GameCanvas() {
       />
       {/* HTML player name-tag overlay — sits above canvas, no pointer events */}
       <PlayerNameTags />
-      {/* Dev tool: cycle through valid characters (gated by env/flag inside) */}
-      <SwitchCharacterButton
-        getScene={() => (gameRef.current ? getWorldScene(gameRef.current) : null)}
-      />
       {/* Mobile: circular attack button (touch devices only) */}
       <AttackButton
         getScene={() => (gameRef.current ? getWorldScene(gameRef.current) : null)}
       />
+      {/* Personagem do jogador: criação obrigatória + equipamento */}
+      {showCreation && <CharacterCreationModal />}
+      <EquipmentButton />
+      <EquipmentPanel />
     </div>
   );
 }
