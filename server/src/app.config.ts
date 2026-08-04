@@ -22,6 +22,10 @@ import {
   craftRecipesAdminRouter,
   publicCraftDataHandler,
 } from "./craft/craftRoutes.js";
+import {
+  assetCategoriesAdminRouter,
+  publicAssetCategoryDataHandler,
+} from "./assets/assetCategoryRoutes.js";
 
 const config: ConfigOptions = {
   // Explicit liveness probing: without app-level pings a half-open socket
@@ -165,6 +169,11 @@ const config: ConfigOptions = {
     app.get("/api/craft-data", publicCraftDataHandler);
     app.use("/api/admin/craft-items", craftItemsAdminRouter);
     app.use("/api/admin/craft-recipes", craftRecipesAdminRouter);
+
+    // Assets Controller (spec: /admin/assets-controller): categorias de
+    // permissão de assets; GET público cacheado para features futuras.
+    app.get("/api/asset-category-data", publicAssetCategoryDataHandler);
+    app.use("/api/admin/asset-categories", assetCategoriesAdminRouter);
 
     app.use("/api/tournament", tournamentRouter);
     app.use("/api/coordinator", coordinatorRouter);

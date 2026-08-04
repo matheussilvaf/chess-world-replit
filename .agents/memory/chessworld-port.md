@@ -170,3 +170,11 @@ Rotas Express custom do servidor devem ser registradas COM o prefixo `/api` (ex.
 - Config de craft: tabelas jsonb `craft_items`/`craft_recipes` (mesmo padrão weapon_families, service-role, SQL manual do usuário). Refs entre jsonb não têm FK: DELETE de item bloqueia com 409+usedBy varrendo receitas, e o PUT de receita re-checa itens APÓS o upsert (desfaz se morreu no meio) — janela residual aceita, painel single-admin.
 - Upload para bucket PÚBLICO (`craft-items`): o Content-Type declarado é entrada do cliente — sempre validar magic bytes (png/jpeg/webp/gif) antes de subir, senão o bucket vira hospedagem de bytes arbitrários. createBucket lazy/idempotente; nome com timestamp (cache CDN) + limpeza dos antigos por prefixo.
 - **Trap @colyseus/tools**: ele registra `express.json()` (100kb) ANTES do `initializeExpress` — qualquer `app.use(express.json({limit}))` nosso é código morto e payload JSON >100kb morre com 413 HTML. Upload grande = bytes crus com Content-Type `image/*` + `express.raw({type, limit})` na rota (o json() embutido ignora MIMEs que não são application/json).
+
+## Assets Controller (categorias de permissão de assets)
+- Regra aceita: escrita da árvore de categorias NÃO é atômica (read-validate-write sem lock). Decisão consciente para painel single-admin de metadados; mitigação: cache com contador de geração + UI renderiza estado corrompido (pai ausente/ciclo) como raiz visível e consertável, sem recursão. NÃO re-litigar nem meio-consertar com RPC a menos que o jogo passe a consumir as categorias ou haja multi-admin real.
+- **Why:** revisão apontou corrida concorrente; serialização exigiria stored procedure extra no Supabase para risco ~zero no uso real.
+
+## Screenshot "Loading..." em página lazy
+- Screenshot de rota lazy recém-criada mostra só o fallback "Loading..." enquanto o vite transforma os chunks a frio (boot ~29s). Não é bug: aquecer com `curl http://localhost:80/src/<modulo>` (deve dar 200) e re-tirar o screenshot.
+- 404 recorrente no console do preview = favicon.ico inexistente; 500 esporádico no /admin é pré-existente/transitório — não caçar.

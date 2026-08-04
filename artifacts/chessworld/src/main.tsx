@@ -28,6 +28,11 @@ const CraftAdminPage = lazy(() =>
     default: m.CraftAdminPage,
   })),
 );
+const AssetsControllerPage = lazy(() =>
+  import('./components/admin/assets/AssetsControllerPage.tsx').then((m) => ({
+    default: m.AssetsControllerPage,
+  })),
+);
 
 function RouteFallback() {
   return (
@@ -44,6 +49,7 @@ createRoot(document.getElementById('root')!).render(
         <Route path="/admin" element={<AdminPage />} />
         <Route path="/admin/rigs" element={<RigControllerPage />} />
         <Route path="/admin/craft" element={<CraftAdminPage />} />
+        <Route path="/admin/assets-controller" element={<AssetsControllerPage />} />
         {/* Old editor URL — kept as a permanent redirect (spec §3) */}
         <Route path="/admin/characters" element={<Navigate to="/admin/rigs" replace />} />
         <Route path="/admin/character-generator" element={<CharacterGeneratorPage />} />
