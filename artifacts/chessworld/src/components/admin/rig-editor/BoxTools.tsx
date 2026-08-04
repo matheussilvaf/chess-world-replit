@@ -38,6 +38,13 @@ interface BoxToolsProps {
   canCopyNext: boolean;
   canPaste: boolean;
   mirrorTarget: RigDirection | null;
+  /**
+   * False when hitboxes cannot be edited here: hitboxes belong to the weapon
+   * profile, so a profile matching the current animation must be selected.
+   */
+  hitboxEditable: boolean;
+  /** Why hitbox editing is disabled (shown as a hint when not editable). */
+  hitboxHint: string | null;
   onToolChange: (t: EditorTool) => void;
   onSnapChange: (v: boolean) => void;
   onToggleGroup: (kind: BoxKind, enabled: boolean) => void;
@@ -68,9 +75,10 @@ export function BoxTools(props: BoxToolsProps) {
   const selRect: LocalRectangle | null =
     selection ? (frame[selection.kind].rectangles[selection.index] ?? null) : null;
 
-  const toolBtn = (t: EditorTool, label: string, icon: React.ReactNode, activeColor: string) => (
+  const toolBtn = (t: EditorTool, label: string, icon: React.ReactNode, activeColor: string, disabled = false) => (
     <button
       type="button"
+      disabled={disabled}
       onClick={() => props.onToolChange(t)}
       className={`${btnCls} ${
         tool === t
@@ -108,8 +116,11 @@ export function BoxTools(props: BoxToolsProps) {
         <div className="flex flex-wrap gap-1.5">
           {toolBtn('select', 'Selecionar', <MousePointer2 size={13} />, 'border-sky-500 bg-sky-600/30')}
           {toolBtn('draw-hurtbox', 'Hurtbox', <Square size={13} />, 'border-emerald-500 bg-emerald-600/30')}
-          {toolBtn('draw-hitbox', 'Hitbox', <Zap size={13} />, 'border-fuchsia-500 bg-fuchsia-600/30')}
+          {toolBtn('draw-hitbox', 'Hitbox', <Zap size={13} />, 'border-fuchsia-500 bg-fuchsia-600/30', !props.hitboxEditable)}
         </div>
+        {!props.hitboxEditable && props.hitboxHint && (
+          <p className="mt-1.5 text-[10px] text-amber-400/80">{props.hitboxHint}</p>
+        )}
         <label className="flex items-center gap-2 mt-2 text-xs text-slate-300 cursor-pointer">
           <input
             type="checkbox"
@@ -138,10 +149,11 @@ export function BoxTools(props: BoxToolsProps) {
           <input
             type="checkbox"
             checked={frame.hitbox.enabled}
+            disabled={!props.hitboxEditable}
             onChange={(e) => props.onToggleGroup('hitbox', e.target.checked)}
             className="accent-fuchsia-500"
           />
-          <span className="text-fuchsia-400 font-medium">Hitboxes ativas</span>
+          <span className="text-fuchsia-400 font-medium">Hitboxes do perfil (arma)</span>
           <span className="text-slate-500 font-mono">({frame.hitbox.rectangles.length})</span>
         </label>
       </div>
@@ -254,12 +266,14 @@ export function BoxTools(props: BoxToolsProps) {
           <button
             type="button"
             onClick={props.onMirrorHitboxToOpposite}
-            disabled={!props.mirrorTarget}
+            disabled={!props.mirrorTarget || !props.hitboxEditable}
             className={`${btnCls} border-fuchsia-800 bg-fuchsia-950/50 text-fuchsia-300 hover:bg-fuchsia-900/50`}
             title={
-              props.mirrorTarget
-                ? `Copiar as hitboxes desta animação para ${DIRECTION_LABELS[props.mirrorTarget]}, espelhadas no eixo do origin`
-                : 'Disponível apenas para Oeste/Leste'
+              !props.hitboxEditable
+                ? 'Requer um perfil de arma na animação atual'
+                : props.mirrorTarget
+                  ? `Copiar as hitboxes desta animação para ${DIRECTION_LABELS[props.mirrorTarget]}, espelhadas no eixo do origin`
+                  : 'Disponível apenas para Oeste/Leste'
             }
           >
             <ArrowLeftRight size={12} /> Hitbox → direção oposta (espelhado)

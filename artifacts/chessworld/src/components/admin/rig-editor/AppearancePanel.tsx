@@ -26,6 +26,7 @@ import {
 } from '../../../lib/character-generator/compositor';
 import { CategoryRow } from '../character-generator/CategoryRow';
 import type { PreviewAppearanceRecipe } from '../../../shared/combat/RigShapes';
+import { WEAPON_CATEGORY } from '../../../shared/combat/WeaponShapes';
 
 function pickRandom<T>(list: readonly T[]): T {
   return list[Math.floor(Math.random() * list.length)];
@@ -91,9 +92,15 @@ interface AppearancePanelProps {
   onSaveRecipe: (recipe: PreviewAppearanceRecipe) => void;
   /** Fired whenever the composed 2208×384 sheet changes (or fails → null). */
   onSheetChange: (sheet: HTMLCanvasElement | null) => void;
+  /**
+   * Fired when the weapon equipped in the preview changes (incl. initial
+   * selection, Random, Reset and the visibility toggle). null = no weapon.
+   * Must be a stable useCallback in the parent.
+   */
+  onWeaponChange?: (weapon: { familyId: string; variantId: string; assetId: string } | null) => void;
 }
 
-export function AppearancePanel({ recipe, rigId, onSaveRecipe, onSheetChange }: AppearancePanelProps) {
+export function AppearancePanel({ recipe, rigId, onSaveRecipe, onSheetChange, onWeaponChange }: AppearancePanelProps) {
   const [manifest, setManifest] = useState<GeneratorManifest | null>(null);
   const [manifestError, setManifestError] = useState<string | null>(null);
   const [selection, setSelection] = useState<GeneratorSelection>({});
@@ -165,6 +172,21 @@ export function AppearancePanel({ recipe, rigId, onSaveRecipe, onSheetChange }: 
       cancelled = true;
     };
   }, [layerSpecs, toneId, onSheetChange]);
+
+  // Report the equipped weapon to the page (drives the weapon profile panel).
+  useEffect(() => {
+    if (!manifest || !onWeaponChange) return;
+    const sel = selection[WEAPON_CATEGORY];
+    if (!sel?.visible || !sel.familyId) {
+      onWeaponChange(null);
+      return;
+    }
+    onWeaponChange({
+      familyId: sel.familyId,
+      variantId: sel.variantId,
+      assetId: assetIdFor(sel.familyId, sel.variantId),
+    });
+  }, [manifest, selection, onWeaponChange]);
 
   const patchCategory = useCallback((category: string, patch: Partial<GeneratorSelection[string]>) => {
     setSelection((prev) => ({ ...prev, [category]: { ...prev[category], ...patch } }));

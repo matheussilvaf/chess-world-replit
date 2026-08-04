@@ -107,8 +107,19 @@ export interface RigDirectionFrames {
 }
 
 export interface RigAnimationConfig {
-  combat: RigCombatConfig;
+  /**
+   * LEGACY (pre-WeaponHitboxProfile): damage metadata now lives in the weapon
+   * profile (WeaponShapes). Optional for backward compatibility with stored
+   * configs; new editor writes omit it.
+   */
+  combat?: RigCombatConfig;
   directions: Partial<Record<RigDirection, RigDirectionFrames>>;
+  /**
+   * Set when this animation's legacy rig-level hitboxes were migrated to a
+   * WeaponHitboxProfile (spec §17). Legacy hitbox data stays in `directions`
+   * as backup until the admin explicitly clears it.
+   */
+  hitboxesMigratedTo?: string;
 }
 
 /** Sheet columns played by an animation, in play order. */
@@ -133,6 +144,11 @@ export interface RigConfig {
   collisionBody: CollisionBodyConfig;
   previewAppearance: PreviewAppearanceRecipe;
   animationConfigs: Record<string, RigAnimationConfig>;
+  /**
+   * Explicit fallback profile (spec §18 step 2): used only when the equipped
+   * weapon's family has no associated profile. Never set automatically.
+   */
+  defaultWeaponHitboxProfileId?: string | null;
 }
 
 // ---------------------------------------------------------------- defaults
@@ -147,6 +163,14 @@ export function emptyRigFrame(): RigFrameConfig {
 
 export function defaultRigCombat(): RigCombatConfig {
   return { enabled: false, damagePerHit: 10, singleHitPerTarget: true };
+}
+
+/** Fills missing groups so consumers can rely on their presence (spec §24). */
+export function normalizeRigFrameConfig(frame: Partial<RigFrameConfig> | undefined): RigFrameConfig {
+  return {
+    hurtbox: frame?.hurtbox ?? emptyRigBoxGroup(),
+    hitbox: frame?.hitbox ?? emptyRigBoxGroup(),
+  };
 }
 
 /**
@@ -242,7 +266,8 @@ function validateRectangle(v: unknown, path: string, errors: string[]): void {
   }
 }
 
-function validateBoxGroup(v: unknown, path: string, errors: string[]): void {
+/** Also used by WeaponShapes to validate profile hitbox groups. */
+export function validateBoxGroup(v: unknown, path: string, errors: string[]): void {
   if (!isRecord(v)) {
     errors.push(`${path}: deve ser um objeto { enabled, rectangles }`);
     return;
@@ -399,16 +424,21 @@ export function validateRigConfig(value: unknown): RigValidationResult {
           continue;
         }
         const combat = cfg.combat;
-        if (!isRecord(combat)) {
-          errors.push(`${path}.combat: obrigatório`);
-        } else {
-          if (typeof combat.enabled !== 'boolean') errors.push(`${path}.combat.enabled: boolean obrigatório`);
-          if (!isInt(combat.damagePerHit) || combat.damagePerHit < 0 || combat.damagePerHit > MAX_DAMAGE) {
-            errors.push(`${path}.combat.damagePerHit: inteiro 0–${MAX_DAMAGE}`);
+        if (combat !== undefined) {
+          if (!isRecord(combat)) {
+            errors.push(`${path}.combat: deve ser um objeto quando presente`);
+          } else {
+            if (typeof combat.enabled !== 'boolean') errors.push(`${path}.combat.enabled: boolean obrigatório`);
+            if (!isInt(combat.damagePerHit) || combat.damagePerHit < 0 || combat.damagePerHit > MAX_DAMAGE) {
+              errors.push(`${path}.combat.damagePerHit: inteiro 0–${MAX_DAMAGE}`);
+            }
+            if (typeof combat.singleHitPerTarget !== 'boolean') {
+              errors.push(`${path}.combat.singleHitPerTarget: boolean obrigatório`);
+            }
           }
-          if (typeof combat.singleHitPerTarget !== 'boolean') {
-            errors.push(`${path}.combat.singleHitPerTarget: boolean obrigatório`);
-          }
+        }
+        if (cfg.hitboxesMigratedTo !== undefined && (typeof cfg.hitboxesMigratedTo !== 'string' || cfg.hitboxesMigratedTo.length === 0)) {
+          errors.push(`${path}.hitboxesMigratedTo: deve ser um id de perfil (string)`);
         }
         const dirs = cfg.directions;
         if (!isRecord(dirs)) {
@@ -440,6 +470,14 @@ export function validateRigConfig(value: unknown): RigValidationResult {
           }
         }
       }
+    }
+  }
+
+  // defaultWeaponHitboxProfileId (explicit fallback — spec §18)
+  const defaultProfileId = value.defaultWeaponHitboxProfileId;
+  if (defaultProfileId !== undefined && defaultProfileId !== null) {
+    if (typeof defaultProfileId !== 'string' || !RIG_ID_RE.test(defaultProfileId)) {
+      errors.push('defaultWeaponHitboxProfileId: deve ser null ou um id de perfil válido');
     }
   }
 

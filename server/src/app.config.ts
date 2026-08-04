@@ -12,6 +12,12 @@ import { coordinatorRouter } from "./tournament/coordinatorRoutes.js";
 import { startCoordinator } from "./tournament/coordinator.js";
 import { getCharacterConfig } from "./combat/characterConfigService.js";
 import { rigsAdminRouter, publicRigConfigHandler } from "./rigs/routes.js";
+import {
+  weaponFamiliesAdminRouter,
+  weaponProfilesAdminRouter,
+  publicWeaponFamiliesHandler,
+  publicWeaponProfileHandler,
+} from "./rigs/weaponRoutes.js";
 
 const config: ConfigOptions = {
   // Explicit liveness probing: without app-level pings a half-open socket
@@ -139,6 +145,13 @@ const config: ConfigOptions = {
     // Supabase JWT; the public GET is the read-only view game clients use.
     app.get("/api/rigs/:rigId", publicRigConfigHandler);
     app.use("/api/admin/rigs", rigsAdminRouter);
+
+    // Weapon hitbox profiles + persistent family catalog (spec §25). Public
+    // routes are read-only and cached; admin routes require a Supabase JWT.
+    app.get("/api/weapon-families", publicWeaponFamiliesHandler);
+    app.get("/api/weapon-hitbox-profiles/:profileId", publicWeaponProfileHandler);
+    app.use("/api/admin/weapon-families", weaponFamiliesAdminRouter);
+    app.use("/api/admin/weapon-hitbox-profiles", weaponProfilesAdminRouter);
 
     app.use("/api/tournament", tournamentRouter);
     app.use("/api/coordinator", coordinatorRouter);

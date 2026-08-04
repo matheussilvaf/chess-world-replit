@@ -152,3 +152,9 @@ The tester's headless browser has no WebGL context; Phaser 4 is WebGL-only (no C
 Rotas Express custom do servidor devem ser registradas COM o prefixo `/api` (ex.: `app.use('/api/admin/rigs', ...)`). O proxy :80 encaminha o path PRESERVADO ao api-server; apenas `/api/matchmake/*` e `/api/voice/*` têm rewrite (Colyseus monta essas na raiz).
 **Why:** review externo (architect) já apontou "double /api → 404" como bug grave — falso positivo; curls via `localhost:80/api/...` provam 401/200/404 corretos. Não "consertar" isso.
 **How to apply:** ao adicionar rota nova, registre com `/api/...` e valide com curl no proxy :80, não direto na porta do serviço.
+
+## Weapon Hitbox Profiles (armas)
+- Hitbox+dano moram em `WeaponHitboxProfile` por FAMÍLIA de arma (regra `_cN`); o rig guarda só hurtbox/origem/colisão. O editor admin tem DOIS domínios sujos (rig vs perfil); undo/redo é PAR {rig, perfil}.
+- Editor sem eslint exhaustive-deps: handlers useCallback que leem `workingProfile`/`profileDirty` precisam deles nas deps — closure velha chegou a copiar hitboxes do perfil anterior. Para guards em handlers async, preferir refs (`workingProfileRef` etc.).
+- Migração legado→perfil é idempotente via id determinístico `migrated-<rig>-<anim>`: retry reaproveita órfão (PUT) em vez de criar duplicata sufixada; marcador `hitboxesMigratedTo` só depois; backup removido apenas por botão explícito.
+- Sem transação no PostgREST: delete de perfil = dissociar→deletar + varredura pós-delete (TOCTOU); o runtime tolera referência pendurada (404 → arma sem hitbox, `null` cacheado).

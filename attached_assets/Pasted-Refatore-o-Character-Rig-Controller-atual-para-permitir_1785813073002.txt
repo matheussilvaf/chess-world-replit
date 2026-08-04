@@ -1,0 +1,1137 @@
+Refatore o Character Rig Controller atual para permitir Hitboxes específicas por família de arma, mantendo Hurtboxes, Sprite Origin e Collision Body pertencentes ao rig.
+
+ATENÇÃO — REGRA FUNDAMENTAL
+
+O projeto possui aproximadamente 66 armas atualmente e poderá receber novas armas no futuro.
+
+Qualquer nome de arquivo mencionado neste documento serve SOMENTE COMO EXEMPLO para explicar regras de parsing.
+
+Não criar uma lista fechada de armas.
+Não criar enums manuais com nomes de armas.
+Não criar condicionais específicas para arquivos conhecidos.
+Não limitar o sistema aos exemplos citados.
+Não presumir que o prompt contém a lista completa de armas.
+
+O sistema deve descobrir automaticamente TODOS os PNGs existentes em:
+
+`public/character-generator/assets/weapon`
+
+e continuar funcionando quando novos arquivos forem adicionados, sem necessidade de alterar o código-fonte.
+
+Não crie outro editor.
+Não duplique a página.
+Não descarte a implementação existente.
+
+Reutilize e refatore:
+
+- `/admin/rigs`;
+- Character Rig Controller;
+- preview modular;
+- manifest do Character Generator;
+- parser de famílias e variantes;
+- navegação por animação;
+- navegação por direção;
+- navegação frame a frame;
+- ferramentas de criação e edição de caixas;
+- salvamento;
+- persistência;
+- Debug Visuals;
+- integração com Phaser;
+- integração com Colyseus.
+
+==================================================
+1. PROBLEMA ATUAL
+==================================================
+
+Atualmente, as Hitboxes ofensivas estão associadas apenas a:
+
+- rig;
+- animação;
+- direção;
+- frame.
+
+Isso significa que qualquer arma selecionada no preview utiliza a mesma Hitbox.
+
+Esse comportamento está incorreto.
+
+As armas podem possuir:
+
+- dimensões visuais diferentes;
+- comprimentos diferentes;
+- regiões de impacto diferentes;
+- amplitudes de movimento diferentes;
+- alcances diferentes;
+- formatos diferentes;
+- animações compatíveis diferentes.
+
+Por isso, a Hitbox ofensiva não pode permanecer global para todas as armas.
+
+A solução deve separar:
+
+- características físicas do corpo;
+- características ofensivas da arma.
+
+==================================================
+2. ARQUITETURA OBRIGATÓRIA
+==================================================
+
+SPRITE ORIGIN:
+
+- pertence ao rig;
+- é global;
+- continua igual ao trocar arma;
+- continua sendo usado para posicionamento no mundo;
+- continua sendo a referência das coordenadas locais.
+
+COLLISION BODY:
+
+- pertence ao rig;
+- é global;
+- representa colisão com paredes, mapa, objetos e obstáculos;
+- não muda ao trocar arma.
+
+HURTBOX:
+
+- pertence ao rig;
+- representa onde o personagem recebe dano;
+- é configurada por animação, direção e frame;
+- não muda ao trocar arma;
+- não depende de cabelo, roupa, chapéu ou arma.
+
+HITBOX:
+
+- representa onde o ataque causa dano;
+- pertence a um perfil ofensivo associado a uma família de arma;
+- pode variar por animação, direção e frame;
+- pode mudar quando a família de arma selecionada muda.
+
+A regra final deve ser:
+
+Hurtbox:
+`rigId → animationId → direction → frame`
+
+Hitbox:
+`weaponHitboxProfileId → animationId → direction → frame`
+
+==================================================
+3. DESCOBERTA DINÂMICA DE TODAS AS ARMAS
+==================================================
+
+A pasta-base é:
+
+`public/character-generator/assets/weapon`
+
+O sistema deve escanear automaticamente todos os arquivos PNG existentes nessa pasta.
+
+Atualmente existem aproximadamente 66 armas, mas esse número não deve ser tratado como fixo.
+
+O sistema precisa suportar:
+
+- todas as armas atuais;
+- todas as variantes atuais;
+- novos arquivos adicionados futuramente;
+- novas famílias adicionadas futuramente.
+
+Não criar uma lista manual de arquivos.
+
+Não criar um array estático contendo nomes conhecidos.
+
+Não criar código semelhante a:
+
+`if (weapon === "...")`
+
+ou:
+
+`switch (weaponName)`
+
+para reconhecer armas individualmente.
+
+A descoberta deve acontecer pelo manifest real dos assets.
+
+Quando um novo PNG for adicionado à pasta, ele deve aparecer automaticamente no Character Rig Controller após atualizar o manifest ou recarregar a página.
+
+==================================================
+4. FAMÍLIAS E VARIAÇÕES VISUAIS
+==================================================
+
+A única regra automática para detectar variantes é o sufixo:
+
+`_cN`
+
+onde `N` é um número inteiro.
+
+Exemplo meramente ilustrativo:
+
+`weaponExample.png`
+
+Resultado:
+
+- familyId: `weaponExample`
+- variantId: `default`
+
+Outro exemplo meramente ilustrativo:
+
+`weaponExample_c3.png`
+
+Resultado:
+
+- familyId: `weaponExample`
+- variantId: `c3`
+
+Esses exemplos não representam arquivos obrigatórios nem uma lista completa.
+
+A implementação deve aplicar essa regra a qualquer PNG descoberto.
+
+Expressão conceitual:
+
+`^(.*?)(?:_c(\d+))?\.png$`
+
+Requisitos:
+
+- remover somente o sufixo `_cN`;
+- preservar o restante do nome;
+- não modificar maiúsculas/minúsculas de forma destrutiva;
+- gerar um ID canônico estável;
+- guardar também o nome original do arquivo;
+- guardar a URL pública;
+- guardar a variante.
+
+Arquivos com nomes-base diferentes são famílias diferentes.
+
+Mesmo que dois nomes sejam parecidos, não agrupá-los, salvo quando a única diferença for `_cN`.
+
+Exemplo meramente explicativo:
+
+- `exampleLeft.png`;
+- `exampleRight.png`;
+- `examples.png`;
+
+devem ser três famílias diferentes, porque os nomes-base são diferentes.
+
+Não criar exceção específica para esses exemplos.
+
+==================================================
+5. NÃO INFERIR COMPORTAMENTO PELO NOME
+==================================================
+
+O sistema não deve tentar adivinhar automaticamente, a partir do nome do arquivo:
+
+- classe da arma;
+- tamanho;
+- alcance;
+- dano;
+- tipo de ataque;
+- quantidade de mãos;
+- animação;
+- perfil ofensivo;
+- direção;
+- velocidade;
+- raridade.
+
+Essas propriedades devem ser configuradas explicitamente pelo administrador.
+
+O nome do arquivo serve apenas para:
+
+- identificar o asset;
+- identificar a família;
+- identificar a variante `_cN`.
+
+==================================================
+6. WEAPON HITBOX PROFILE
+==================================================
+
+Criar o conceito:
+
+`WeaponHitboxProfile`
+
+Esse perfil representa a geometria ofensiva utilizada por uma ou mais famílias de armas.
+
+Estrutura aproximada:
+
+{
+  "schemaVersion": 1,
+  "id": "custom-profile-id",
+  "displayName": "Nome visual do perfil",
+  "rigId": "time-elements-humanoid-v1",
+  "animationId": "attack-full",
+
+  "combat": {
+    "enabled": true,
+    "damagePerHit": 10,
+    "singleHitPerTarget": true
+  },
+
+  "directions": {
+    "south": {
+      "frames": {
+        "0": {
+          "hitbox": {
+            "enabled": false,
+            "rectangles": []
+          }
+        },
+
+        "2": {
+          "hitbox": {
+            "enabled": true,
+            "rectangles": [
+              {
+                "id": "hitbox-1",
+                "x": -24,
+                "y": -8,
+                "width": 48,
+                "height": 32
+              }
+            ]
+          }
+        }
+      }
+    }
+  }
+}
+
+O perfil deve poder ser:
+
+- criado;
+- duplicado;
+- renomeado;
+- editado;
+- salvo;
+- excluído;
+- associado a uma família;
+- compartilhado entre várias famílias.
+
+Não gerar automaticamente um perfil diferente para cada variante `_cN`.
+
+==================================================
+7. ASSOCIAÇÃO ENTRE FAMÍLIA E PERFIL
+==================================================
+
+Criar um catálogo persistente de famílias de armas.
+
+Estrutura conceitual:
+
+{
+  "weaponFamilies": {
+    "<familyId-descoberto-dinamicamente>": {
+      "displayName": "<nome visual>",
+      "defaultAssetId": "<arquivo default>",
+      "variants": [
+        "<asset variant ids>"
+      ],
+      "weaponHitboxProfileId": "<profile id ou null>"
+    }
+  }
+}
+
+Cada família descoberta pode:
+
+- não possuir perfil;
+- possuir um perfil exclusivo;
+- compartilhar um perfil com outras famílias.
+
+A associação deve ser explícita e persistente.
+
+Não associar automaticamente todas as armas ao mesmo perfil.
+
+Não associar automaticamente uma nova família a um perfil existente.
+
+Quando a família não possuir perfil, mostrar:
+
+`Nenhum perfil de Hitbox associado`
+
+e oferecer:
+
+- Criar novo perfil;
+- Associar perfil existente;
+- Duplicar perfil selecionado;
+- Deixar sem perfil.
+
+==================================================
+8. VARIANTES `_cN`
+==================================================
+
+Todas as variantes `_cN` de uma mesma família devem compartilhar o mesmo perfil por padrão.
+
+Exemplo conceitual:
+
+`weaponExample.png`
+`weaponExample_c1.png`
+`weaponExample_c2.png`
+`weaponExample_c3.png`
+
+Todos devem resolver:
+
+`familyId = weaponExample`
+
+e, portanto, usar a mesma associação:
+
+`weaponExample → WeaponHitboxProfile`
+
+Trocar apenas a variante deve:
+
+- mudar o visual;
+- manter o familyId;
+- manter o perfil;
+- manter a Hitbox;
+- manter o dano;
+- manter a animação.
+
+Trocar para outro nome-base deve:
+
+- mudar a família;
+- resolver novamente o perfil;
+- carregar as Hitboxes da nova associação.
+
+==================================================
+9. ALTERAÇÕES NA INTERFACE `/admin/rigs`
+==================================================
+
+Não criar uma página nova.
+
+Modificar o Character Rig Controller atual.
+
+Adicionar uma seção chamada:
+
+`Perfil de Hitbox da Arma`
+
+Essa seção deve aparecer principalmente quando uma animação ofensiva estiver selecionada.
+
+Exibir:
+
+- arquivo visual selecionado;
+- nome-base da família detectada;
+- variante atual;
+- perfil associado;
+- ID do perfil;
+- animação associada;
+- status ativo/inativo;
+- quantidade de famílias que utilizam o perfil.
+
+Controles:
+
+- seletor de perfil;
+- Criar perfil;
+- Duplicar perfil;
+- Renomear perfil;
+- Salvar perfil;
+- Excluir perfil;
+- Associar à família atual;
+- Desassociar da família atual;
+- Abrir gerenciamento de associações.
+
+Quando a família estiver sem perfil, mostrar aviso visual claro.
+
+==================================================
+10. COMPORTAMENTO AO TROCAR ARMA
+==================================================
+
+Quando o administrador trocar o asset da categoria `weapon` no painel esquerdo:
+
+1. identificar o arquivo selecionado;
+2. extrair a família-base;
+3. extrair a variante `_cN`, caso exista;
+4. procurar a associação da família;
+5. resolver o WeaponHitboxProfile;
+6. carregar as Hitboxes do perfil;
+7. considerar animação atual;
+8. considerar direção atual;
+9. considerar frame atual;
+10. atualizar o Canvas;
+11. atualizar o painel de propriedades;
+12. atualizar o Debug Visual;
+13. preservar Hurtboxes;
+14. preservar Origin;
+15. preservar Collision Body.
+
+Trocar a variante de uma mesma família não deve recarregar outro perfil.
+
+Trocar a família deve resolver novamente a associação.
+
+==================================================
+11. PREVIEW VISUAL E PERFIL OFENSIVO
+==================================================
+
+O asset selecionado determina o que é desenhado.
+
+O perfil determina a geometria ofensiva.
+
+Esses conceitos são relacionados, mas separados.
+
+Estrutura conceitual:
+
+{
+  "weaponAssetId": "<arquivo selecionado>",
+  "weaponFamilyId": "<família-base>",
+  "variantId": "<default ou cN>",
+  "weaponHitboxProfileId": "<perfil associado>"
+}
+
+Não salvar a variante visual dentro da geometria da Hitbox.
+
+Não duplicar Hitboxes por cor.
+
+==================================================
+12. HURTBOX CONTINUA NO RIG
+==================================================
+
+Não mover Hurtboxes para WeaponHitboxProfile.
+
+A estrutura de Hurtboxes deve continuar sendo:
+
+RigConfig
+→ animationId
+→ direction
+→ localFrameIndex
+→ hurtbox.
+
+Trocar arma nunca deve:
+
+- apagar Hurtbox;
+- criar Hurtbox;
+- substituir Hurtbox;
+- deslocar Hurtbox;
+- duplicar Hurtbox.
+
+A Hurtbox deve continuar sendo exibida em verde no editor.
+
+==================================================
+13. HITBOX PASSA PARA O PERFIL
+==================================================
+
+As Hitboxes não devem continuar armazenadas como caixas ofensivas globais da animação do rig.
+
+A nova estrutura deve ser:
+
+WeaponHitboxProfile
+→ animationId
+→ direction
+→ localFrameIndex
+→ hitbox.
+
+Perfis diferentes podem usar:
+
+- a mesma animação;
+- a mesma direção;
+- o mesmo frame;
+
+mas possuir retângulos completamente diferentes.
+
+As coordenadas continuam relativas ao Sprite Origin do rig.
+
+==================================================
+14. EDIÇÃO FRAME A FRAME
+==================================================
+
+O contexto de edição deve ser composto por:
+
+- rig;
+- família da arma;
+- perfil;
+- animação;
+- direção;
+- frame.
+
+Ao mudar qualquer um desses elementos, carregar as Hitboxes correspondentes.
+
+Manter todas as ferramentas atuais:
+
+- Selecionar;
+- + Hurtbox;
+- + Hitbox;
+- arrastar;
+- redimensionar;
+- múltiplas caixas;
+- duplicar;
+- excluir;
+- editar X;
+- editar Y;
+- editar Width;
+- editar Height;
+- copiar do frame anterior;
+- copiar do próximo frame;
+- copiar frame;
+- colar frame;
+- espelhar Oeste/Leste;
+- limpar frame;
+- limpar animação;
+- desfazer;
+- refazer;
+- snap de 1 pixel.
+
+Editar uma Hitbox não pode modificar outro perfil.
+
+Editar uma Hurtbox não pode modificar o perfil da arma.
+
+==================================================
+15. PERFIS COMPARTILHADOS
+==================================================
+
+Permitir que várias famílias utilizem o mesmo WeaponHitboxProfile.
+
+Não fazer isso automaticamente.
+
+O administrador deve escolher explicitamente.
+
+Quando um perfil estiver associado a várias famílias, mostrar:
+
+`Este perfil é compartilhado por X famílias. Alterações afetarão todas elas.`
+
+Antes de salvar uma alteração em perfil compartilhado, manter o aviso visível.
+
+Adicionar uma lista das famílias vinculadas ao perfil.
+
+Permitir:
+
+- remover vínculo individual;
+- duplicar o perfil para criar uma versão exclusiva;
+- mover uma família para outro perfil.
+
+==================================================
+16. PERFIL SEM ARMA ESPECÍFICA
+==================================================
+
+Um perfil não deve depender obrigatoriamente de um nome de arquivo específico.
+
+Ele pode ser reutilizado.
+
+Exemplo conceitual:
+
+- uma família possui perfil exclusivo;
+- duas famílias compartilham perfil;
+- uma família não possui perfil;
+- uma família futuramente recebe novo perfil.
+
+Não codificar nomes de arquivos dentro da lógica geométrica.
+
+==================================================
+17. MIGRAÇÃO DAS HITBOXES ATUAIS
+==================================================
+
+A implementação atual possui Hitboxes globais salvas no rig.
+
+Não apagar esses dados silenciosamente.
+
+Criar uma migração versionada.
+
+Processo:
+
+1. detectar Hitboxes antigas;
+2. criar um perfil de migração, com ID seguro e não conflitante;
+3. copiar:
+   - animações;
+   - direções;
+   - frames;
+   - retângulos;
+   - dano;
+   - singleHitPerTarget;
+4. validar a cópia;
+5. manter backup;
+6. marcar configuração antiga como migrada;
+7. não associar indiscriminadamente o perfil a todas as famílias;
+8. permitir que o administrador selecione quais famílias usarão o perfil migrado.
+
+Mostrar uma mensagem:
+
+`As Hitboxes globais antigas foram migradas para um WeaponHitboxProfile. Associe as famílias desejadas ao perfil migrado.`
+
+Somente remover o formato antigo depois que a migração estiver confirmada.
+
+==================================================
+18. FALLBACK SEGURO
+==================================================
+
+Usar esta cadeia de resolução:
+
+1. perfil associado à família da arma equipada;
+2. perfil padrão explicitamente configurado para o rig, caso exista;
+3. nenhuma Hitbox.
+
+Não utilizar silenciosamente o perfil da última arma selecionada.
+
+Não utilizar perfil aleatório.
+
+Não aplicar perfil de uma família em outra sem associação.
+
+Quando não existir perfil:
+
+- permitir visualizar a arma;
+- permitir tocar a animação;
+- não causar dano;
+- não desenhar Hitbox ofensiva;
+- mostrar aviso em desenvolvimento;
+- mostrar aviso na interface administrativa.
+
+==================================================
+19. DANO E PERFIL
+==================================================
+
+Por enquanto, manter no perfil:
+
+- combat.enabled;
+- damagePerHit;
+- singleHitPerTarget;
+- animationId;
+- Hitboxes por direção e frame.
+
+Estruturar o código para permitir futuramente:
+
+- dano vindo do item equipado;
+- multiplicador de atributo;
+- crítico;
+- efeitos;
+- status;
+- cooldown;
+- stamina.
+
+A geometria deve continuar pertencendo ao perfil, mesmo que futuramente o dano venha do item.
+
+==================================================
+20. RUNTIME DO PERSONAGEM
+==================================================
+
+Um personagem futuro poderá possuir:
+
+{
+  "characterId": "<id>",
+  "rigId": "time-elements-humanoid-v1",
+
+  "equipment": {
+    "weaponAssetId": "<asset selecionado>",
+    "weaponFamilyId": "<família-base>",
+    "weaponHitboxProfileId": "<perfil resolvido>"
+  }
+}
+
+O servidor deve validar todos esses dados.
+
+O weaponHitboxProfileId não deve ser controlado livremente pelo cliente.
+
+Ele deve ser derivado da arma realmente equipada e da associação persistente da família.
+
+==================================================
+21. INTEGRAÇÃO COM PHASER
+==================================================
+
+Durante um ataque, o Phaser deve acompanhar:
+
+- rigId;
+- weaponAssetId;
+- weaponFamilyId;
+- weaponHitboxProfileId;
+- animationId;
+- direction;
+- localFrameIndex.
+
+Resolver a Hurtbox:
+
+`rigId → animationId → direction → localFrameIndex`
+
+Resolver a Hitbox:
+
+`weaponHitboxProfileId → animationId → direction → localFrameIndex`
+
+Quando o frame mudar:
+
+- atualizar Hurtbox;
+- atualizar Hitbox;
+- atualizar Debug Visual;
+- impedir hits duplicados no mesmo ataque.
+
+A aparência personalizada não altera as coordenadas geométricas.
+
+==================================================
+22. DEBUG VISUALS
+==================================================
+
+Quando `Debug Visuals` estiver ativo, mostrar:
+
+- Origin ciano;
+- Collision Body vermelho;
+- linha dos pés verde;
+- Hurtboxes verdes;
+- Hitboxes magenta, roxas ou laranja;
+- asset da arma;
+- familyId;
+- variantId;
+- profileId;
+- animationId;
+- direction;
+- localFrameIndex.
+
+Quando a arma mudar, o debug deve atualizar imediatamente.
+
+Quando apenas `_cN` mudar, o profileId deve permanecer igual.
+
+==================================================
+23. INTEGRAÇÃO COM COLYSEUS
+==================================================
+
+O Colyseus continua sendo a autoridade do dano.
+
+O cliente envia apenas a intenção:
+
+{
+  "type": "attack",
+  "animation": "attack-full",
+  "direction": "south"
+}
+
+O servidor deve obter do estado autoritativo:
+
+- personagem;
+- rig;
+- equipamento;
+- arma realmente equipada;
+- família;
+- perfil associado;
+- posição;
+- direção;
+- frame;
+- cooldown;
+- estado do jogador.
+
+O servidor não deve confiar em:
+
+- weaponAssetId enviado livremente;
+- familyId enviado livremente;
+- profileId enviado livremente;
+- dano enviado pelo cliente;
+- Hitboxes enviadas pelo cliente;
+- targetId declarado pelo cliente;
+- frame declarado como ativo pelo cliente.
+
+O servidor resolve o perfil por meio da associação persistente da família equipada.
+
+==================================================
+24. GEOMETRIA COMPARTILHADA
+==================================================
+
+Não importar Phaser no servidor.
+
+Criar tipos compartilhados:
+
+type LocalRectangle = {
+  id: string;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+};
+
+Criar funções compartilhadas:
+
+- localRectToWorldRect;
+- rectanglesIntersect;
+- mirrorRectAcrossOrigin;
+- validateRectangle;
+- normalizeFrameConfig.
+
+Cliente e servidor devem usar a mesma regra matemática.
+
+==================================================
+25. PERSISTÊNCIA
+==================================================
+
+Criar ou adaptar:
+
+- `RigConfigRepository`;
+- `WeaponFamilyRepository`;
+- `WeaponHitboxProfileRepository`.
+
+Endpoints administrativos:
+
+GET `/api/admin/weapon-families`
+
+GET `/api/admin/weapon-families/:familyId`
+
+PUT `/api/admin/weapon-families/:familyId`
+
+GET `/api/admin/weapon-hitbox-profiles`
+
+POST `/api/admin/weapon-hitbox-profiles`
+
+GET `/api/admin/weapon-hitbox-profiles/:profileId`
+
+PUT `/api/admin/weapon-hitbox-profiles/:profileId`
+
+DELETE `/api/admin/weapon-hitbox-profiles/:profileId`
+
+A associação família → perfil deve persistir após reload.
+
+Somente administradores podem editar.
+
+Criar endpoints de leitura seguros para o runtime, caso necessário.
+
+==================================================
+26. MANIFEST DAS ARMAS
+==================================================
+
+Reutilizar o manifest do Character Generator.
+
+O manifest de `weapon` deve retornar:
+
+- todos os arquivos;
+- todas as famílias;
+- todas as variantes;
+- arquivo default, quando existir;
+- URL pública;
+- profileId associado, quando existir;
+- status configurado/não configurado.
+
+Estrutura aproximada:
+
+{
+  "families": [
+    {
+      "familyId": "<dynamic family id>",
+      "defaultAsset": {},
+      "variants": [],
+      "weaponHitboxProfileId": null
+    }
+  ]
+}
+
+Não usar nomes hardcoded na resposta do endpoint.
+
+==================================================
+27. VALIDAÇÕES
+==================================================
+
+Validar:
+
+- profileId duplicado;
+- profileId inválido;
+- rig inexistente;
+- animação inexistente;
+- direção incompatível;
+- frame inexistente;
+- familyId inexistente;
+- associação para perfil incompatível;
+- retângulo inválido;
+- width <= 0;
+- height <= 0;
+- NaN;
+- Infinity;
+- perfil sem rig;
+- perfil sem animação;
+- exclusão de perfil em uso;
+- manifest inconsistente;
+- variante sem família;
+- arquivo corrompido.
+
+Não falhar silenciosamente.
+
+==================================================
+28. EXCLUSÃO DE PERFIL
+==================================================
+
+Antes de excluir um perfil, verificar quantas famílias o utilizam.
+
+Mostrar:
+
+- quantidade;
+- IDs;
+- impacto;
+- possíveis personagens afetados.
+
+Opções:
+
+- cancelar;
+- desassociar todas e excluir;
+- substituir por outro perfil;
+- duplicar antes da exclusão.
+
+Não deixar referências quebradas.
+
+==================================================
+29. CONTROLE DE ALTERAÇÕES
+==================================================
+
+Preservar:
+
+`alterações não salvas`
+
+Marcar dirty state ao alterar:
+
+- perfil;
+- retângulos;
+- dano;
+- associação;
+- animação;
+- configuração;
+- nome;
+- status.
+
+Ao trocar de família ou perfil com alterações não salvas, pedir confirmação.
+
+==================================================
+30. REQUISITOS TÉCNICOS
+==================================================
+
+Usar TypeScript estrito.
+
+Evitar `any`.
+
+Criar tipos:
+
+- WeaponAssetManifestEntry;
+- WeaponFamilyManifestEntry;
+- WeaponVariant;
+- WeaponFamilyConfig;
+- WeaponHitboxProfile;
+- WeaponHitboxFrameConfig;
+- CombatConfig;
+- LocalRectangle;
+- ProfileAssociation;
+- ProfileMigrationResult.
+
+Separar responsabilidades:
+
+- scanner;
+- manifest;
+- parser;
+- repository;
+- API;
+- editor;
+- geometria;
+- runtime;
+- Phaser;
+- Colyseus;
+- migração;
+- debug.
+
+Não concentrar tudo em um único componente.
+
+==================================================
+31. FORA DO ESCOPO
+==================================================
+
+Não implementar agora:
+
+- inventário completo;
+- loja;
+- raridade;
+- atributos finais;
+- classes automáticas;
+- inferência de arma pelo nome;
+- categorização automática;
+- upload de armas pelo jogador;
+- geração procedural de Hitboxes;
+- colisão pixel-perfect.
+
+==================================================
+32. CRITÉRIOS DE ACEITAÇÃO
+==================================================
+
+A implementação só estará concluída quando:
+
+1. Todas as aproximadamente 66 armas atuais forem descobertas automaticamente.
+
+2. Nenhuma lista hardcoded limitar as armas reconhecidas.
+
+3. Novos PNGs aparecerem sem alteração de código.
+
+4. Variações `_cN` forem agrupadas corretamente.
+
+5. Variantes da mesma família compartilharem perfil.
+
+6. Nomes-base diferentes continuarem como famílias diferentes.
+
+7. Hurtboxes continuarem no rig.
+
+8. Hitboxes passarem para WeaponHitboxProfile.
+
+9. Trocar família puder trocar Hitboxes.
+
+10. Trocar somente variante não trocar Hitbox.
+
+11. Família sem perfil não utilizar perfil incorreto.
+
+12. O administrador puder criar perfil.
+
+13. O administrador puder duplicar perfil.
+
+14. O administrador puder renomear perfil.
+
+15. O administrador puder associar perfil.
+
+16. O administrador puder desassociar perfil.
+
+17. Perfis compartilhados mostrarem aviso.
+
+18. Hitboxes forem editáveis por animação, direção e frame.
+
+19. Hitboxes antigas forem migradas sem perda.
+
+20. Debug Visuals mostrar o perfil correto.
+
+21. Phaser resolver corretamente o perfil.
+
+22. Colyseus resolver o perfil pelo equipamento autoritativo.
+
+23. Persistência funcionar após reload.
+
+24. Nenhuma funcionalidade atual do Character Rig Controller sofrer regressão.
+
+==================================================
+33. TESTES OBRIGATÓRIOS
+==================================================
+
+Criar testes para:
+
+- scanner com dezenas de PNGs;
+- nova arma adicionada;
+- família sem variante;
+- família com múltiplos `_cN`;
+- nomes parecidos;
+- troca de variante;
+- troca de família;
+- perfil exclusivo;
+- perfil compartilhado;
+- família sem perfil;
+- migração das Hitboxes antigas;
+- exclusão de perfil em uso;
+- fallback seguro;
+- resolução no Phaser;
+- resolução no Colyseus.
+
+Os testes não devem depender de uma lista específica de nomes de armas.
+
+==================================================
+34. RELATÓRIO FINAL
+==================================================
+
+Ao terminar, apresentar:
+
+1. arquivos criados;
+2. arquivos alterados;
+3. arquivos deprecated;
+4. quantidade real de arquivos de armas descoberta;
+5. quantidade real de famílias descoberta;
+6. quantidade real de variantes descoberta;
+7. estrutura final do manifest;
+8. estrutura final do WeaponHitboxProfile;
+9. estrutura final do catálogo;
+10. como funciona `_cN`;
+11. como criar um perfil;
+12. como associar uma família;
+13. como compartilhar perfil;
+14. como testar troca de família;
+15. como testar troca de variante;
+16. como testar família sem perfil;
+17. como as Hitboxes antigas foram migradas;
+18. como testar Debug Visuals;
+19. como Phaser resolve o perfil;
+20. como Colyseus valida o ataque;
+21. limitações reais ou pendências encontradas.
+
+Primeiro examine a implementação existente.
+
+Depois refatore o Character Rig Controller atual.
+
+Não crie um segundo editor.
+
+Não responda somente com um plano.
+
+Implemente o sistema completo.

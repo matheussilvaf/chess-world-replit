@@ -35,7 +35,6 @@ import {
   RIG_ID_RE,
   RIG_OPPOSITE_DIRECTION,
   cloneRigConfig,
-  defaultRigCombat,
   emptyRigFrame,
   getRigFrameConfig,
   mirrorRigFrameConfig,
@@ -53,6 +52,35 @@ import { RigCanvas } from './RigCanvas';
 import { BoxTools, DIRECTION_LABELS } from './BoxTools';
 import { AppearancePanel } from './AppearancePanel';
 import type { BoxKind, BoxSelection, EditorTool } from './types';
+import { weaponApi } from './weaponApi';
+import { WeaponProfilePanel, type PreviewWeapon } from './WeaponProfilePanel';
+import { buildWeaponFamilyCatalog } from '../../../lib/character-generator/weaponCatalog';
+import { fetchGeneratorManifest } from '../../../lib/character-generator/manifest';
+import type { GeneratorManifest } from '../../../lib/character-generator/types';
+import {
+  buildWeaponMigration,
+  cloneWeaponProfile,
+  emptyWeaponFrame,
+  getWeaponProfileFrame,
+  mirrorWeaponFrameConfig,
+  newWeaponProfileTemplate,
+  resolveWeaponProfileId,
+  rigAnimationsWithLegacyHitboxes,
+  validateWeaponHitboxProfile,
+  weaponFamiliesUsingProfile,
+  type WeaponFamilyConfig,
+  type WeaponHitboxFrameConfig,
+  type WeaponHitboxProfile,
+} from '../../../shared/combat/WeaponShapes';
+
+/**
+ * Undo/redo snapshots capture BOTH edit domains (rig + weapon profile) so a
+ * single Ctrl+Z reverts one user action even when it touched both.
+ */
+type EditorSnapshot = {
+  rig: RigConfig;
+  profile: WeaponHitboxProfile | null;
+};
 
 const UNDO_LIMIT = 100;
 const UNDO_COALESCE_MS = 600;
@@ -132,6 +160,22 @@ export function RigControllerPage() {
   const [sheet, setSheet] = useState<HTMLCanvasElement | null>(null);
   const [clipboard, setClipboard] = useState<RigFrameConfig | null>(null);
 
+  // ------------------------------------------------- weapon profiles/families
+  // Hitboxes + damage live on WeaponHitboxProfiles keyed by weapon FAMILY;
+  // the rig keeps only hurtbox/origin/collision body (spec §5-§8).
+  const [profiles, setProfiles] = useState<WeaponHitboxProfile[]>([]);
+  const [families, setFamilies] = useState<Record<string, WeaponFamilyConfig>>({});
+  const [weaponTablesMissing, setWeaponTablesMissing] = useState(false);
+  const [weaponTableSql, setWeaponTableSql] = useState<string | null>(null);
+  const [weaponError, setWeaponError] = useState<string | null>(null);
+  const [weaponBusy, setWeaponBusy] = useState(false);
+  const [generatorManifest, setGeneratorManifest] = useState<GeneratorManifest | null>(null);
+  const [previewWeapon, setPreviewWeapon] = useState<PreviewWeapon | null>(null);
+  const [workingProfile, setWorkingProfile] = useState<WeaponHitboxProfile | null>(null);
+  const [profileDirty, setProfileDirty] = useState(false);
+  const [migrating, setMigrating] = useState(false);
+  const [migrationMsg, setMigrationMsg] = useState<string | null>(null);
+
   // CRUD sub-form: null | 'new' | 'duplicate' | 'rename'
   const [crudMode, setCrudMode] = useState<null | 'new' | 'duplicate' | 'rename'>(null);
   const [crudId, setCrudId] = useState('');
@@ -139,14 +183,24 @@ export function RigControllerPage() {
   const [crudBusy, setCrudBusy] = useState(false);
   const [crudError, setCrudError] = useState<string | null>(null);
 
-  // Undo/redo (whole-config snapshots, coalesced in time)
-  const undoRef = useRef<RigConfig[]>([]);
-  const redoRef = useRef<RigConfig[]>([]);
+  // Undo/redo (whole-state snapshots — rig + profile pairs, coalesced in time)
+  const undoRef = useRef<EditorSnapshot[]>([]);
+  const redoRef = useRef<EditorSnapshot[]>([]);
   const lastUndoPushRef = useRef(0);
   const [historyVersion, setHistoryVersion] = useState(0); // re-render for button states
 
   const workingRef = useRef<RigConfig | null>(null);
   workingRef.current = working;
+  const workingProfileRef = useRef<WeaponHitboxProfile | null>(null);
+  workingProfileRef.current = workingProfile;
+  const profilesRef = useRef<WeaponHitboxProfile[]>([]);
+  profilesRef.current = profiles;
+  const familiesRef = useRef<Record<string, WeaponFamilyConfig>>({});
+  familiesRef.current = families;
+  const dirtyRef = useRef(false);
+  dirtyRef.current = dirty;
+  const profileDirtyRef = useRef(false);
+  profileDirtyRef.current = profileDirty;
 
   // ---------------------------------------------------------------- load
   const loadList = useCallback(async (selectId?: string) => {
@@ -166,6 +220,8 @@ export function RigControllerPage() {
         null;
       setWorking(pick ? cloneRigConfig(pick) : null);
       setDirty(false);
+      setWorkingProfile(null); // auto-resolve re-selects for the fresh rig
+      setProfileDirty(false);
       undoRef.current = [];
       redoRef.current = [];
       if (pick) {
@@ -194,6 +250,101 @@ export function RigControllerPage() {
     void loadList();
   }, [loadList]);
 
+  // Generator manifest — weapon family discovery (same scan the preview uses;
+  // families/variants are NEVER hardcoded).
+  useEffect(() => {
+    let cancelled = false;
+    fetchGeneratorManifest()
+      .then((m) => {
+        if (!cancelled) setGeneratorManifest(m);
+      })
+      .catch(() => {
+        if (!cancelled) setGeneratorManifest(null); // AppearancePanel surfaces the error
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const loadWeaponData = useCallback(async () => {
+    setWeaponError(null);
+    try {
+      const [famRes, profRes] = await Promise.all([weaponApi.families.list(), weaponApi.profiles.list()]);
+      setFamilies(famRes.families ?? {});
+      setProfiles(profRes.profiles ?? []);
+      const missing = famRes.tableMissing || profRes.tableMissing;
+      setWeaponTablesMissing(missing);
+      setWeaponTableSql(
+        missing
+          ? [famRes.tableMissing ? famRes.tableSql : null, profRes.tableMissing ? profRes.tableSql : null]
+              .filter(Boolean)
+              .join('\n\n')
+          : null,
+      );
+      const invalid = [...(famRes.invalidIds ?? []), ...(profRes.invalidIds ?? [])];
+      if (invalid.length > 0) {
+        setWeaponError(`Registros de arma com JSON inválido no banco (ignorados): ${invalid.join(', ')}`);
+      }
+      // Refresh the selected profile from the server copy (only when clean).
+      const selected = workingProfileRef.current;
+      if (selected && !profileDirtyRef.current) {
+        const fresh = (profRes.profiles ?? []).find((p) => p.id === selected.id);
+        setWorkingProfile(fresh ? cloneWeaponProfile(fresh) : null);
+      }
+    } catch (e) {
+      if (e instanceof RigApiError) {
+        setWeaponError(e.message);
+        if (e.tableMissing) {
+          setWeaponTablesMissing(true);
+          setWeaponTableSql(e.tableSql ?? null);
+        }
+      } else {
+        setWeaponError(e instanceof Error ? e.message : String(e));
+      }
+    }
+  }, []);
+
+  useEffect(() => {
+    void loadWeaponData();
+  }, [loadWeaponData]);
+
+  // Merged §26 view: manifest scan + persisted associations.
+  const weaponCatalog = useMemo(
+    () => buildWeaponFamilyCatalog(generatorManifest, families),
+    [generatorManifest, families],
+  );
+
+  const selectProfile = useCallback((profileId: string | null, opts: { confirmDiscard?: boolean } = {}) => {
+    const currentId = workingProfileRef.current?.id ?? null;
+    if (profileId === currentId) return;
+    if (
+      (opts.confirmDiscard ?? true) &&
+      profileDirtyRef.current &&
+      !window.confirm('O perfil de arma atual tem alterações não salvas. Descartar e trocar de perfil?')
+    ) {
+      return;
+    }
+    const target = profileId ? (profilesRef.current.find((p) => p.id === profileId) ?? null) : null;
+    setWorkingProfile(target ? cloneWeaponProfile(target) : null);
+    setProfileDirty(false);
+    setSelection((sel) => (sel?.kind === 'hitbox' ? null : sel));
+  }, []);
+
+  // §14/§18: equipped weapon changed → resolve family profile → rig default →
+  // none, and follow it in the editor. Never auto-switches over unsaved edits
+  // (the panel shows a mismatch hint instead).
+  useEffect(() => {
+    const rig = workingRef.current;
+    if (!rig) return;
+    if (profileDirtyRef.current) return;
+    const family = previewWeapon ? (families[previewWeapon.familyId] ?? null) : null;
+    const resolved = resolveWeaponProfileId(family, rig);
+    if ((workingProfileRef.current?.id ?? null) !== resolved) {
+      selectProfile(resolved, { confirmDiscard: false });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [previewWeapon, families, profiles, working?.rigId, working?.defaultWeaponHitboxProfileId, selectProfile]);
+
   // ---------------------------------------------------------------- derived
   const animNames = useMemo(() => (working ? Object.keys(working.animations) : []), [working]);
   const dirNames = useMemo(
@@ -204,11 +355,31 @@ export function RigControllerPage() {
   const frameCount = animFrames.length;
   const rowIndex = working?.directions[dirId] ?? 0;
   const sheetColumn = working ? (sheetColumnForFrame(working, animId, localFrame) ?? 0) : 0;
-  const frame: RigFrameConfig = working
+  const rigFrame: RigFrameConfig = working
     ? getRigFrameConfig(working, animId, dirId, localFrame)
     : emptyRigFrame();
-  const combat = working ? (working.animationConfigs[animId]?.combat ?? defaultRigCombat()) : defaultRigCombat();
+  /** Hitboxes are editable only when the selected profile targets this animation. */
+  const profileMatchesAnim = workingProfile !== null && workingProfile.animationId === animId;
+  // Canvas frame = rig HURTBOX + profile HITBOX. Legacy rig hitboxes (backup
+  // pós-migração, spec §17) are intentionally not rendered as editable boxes.
+  const frame: RigFrameConfig = {
+    hurtbox: rigFrame.hurtbox,
+    hitbox:
+      profileMatchesAnim && workingProfile
+        ? getWeaponProfileFrame(workingProfile, dirId, localFrame).hitbox
+        : { enabled: false, rectangles: [] },
+  };
+  const hitboxHint = workingProfile
+    ? profileMatchesAnim
+      ? null
+      : `As hitboxes pertencem ao perfil "${workingProfile.id}" (animação "${workingProfile.animationId}") — troque para essa animação para vê-las/editá-las.`
+    : 'Nenhum perfil de arma selecionado — hitboxes agora são editadas por perfil de arma (seção "Perfil de Hitbox da Arma").';
   const mirrorTarget = RIG_OPPOSITE_DIRECTION[dirId] ?? null;
+
+  // Drawing hitboxes requires an editable profile; drop the tool otherwise.
+  useEffect(() => {
+    if (tool === 'draw-hitbox' && !profileMatchesAnim) setTool('select');
+  }, [tool, profileMatchesAnim]);
   const fw = working?.sheet.frameWidth ?? 96;
   const fh = working?.sheet.frameHeight ?? 96;
 
@@ -236,39 +407,56 @@ export function RigControllerPage() {
   }, [frame, selection?.kind, selection?.index]);
 
   // ---------------------------------------------------------------- undo/redo
-  const pushUndo = useCallback((coalesce = false) => {
+  const snapshotNow = useCallback((): EditorSnapshot | null => {
     const current = workingRef.current;
-    if (!current) return;
-    const now = Date.now();
-    if (coalesce && now - lastUndoPushRef.current < UNDO_COALESCE_MS) return;
-    lastUndoPushRef.current = now;
-    undoRef.current.push(cloneRigConfig(current));
-    if (undoRef.current.length > UNDO_LIMIT) undoRef.current.shift();
-    redoRef.current = [];
+    if (!current) return null;
+    return {
+      rig: cloneRigConfig(current),
+      profile: workingProfileRef.current ? cloneWeaponProfile(workingProfileRef.current) : null,
+    };
+  }, []);
+
+  const pushUndo = useCallback(
+    (coalesce = false) => {
+      const snap = snapshotNow();
+      if (!snap) return;
+      const now = Date.now();
+      if (coalesce && now - lastUndoPushRef.current < UNDO_COALESCE_MS) return;
+      lastUndoPushRef.current = now;
+      undoRef.current.push(snap);
+      if (undoRef.current.length > UNDO_LIMIT) undoRef.current.shift();
+      redoRef.current = [];
+      setHistoryVersion((v) => v + 1);
+    },
+    [snapshotNow],
+  );
+
+  const restoreSnapshot = useCallback((snap: EditorSnapshot) => {
+    setWorking(snap.rig);
+    setWorkingProfile(snap.profile);
+    // Conservative dirty flags: the restored state may differ from the server
+    // copy (e.g. undoing right after a save), so both domains stay saveable.
+    setDirty(true);
+    setProfileDirty(snap.profile !== null);
+    setPlaying(false);
     setHistoryVersion((v) => v + 1);
   }, []);
 
   const undo = useCallback(() => {
-    const current = workingRef.current;
     const prev = undoRef.current.pop();
-    if (!current || !prev) return;
-    redoRef.current.push(cloneRigConfig(current));
-    setWorking(prev);
-    setDirty(true);
-    setPlaying(false);
-    setHistoryVersion((v) => v + 1);
-  }, []);
+    const current = snapshotNow();
+    if (!prev || !current) return;
+    redoRef.current.push(current);
+    restoreSnapshot(prev);
+  }, [snapshotNow, restoreSnapshot]);
 
   const redo = useCallback(() => {
-    const current = workingRef.current;
     const next = redoRef.current.pop();
-    if (!current || !next) return;
-    undoRef.current.push(cloneRigConfig(current));
-    setWorking(next);
-    setDirty(true);
-    setPlaying(false);
-    setHistoryVersion((v) => v + 1);
-  }, []);
+    const current = snapshotNow();
+    if (!next || !current) return;
+    undoRef.current.push(current);
+    restoreSnapshot(next);
+  }, [snapshotNow, restoreSnapshot]);
 
   // ---------------------------------------------------------------- mutation
   /** All rig mutations go through here (dirty + pause + optional undo). */
@@ -291,7 +479,7 @@ export function RigControllerPage() {
   const mutateFrame = useCallback(
     (fn: (frame: RigFrameConfig) => void, opts: { undo?: 'push' | 'coalesce' | 'skip' } = {}) => {
       mutateRig((rig) => {
-        const anim = (rig.animationConfigs[animId] ??= { combat: defaultRigCombat(), directions: {} });
+        const anim = (rig.animationConfigs[animId] ??= { directions: {} });
         const dir = (anim.directions[dirId] ??= { frames: {} });
         const key = String(localFrame);
         const f = (dir.frames[key] ??= emptyRigFrame());
@@ -300,6 +488,41 @@ export function RigControllerPage() {
       }, opts);
     },
     [mutateRig, animId, dirId, localFrame],
+  );
+
+  /** All weapon-profile mutations go through here (dirty + pause + undo). */
+  const mutateProfile = useCallback(
+    (fn: (p: WeaponHitboxProfile) => void, opts: { undo?: 'push' | 'coalesce' | 'skip' } = {}) => {
+      if (!workingProfileRef.current) return;
+      const mode = opts.undo ?? 'push';
+      if (mode !== 'skip') pushUndo(mode === 'coalesce');
+      setWorkingProfile((prev) => {
+        if (!prev) return prev;
+        const next = cloneWeaponProfile(prev);
+        fn(next);
+        return next;
+      });
+      setProfileDirty(true);
+      setPlaying(false);
+    },
+    [pushUndo],
+  );
+
+  /** Mutates the profile frame at the current direction/localFrame (prunes empties). */
+  const mutateProfileFrame = useCallback(
+    (fn: (frame: WeaponHitboxFrameConfig) => void, opts: { undo?: 'push' | 'coalesce' | 'skip' } = {}) => {
+      mutateProfile((p) => {
+        const dir = (p.directions[dirId] ??= { frames: {} });
+        const key = String(localFrame);
+        const f = (dir.frames[key] ??= emptyWeaponFrame());
+        fn(f);
+        if (!f.hitbox.enabled && f.hitbox.rectangles.length === 0) {
+          delete dir.frames[key];
+          if (Object.keys(dir.frames).length === 0) delete p.directions[dirId];
+        }
+      }, opts);
+    },
+    [mutateProfile, dirId, localFrame],
   );
 
   // Canvas callbacks
@@ -338,73 +561,132 @@ export function RigControllerPage() {
 
   const handleRectChange = useCallback(
     (kind: BoxKind, index: number, rect: LocalRectangle) => {
+      if (kind === 'hitbox') {
+        if (!profileMatchesAnim) return; // hitboxes live on the weapon profile
+        mutateProfileFrame(
+          (f) => {
+            if (f.hitbox.rectangles[index]) f.hitbox.rectangles[index] = rect;
+          },
+          { undo: 'skip' }, // snapshot taken at interaction start
+        );
+        return;
+      }
       mutateFrame(
         (f) => {
-          if (f[kind].rectangles[index]) f[kind].rectangles[index] = rect;
+          if (f.hurtbox.rectangles[index]) f.hurtbox.rectangles[index] = rect;
         },
         { undo: 'skip' }, // snapshot taken at interaction start
       );
     },
-    [mutateFrame],
+    [mutateFrame, mutateProfileFrame, profileMatchesAnim],
   );
 
   const handleRectAdd = useCallback(
     (kind: BoxKind, rect: LocalRectangle) => {
-      mutateFrame(
-        (f) => {
-          const id = nextRectId(kind, f[kind]);
-          f[kind].rectangles.push({ ...rect, id });
-          f[kind].enabled = true;
-          setSelection({ kind, index: f[kind].rectangles.length - 1 });
-        },
-        { undo: 'skip' }, // snapshot taken at draw start
-      );
+      if (kind === 'hitbox') {
+        if (!profileMatchesAnim) return; // tool is disabled without a matching profile
+        mutateProfileFrame(
+          (f) => {
+            const id = nextRectId('hitbox', f.hitbox);
+            f.hitbox.rectangles.push({ ...rect, id });
+            f.hitbox.enabled = true;
+            setSelection({ kind: 'hitbox', index: f.hitbox.rectangles.length - 1 });
+          },
+          { undo: 'skip' }, // snapshot taken at draw start
+        );
+      } else {
+        mutateFrame(
+          (f) => {
+            const id = nextRectId('hurtbox', f.hurtbox);
+            f.hurtbox.rectangles.push({ ...rect, id });
+            f.hurtbox.enabled = true;
+            setSelection({ kind: 'hurtbox', index: f.hurtbox.rectangles.length - 1 });
+          },
+          { undo: 'skip' }, // snapshot taken at draw start
+        );
+      }
       setTool('select');
     },
-    [mutateFrame],
+    [mutateFrame, mutateProfileFrame, profileMatchesAnim],
   );
 
   // Tool actions
   const handleToggleGroup = useCallback(
     (kind: BoxKind, enabled: boolean) => {
+      if (kind === 'hitbox') {
+        if (!profileMatchesAnim) return;
+        mutateProfileFrame((f) => {
+          f.hitbox.enabled = enabled;
+        });
+        return;
+      }
       mutateFrame((f) => {
-        f[kind].enabled = enabled;
+        f.hurtbox.enabled = enabled;
       });
     },
-    [mutateFrame],
+    [mutateFrame, mutateProfileFrame, profileMatchesAnim],
   );
 
   const handleRectEdit = useCallback(
     (kind: BoxKind, index: number, patch: Partial<LocalRectangle>) => {
+      if (kind === 'hitbox') {
+        if (!profileMatchesAnim) return;
+        mutateProfileFrame(
+          (f) => {
+            const r = f.hitbox.rectangles[index];
+            if (r) f.hitbox.rectangles[index] = { ...r, ...patch };
+          },
+          { undo: 'coalesce' },
+        );
+        return;
+      }
       mutateFrame(
         (f) => {
-          const r = f[kind].rectangles[index];
-          if (r) f[kind].rectangles[index] = { ...r, ...patch };
+          const r = f.hurtbox.rectangles[index];
+          if (r) f.hurtbox.rectangles[index] = { ...r, ...patch };
         },
         { undo: 'coalesce' },
       );
     },
-    [mutateFrame],
+    [mutateFrame, mutateProfileFrame, profileMatchesAnim],
   );
 
   const handleDuplicate = useCallback(() => {
     if (!selection) return;
+    if (selection.kind === 'hitbox') {
+      if (!profileMatchesAnim) return;
+      mutateProfileFrame((f) => {
+        const src = f.hitbox.rectangles[selection.index];
+        if (!src) return;
+        const id = nextRectId('hitbox', f.hitbox);
+        f.hitbox.rectangles.push({ ...src, id, x: src.x + 4, y: src.y + 4 });
+        setSelection({ kind: 'hitbox', index: f.hitbox.rectangles.length - 1 });
+      });
+      return;
+    }
     mutateFrame((f) => {
-      const src = f[selection.kind].rectangles[selection.index];
+      const src = f.hurtbox.rectangles[selection.index];
       if (!src) return;
-      const id = nextRectId(selection.kind, f[selection.kind]);
-      f[selection.kind].rectangles.push({ ...src, id, x: src.x + 4, y: src.y + 4 });
-      setSelection({ kind: selection.kind, index: f[selection.kind].rectangles.length - 1 });
+      const id = nextRectId('hurtbox', f.hurtbox);
+      f.hurtbox.rectangles.push({ ...src, id, x: src.x + 4, y: src.y + 4 });
+      setSelection({ kind: 'hurtbox', index: f.hurtbox.rectangles.length - 1 });
     });
-  }, [mutateFrame, selection]);
+  }, [mutateFrame, mutateProfileFrame, profileMatchesAnim, selection]);
 
   const handleDelete = useCallback(() => {
     if (!selection) return;
-    mutateFrame((f) => {
-      f[selection.kind].rectangles.splice(selection.index, 1);
-    });
+    if (selection.kind === 'hitbox') {
+      if (!profileMatchesAnim) return;
+      mutateProfileFrame((f) => {
+        f.hitbox.rectangles.splice(selection.index, 1);
+      });
+    } else {
+      mutateFrame((f) => {
+        f.hurtbox.rectangles.splice(selection.index, 1);
+      });
+    }
     setSelection(null);
-  }, [mutateFrame, selection]);
+  }, [mutateFrame, mutateProfileFrame, profileMatchesAnim, selection]);
 
   const handleCopyFrom = useCallback(
     (offset: -1 | 1) => {
@@ -414,32 +696,49 @@ export function RigControllerPage() {
       const src = getRigFrameConfig(working, animId, dirId, srcIdx);
       mutateFrame((f) => {
         f.hurtbox = JSON.parse(JSON.stringify(src.hurtbox));
-        f.hitbox = JSON.parse(JSON.stringify(src.hitbox));
       });
+      if (profileMatchesAnim && workingProfile) {
+        const psrc = getWeaponProfileFrame(workingProfile, dirId, srcIdx);
+        mutateProfileFrame(
+          (f) => {
+            f.hitbox = JSON.parse(JSON.stringify(psrc.hitbox));
+          },
+          { undo: 'skip' }, // the rig mutation above snapshotted both domains
+        );
+      }
       setSelection(null);
     },
-    [working, localFrame, frameCount, animId, dirId, mutateFrame],
+    [working, localFrame, frameCount, animId, dirId, mutateFrame, profileMatchesAnim, workingProfile, mutateProfileFrame],
   );
 
   const handleCopyFrameBoxes = useCallback(() => {
     if (!working) return;
-    setClipboard(JSON.parse(JSON.stringify(getRigFrameConfig(working, animId, dirId, localFrame))));
-  }, [working, animId, dirId, localFrame]);
+    // Clipboard carries the SYNTHESIZED frame: rig hurtbox + profile hitbox.
+    setClipboard(JSON.parse(JSON.stringify(frame)));
+  }, [working, frame]);
 
   const handlePasteFrameBoxes = useCallback(() => {
     if (!clipboard) return;
     mutateFrame((f) => {
       f.hurtbox = JSON.parse(JSON.stringify(clipboard.hurtbox));
-      f.hitbox = JSON.parse(JSON.stringify(clipboard.hitbox));
     });
+    // The hitbox side only lands where it is editable (profile animation).
+    if (profileMatchesAnim) {
+      mutateProfileFrame(
+        (f) => {
+          f.hitbox = JSON.parse(JSON.stringify(clipboard.hitbox));
+        },
+        { undo: 'skip' },
+      );
+    }
     setSelection(null);
-  }, [clipboard, mutateFrame]);
+  }, [clipboard, mutateFrame, mutateProfileFrame, profileMatchesAnim]);
 
   const handleCopyHurtboxToDirection = useCallback(() => {
     if (!working) return;
     const src = getRigFrameConfig(working, animId, dirId, localFrame);
     mutateRig((rig) => {
-      const anim = (rig.animationConfigs[animId] ??= { combat: defaultRigCombat(), directions: {} });
+      const anim = (rig.animationConfigs[animId] ??= { directions: {} });
       const dir = (anim.directions[dirId] ??= { frames: {} });
       for (let i = 0; i < frameCount; i++) {
         const key = String(i);
@@ -454,7 +753,7 @@ export function RigControllerPage() {
     if (!working) return;
     const src = getRigFrameConfig(working, animId, dirId, localFrame);
     mutateRig((rig) => {
-      const anim = (rig.animationConfigs[animId] ??= { combat: defaultRigCombat(), directions: {} });
+      const anim = (rig.animationConfigs[animId] ??= { directions: {} });
       for (const d of RIG_DIRECTION_NAMES) {
         if (!(d in rig.directions)) continue;
         const dir = (anim.directions[d] ??= { frames: {} });
@@ -466,33 +765,56 @@ export function RigControllerPage() {
     });
   }, [working, animId, dirId, localFrame, mutateRig]);
 
+  /** Mirrors the PROFILE hitboxes of this direction onto the opposite one. */
   const handleMirrorHitboxToOpposite = useCallback(() => {
-    if (!working || !mirrorTarget) return;
-    mutateRig((rig) => {
-      const anim = (rig.animationConfigs[animId] ??= { combat: defaultRigCombat(), directions: {} });
-      const srcDir = anim.directions[dirId];
-      const dstDir = (anim.directions[mirrorTarget] ??= { frames: {} });
+    if (!workingProfile || !mirrorTarget || !profileMatchesAnim) return;
+    mutateProfile((p) => {
+      const srcDir = p.directions[dirId];
       if (!srcDir) return;
+      const dstDir = (p.directions[mirrorTarget] ??= { frames: {} });
       for (const [key, srcFrame] of Object.entries(srcDir.frames)) {
-        const mirrored = mirrorRigFrameConfig(srcFrame);
-        const dst = (dstDir.frames[key] ??= emptyRigFrame());
-        dst.hitbox = mirrored.hitbox;
-        if (frameIsEmpty(dst)) delete dstDir.frames[key];
+        const mirrored = mirrorWeaponFrameConfig(srcFrame);
+        if (!mirrored.hitbox.enabled && mirrored.hitbox.rectangles.length === 0) {
+          delete dstDir.frames[key];
+        } else {
+          dstDir.frames[key] = mirrored;
+        }
       }
+      if (Object.keys(dstDir.frames).length === 0) delete p.directions[mirrorTarget];
     });
-  }, [working, mirrorTarget, animId, dirId, mutateRig]);
+  }, [workingProfile, mirrorTarget, profileMatchesAnim, dirId, mutateProfile]);
 
   const handleClearFrame = useCallback(() => {
-    if (!window.confirm(`Limpar TODAS as caixas do frame ${localFrame + 1} (${animId} · ${DIRECTION_LABELS[dirId]})?`)) return;
+    if (
+      !window.confirm(
+        `Limpar TODAS as caixas do frame ${localFrame + 1} (${animId} · ${DIRECTION_LABELS[dirId]})? ` +
+          'Hurtboxes saem do rig; hitboxes saem do perfil de arma selecionado.',
+      )
+    )
+      return;
     mutateFrame((f) => {
       f.hurtbox = { enabled: false, rectangles: [] };
-      f.hitbox = { enabled: false, rectangles: [] };
     });
+    if (profileMatchesAnim) {
+      mutateProfileFrame(
+        (f) => {
+          f.hitbox = { enabled: false, rectangles: [] };
+        },
+        { undo: 'skip' }, // single undo step for the whole action
+      );
+    }
     setSelection(null);
-  }, [mutateFrame, localFrame, animId, dirId]);
+  }, [mutateFrame, mutateProfileFrame, profileMatchesAnim, localFrame, animId, dirId]);
 
   const handleClearAnimation = useCallback(() => {
-    if (!window.confirm(`Limpar TODAS as caixas da animação "${animId}" (todas as direções)? As configurações de dano são mantidas.`)) return;
+    if (
+      !window.confirm(
+        `Limpar TODAS as hurtboxes da animação "${animId}" (todas as direções)? ` +
+          'Isso também remove hitboxes antigas guardadas no rig nessa animação (backup da migração), se existirem. ' +
+          'As hitboxes do perfil de arma NÃO são afetadas.',
+      )
+    )
+      return;
     mutateRig((rig) => {
       const anim = rig.animationConfigs[animId];
       if (anim) anim.directions = {};
@@ -513,30 +835,71 @@ export function RigControllerPage() {
   const handleSave = useCallback(async () => {
     const current = workingRef.current;
     if (!current || saving) return;
+    const profileToSave = profileDirtyRef.current ? workingProfileRef.current : null;
     setSaveError(null);
     setSaveDetails([]);
+
+    // §15: warn before saving a profile shared across families.
+    if (profileToSave) {
+      const usedBy = weaponFamiliesUsingProfile(familiesRef.current, profileToSave.id);
+      if (
+        usedBy.length >= 2 &&
+        !window.confirm(
+          `Este perfil é compartilhado por ${usedBy.length} famílias de arma (${usedBy.join(', ')}). ` +
+            'Alterações afetarão todas. Salvar mesmo assim?',
+        )
+      ) {
+        return;
+      }
+    }
+
     const validated = validateRigConfig(JSON.parse(JSON.stringify(current)));
     if (!validated.ok) {
-      setSaveError('Config inválida — nada foi salvo.');
+      setSaveError('Config do rig inválida — nada foi salvo.');
       setSaveDetails(validated.errors.slice(0, 8));
       return;
     }
+    let validatedProfile: WeaponHitboxProfile | null = null;
+    if (profileToSave) {
+      const vp = validateWeaponHitboxProfile(JSON.parse(JSON.stringify(profileToSave)), validated.config);
+      if (!vp.ok) {
+        setSaveError('Perfil de arma inválido — nada foi salvo.');
+        setSaveDetails(vp.errors.slice(0, 8));
+        return;
+      }
+      validatedProfile = vp.config;
+    }
+
     setSaving(true);
     try {
-      await rigApi.save(validated.config);
-      setDirty(false);
+      if (dirtyRef.current) {
+        await rigApi.save(validated.config);
+        setDirty(false);
+        setUpdatedAt((prev) => ({ ...prev, [validated.config.rigId]: new Date().toISOString() }));
+        setRigs((prev) => prev.map((r) => (r.rigId === validated.config.rigId ? validated.config : r)));
+        setTableMissing(false);
+      }
+      if (validatedProfile) {
+        const saved = validatedProfile;
+        await weaponApi.profiles.save(saved);
+        setProfileDirty(false);
+        setProfiles((prev) => prev.map((p) => (p.id === saved.id ? saved : p)));
+      }
       setSavedFlash(true);
       setTimeout(() => setSavedFlash(false), 2000);
-      setUpdatedAt((prev) => ({ ...prev, [validated.config.rigId]: new Date().toISOString() }));
-      setRigs((prev) => prev.map((r) => (r.rigId === validated.config.rigId ? validated.config : r)));
-      setTableMissing(false);
     } catch (e) {
       if (e instanceof RigApiError) {
         setSaveError(e.message);
         setSaveDetails(e.details ?? []);
         if (e.tableMissing) {
-          setTableMissing(true);
-          setTableSql(e.tableSql ?? tableSql);
+          // Which table is missing depends on which call failed; show both hints.
+          if (dirtyRef.current) {
+            setTableMissing(true);
+            setTableSql(e.tableSql ?? tableSql);
+          } else {
+            setWeaponTablesMissing(true);
+            setWeaponTableSql(e.tableSql ?? null);
+          }
         }
       } else {
         setSaveError(e instanceof Error ? e.message : String(e));
@@ -548,11 +911,13 @@ export function RigControllerPage() {
 
   const switchRig = useCallback(
     (rigId: string) => {
-      if (dirty && !window.confirm('Há alterações não salvas. Descartar e trocar de rig?')) return;
+      if ((dirty || profileDirty) && !window.confirm('Há alterações não salvas. Descartar e trocar de rig?')) return;
       const target = rigs.find((r) => r.rigId === rigId);
       if (!target) return;
       setWorking(cloneRigConfig(target));
       setDirty(false);
+      setWorkingProfile(null); // auto-resolve re-selects for this rig
+      setProfileDirty(false);
       undoRef.current = [];
       redoRef.current = [];
       setHistoryVersion((v) => v + 1);
@@ -563,18 +928,21 @@ export function RigControllerPage() {
       const firstAnim = Object.keys(target.animations)[0] ?? 'stand';
       setAnimId((prev) => (prev in target.animations ? prev : firstAnim));
     },
-    [dirty, rigs],
+    [dirty, profileDirty, rigs],
   );
 
   const handleReload = useCallback(async () => {
     const current = workingRef.current;
     if (!current) return;
-    if (dirty && !window.confirm('Recarregar do servidor e descartar as alterações não salvas?')) return;
+    if ((dirty || profileDirty) && !window.confirm('Recarregar do servidor e descartar as alterações não salvas?')) return;
     try {
       const res = await rigApi.get(current.rigId);
       setWorking(res.rig);
       setRigs((prev) => prev.map((r) => (r.rigId === res.rig.rigId ? res.rig : r)));
       setDirty(false);
+      setWorkingProfile(null); // auto-resolve re-selects
+      setProfileDirty(false);
+      void loadWeaponData();
       undoRef.current = [];
       redoRef.current = [];
       setHistoryVersion((v) => v + 1);
@@ -584,7 +952,7 @@ export function RigControllerPage() {
     } catch (e) {
       setSaveError(e instanceof Error ? e.message : String(e));
     }
-  }, [dirty]);
+  }, [dirty, profileDirty, loadWeaponData]);
 
   const openCrud = useCallback(
     (mode: 'new' | 'duplicate' | 'rename') => {
@@ -675,6 +1043,333 @@ export function RigControllerPage() {
     }
   }, [loadList]);
 
+  // ------------------------------------------------ weapon profile handlers
+  const handleWeaponChange = useCallback((w: PreviewWeapon | null) => {
+    setPreviewWeapon((prev) => (prev?.assetId === w?.assetId ? prev : w));
+  }, []);
+
+  const applyWeaponApiError = useCallback((e: unknown) => {
+    if (e instanceof RigApiError) {
+      setWeaponError(e.message);
+      if (e.tableMissing) {
+        setWeaponTablesMissing(true);
+        setWeaponTableSql(e.tableSql ?? null);
+      }
+    } else {
+      setWeaponError(e instanceof Error ? e.message : String(e));
+    }
+  }, []);
+
+  /** Associates (or dissociates, profileId=null) a family — saved IMMEDIATELY. */
+  const handleAssociateFamily = useCallback(
+    async (familyId: string, profileId: string | null) => {
+      setWeaponBusy(true);
+      setWeaponError(null);
+      try {
+        const existing = familiesRef.current[familyId];
+        const config: WeaponFamilyConfig = {
+          familyId,
+          ...(existing?.displayName ? { displayName: existing.displayName } : {}),
+          weaponHitboxProfileId: profileId,
+        };
+        await weaponApi.families.save(config);
+        setFamilies((prev) => ({ ...prev, [familyId]: config }));
+      } catch (e) {
+        applyWeaponApiError(e);
+      } finally {
+        setWeaponBusy(false);
+      }
+    },
+    [applyWeaponApiError],
+  );
+
+  const handleCreateProfile = useCallback(
+    async (opts: { id: string; displayName: string; animationId: string; duplicate: boolean }) => {
+      const rig = workingRef.current;
+      if (!rig) return;
+      if (
+        profileDirtyRef.current &&
+        !window.confirm('O perfil atual tem alterações não salvas. Descartar e criar outro perfil?')
+      ) {
+        return;
+      }
+      setWeaponBusy(true);
+      setWeaponError(null);
+      try {
+        const source = workingProfileRef.current;
+        const base: WeaponHitboxProfile =
+          opts.duplicate && source
+            ? { ...cloneWeaponProfile(source), id: opts.id, displayName: opts.displayName }
+            : newWeaponProfileTemplate(opts.id, opts.displayName, rig.rigId, opts.animationId);
+        const vp = validateWeaponHitboxProfile(JSON.parse(JSON.stringify(base)), rig);
+        if (!vp.ok) {
+          setWeaponError(vp.errors[0] ?? 'Perfil inválido.');
+          return;
+        }
+        const res = await weaponApi.profiles.create(vp.config);
+        setProfiles((prev) => [...prev, res.profile].sort((a, b) => a.id.localeCompare(b.id)));
+        setWorkingProfile(cloneWeaponProfile(res.profile));
+        setProfileDirty(false);
+      } catch (e) {
+        applyWeaponApiError(e);
+      } finally {
+        setWeaponBusy(false);
+      }
+    },
+    [applyWeaponApiError],
+  );
+
+  /** Delete with §28 in-use handling (409 → offer dissociate-all). */
+  const handleDeleteProfile = useCallback(async () => {
+    const profile = workingProfileRef.current;
+    if (!profile) return;
+    if (!window.confirm(`Excluir o perfil "${profile.displayName}" (${profile.id})? Esta ação não pode ser desfeita.`)) {
+      return;
+    }
+    setWeaponBusy(true);
+    setWeaponError(null);
+    const clearLocal = () => {
+      setProfiles((prev) => prev.filter((p) => p.id !== profile.id));
+      setWorkingProfile(null);
+      setProfileDirty(false);
+      if (workingRef.current?.defaultWeaponHitboxProfileId === profile.id) {
+        mutateRig((r) => {
+          r.defaultWeaponHitboxProfileId = null;
+        });
+      }
+    };
+    try {
+      await weaponApi.profiles.remove(profile.id);
+      clearLocal();
+    } catch (e) {
+      if (e instanceof RigApiError && e.status === 409) {
+        const inUseBy = e.details ?? [];
+        const ok = window.confirm(
+          `O perfil "${profile.id}" está em uso pelas famílias: ${inUseBy.join(', ')}.\n\n` +
+            'OK → desassociar TODAS essas famílias (ficam sem perfil próprio) e excluir o perfil.\n' +
+            'Cancelar → manter tudo como está.\n\n' +
+            '(Para substituir por outro perfil, associe as famílias ao outro perfil antes de excluir; ' +
+            'para preservar uma cópia, use "Duplicar" antes.)',
+        );
+        if (ok) {
+          try {
+            const res = await weaponApi.profiles.remove(profile.id, 'dissociate');
+            setFamilies((prev) => {
+              const next = { ...prev };
+              for (const fid of res.dissociated ?? []) {
+                if (next[fid]) next[fid] = { ...next[fid], weaponHitboxProfileId: null };
+              }
+              return next;
+            });
+            clearLocal();
+          } catch (e2) {
+            applyWeaponApiError(e2);
+          }
+        }
+      } else {
+        applyWeaponApiError(e);
+      }
+    } finally {
+      setWeaponBusy(false);
+    }
+  }, [mutateRig, applyWeaponApiError]);
+
+  /** Changing the profile's animation prunes frames beyond the new frame count. */
+  const handleChangeProfileAnimation = useCallback(
+    (animationId: string) => {
+      const rig = workingRef.current;
+      const profile = workingProfileRef.current;
+      if (!rig || !profile || profile.animationId === animationId) return;
+      const newCount = rig.animations[animationId]?.length ?? 0;
+      let outOfRange = 0;
+      for (const dir of Object.values(profile.directions)) {
+        for (const key of Object.keys(dir.frames)) {
+          if (parseInt(key, 10) >= newCount) outOfRange++;
+        }
+      }
+      if (
+        outOfRange > 0 &&
+        !window.confirm(
+          `A animação "${animationId}" tem ${newCount} frame(s); ${outOfRange} frame(s) configurados no perfil ` +
+            'ficam fora do intervalo e serão removidos. Continuar?',
+        )
+      ) {
+        return;
+      }
+      mutateProfile((p) => {
+        p.animationId = animationId;
+        for (const d of Object.keys(p.directions) as RigDirection[]) {
+          const dir = p.directions[d];
+          if (!dir) continue;
+          for (const key of Object.keys(dir.frames)) {
+            if (parseInt(key, 10) >= newCount) delete dir.frames[key];
+          }
+          if (Object.keys(dir.frames).length === 0) delete p.directions[d];
+        }
+      });
+    },
+    [mutateProfile],
+  );
+
+  const handleSetRigDefaultProfile = useCallback(
+    (profileId: string | null) => {
+      mutateRig((r) => {
+        r.defaultWeaponHitboxProfileId = profileId;
+      });
+    },
+    [mutateRig],
+  );
+
+  const handleGoToProfileAnimation = useCallback(() => {
+    const p = workingProfileRef.current;
+    if (!p) return;
+    setPlaying(false);
+    setAnimId(p.animationId);
+    setLocalFrame(0);
+    setSelection(null);
+  }, []);
+
+  // ------------------------------------------------------------- migration §17
+  const legacyAnims = useMemo(
+    () =>
+      working
+        ? rigAnimationsWithLegacyHitboxes(working).filter((a) => !working.animationConfigs[a]?.hitboxesMigratedTo)
+        : [],
+    [working],
+  );
+  const migratedBackupAnims = useMemo(
+    () =>
+      working
+        ? rigAnimationsWithLegacyHitboxes(working).filter((a) => working.animationConfigs[a]?.hitboxesMigratedTo)
+        : [],
+    [working],
+  );
+
+  const handleMigrate = useCallback(async () => {
+    const rig = workingRef.current;
+    if (!rig || migrating) return;
+    if (dirtyRef.current || profileDirtyRef.current) {
+      setWeaponError('Salve as alterações pendentes antes de migrar as hitboxes antigas.');
+      return;
+    }
+    // Duas passadas: primeiro os ids determinísticos DESEJADOS; um perfil
+    // existente com exatamente esse id E mesmo rigId+animationId é órfão de
+    // uma migração interrompida (perfis criados, marcador não salvo) —
+    // reaproveite-o em vez de criar uma duplicata com sufixo.
+    const probe = buildWeaponMigration(rig, []);
+    const reusable = new Set<string>();
+    for (const [anim, pid] of Object.entries(probe.animationProfileIds)) {
+      const existing = profilesRef.current.find((p) => p.id === pid);
+      if (existing && existing.rigId === rig.rigId && existing.animationId === anim) reusable.add(pid);
+    }
+    const result = buildWeaponMigration(
+      rig,
+      profilesRef.current.map((p) => p.id).filter((id) => !reusable.has(id)),
+    );
+    if (!result.ok) {
+      setWeaponError(`Migração abortada: ${result.errors.join(' · ')}`);
+      return;
+    }
+    if (result.profiles.length === 0) {
+      setWeaponError('Nenhuma hitbox no formato antigo para migrar neste rig.');
+      return;
+    }
+    if (
+      !window.confirm(
+        `Migrar as hitboxes antigas de ${result.profiles.length} animação(ões) para WeaponHitboxProfile(s)?\n` +
+          `Retângulos a copiar: ${result.rectanglesCopied}/${result.rectanglesFound}.\n` +
+          'Os dados antigos permanecem no rig como backup até você limpá-los explicitamente. ' +
+          'Nenhuma família será associada automaticamente.',
+      )
+    ) {
+      return;
+    }
+    setMigrating(true);
+    setWeaponError(null);
+    setMigrationMsg(null);
+    const created: WeaponHitboxProfile[] = [];
+    let failure: string | null = null;
+    for (const p of result.profiles) {
+      try {
+        const res = reusable.has(p.id)
+          ? await weaponApi.profiles.save(p) // órfão de migração interrompida — sobrescreve
+          : await weaponApi.profiles.create(p);
+        created.push(res.profile);
+      } catch (e) {
+        if (e instanceof RigApiError && e.tableMissing) {
+          setWeaponTablesMissing(true);
+          setWeaponTableSql(e.tableSql ?? null);
+        }
+        failure = e instanceof Error ? e.message : String(e);
+        break;
+      }
+    }
+    if (created.length > 0) {
+      setProfiles((prev) => {
+        const ids = new Set(created.map((p) => p.id));
+        return [...prev.filter((p) => !ids.has(p.id)), ...created].sort((a, b) => a.id.localeCompare(b.id));
+      });
+      // Mark ONLY the animations whose profile was actually created.
+      const nextRig = cloneRigConfig(rig);
+      for (const [anim, pid] of Object.entries(result.animationProfileIds)) {
+        if (!created.some((p) => p.id === pid)) continue;
+        const cfg = nextRig.animationConfigs[anim];
+        if (cfg) cfg.hitboxesMigratedTo = pid;
+      }
+      try {
+        await rigApi.save(nextRig);
+        setWorking(nextRig);
+        setRigs((prev) => prev.map((r2) => (r2.rigId === nextRig.rigId ? nextRig : r2)));
+        setUpdatedAt((prev) => ({ ...prev, [nextRig.rigId]: new Date().toISOString() }));
+      } catch (e) {
+        failure = `perfis criados, mas falha ao salvar os marcadores no rig: ${
+          e instanceof Error ? e.message : String(e)
+        } — repita a migração: os perfis já criados serão reaproveitados (sem duplicar).`;
+      }
+    }
+    if (failure) {
+      setWeaponError(`Migração incompleta: ${failure}`);
+    } else {
+      setMigrationMsg(
+        'As Hitboxes globais antigas foram migradas para um WeaponHitboxProfile. ' +
+          'Associe as famílias desejadas ao perfil migrado. ' +
+          `(perfis criados: ${created.map((p) => p.id).join(', ')} · retângulos copiados: ` +
+          `${result.rectanglesCopied}/${result.rectanglesFound})`,
+      );
+    }
+    setMigrating(false);
+  }, [migrating]);
+
+  /** §17: remove the legacy backup — only after explicit confirmation. */
+  const handleCleanLegacy = useCallback(() => {
+    const rig = workingRef.current;
+    if (!rig) return;
+    const anims = rigAnimationsWithLegacyHitboxes(rig).filter((a) => rig.animationConfigs[a]?.hitboxesMigratedTo);
+    if (anims.length === 0) return;
+    if (
+      !window.confirm(
+        `Remover DEFINITIVAMENTE as hitboxes antigas (backup) das animações: ${anims.join(', ')}?\n` +
+          'Os WeaponHitboxProfiles migrados NÃO são afetados. ' +
+          'A remoção só é persistida quando você clicar em Salvar (Ctrl+Z desfaz antes disso).',
+      )
+    ) {
+      return;
+    }
+    mutateRig((r) => {
+      for (const anim of anims) {
+        const cfg = r.animationConfigs[anim];
+        if (!cfg) continue;
+        for (const dir of Object.values(cfg.directions)) {
+          for (const key of Object.keys(dir.frames)) {
+            const f = dir.frames[key];
+            f.hitbox = { enabled: false, rectangles: [] };
+            if (frameIsEmpty(f)) delete dir.frames[key];
+          }
+        }
+      }
+    });
+  }, [mutateRig]);
+
   // ---------------------------------------------------------------- playback
   useEffect(() => {
     if (!playing || frameCount <= 1) return;
@@ -738,16 +1433,18 @@ export function RigControllerPage() {
     const delta = move[e.key];
     if (delta) {
       e.preventDefault();
-      mutateFrame(
-        (f) => {
-          const r = f[selection.kind].rectangles[selection.index];
-          if (r) {
-            r.x += delta[0];
-            r.y += delta[1];
-          }
-        },
-        { undo: 'coalesce' },
-      );
+      const nudge = (r: LocalRectangle | undefined) => {
+        if (r) {
+          r.x += delta[0];
+          r.y += delta[1];
+        }
+      };
+      if (selection.kind === 'hitbox') {
+        if (!profileMatchesAnim) return;
+        mutateProfileFrame((f) => nudge(f.hitbox.rectangles[selection.index]), { undo: 'coalesce' });
+      } else {
+        mutateFrame((f) => nudge(f.hurtbox.rectangles[selection.index]), { undo: 'coalesce' });
+      }
     }
   };
   useEffect(() => {
@@ -758,14 +1455,14 @@ export function RigControllerPage() {
 
   // beforeunload guard
   useEffect(() => {
-    if (!dirty) return;
+    if (!dirty && !profileDirty) return;
     const h = (e: BeforeUnloadEvent) => {
       e.preventDefault();
       e.returnValue = '';
     };
     window.addEventListener('beforeunload', h);
     return () => window.removeEventListener('beforeunload', h);
-  }, [dirty]);
+  }, [dirty, profileDirty]);
 
   const handleSheetChange = useCallback((canvas: HTMLCanvasElement | null) => {
     setSheet(canvas);
@@ -795,12 +1492,12 @@ export function RigControllerPage() {
             </span>
           </h1>
           <div className="flex-1" />
-          {dirty && (
+          {(dirty || profileDirty) && (
             <span className="text-[11px] px-2 py-0.5 rounded bg-amber-900/50 border border-amber-700 text-amber-300">
-              alterações não salvas
+              alterações não salvas{profileDirty && !dirty ? ' (perfil de arma)' : ''}
             </span>
           )}
-          {savedFlash && !dirty && (
+          {savedFlash && !dirty && !profileDirty && (
             <span className="text-[11px] px-2 py-0.5 rounded bg-emerald-900/50 border border-emerald-700 text-emerald-300 inline-flex items-center gap-1">
               <Check size={11} /> salvo
             </span>
@@ -849,7 +1546,7 @@ export function RigControllerPage() {
           <button
             type="button"
             onClick={handleSave}
-            disabled={!working || saving || !dirty}
+            disabled={!working || saving || (!dirty && !profileDirty)}
             className={`${btn} border-sky-600 bg-sky-700/60 text-white hover:bg-sky-600/60`}
           >
             {saving ? <Loader2 size={13} className="animate-spin" /> : <Save size={13} />}
@@ -909,6 +1606,69 @@ export function RigControllerPage() {
             </button>
           </div>
         )}
+        {weaponTablesMissing && (
+          <div className="mt-3 border border-amber-800 bg-amber-950/40 rounded-lg p-3">
+            <div className="flex items-center gap-2 text-amber-300 text-sm font-semibold">
+              <TriangleAlert size={15} /> Tabelas de armas não existem no Supabase — perfis e associações vão falhar
+            </div>
+            <p className="text-xs text-amber-200/70 mt-1">
+              Rode este SQL no Supabase (SQL Editor) e clique em "Verificar novamente". RLS fica habilitado sem
+              policies: apenas o servidor (service role) acessa as tabelas.
+            </p>
+            <pre className="mt-2 text-[10px] bg-slate-950 border border-slate-800 rounded p-2 overflow-x-auto text-slate-300 whitespace-pre-wrap">
+              {weaponTableSql ?? '—'}
+            </pre>
+            <button type="button" onClick={() => void loadWeaponData()} className={`${neutralBtn} mt-2`}>
+              <RefreshCw size={12} /> Verificar novamente
+            </button>
+          </div>
+        )}
+        {working && legacyAnims.length > 0 && (
+          <div className="mt-3 border border-amber-800 bg-amber-950/40 rounded-lg p-3">
+            <div className="flex items-center gap-2 text-amber-300 text-sm font-semibold">
+              <TriangleAlert size={15} /> Hitboxes no formato antigo detectadas: {legacyAnims.join(', ')}
+            </div>
+            <p className="text-xs text-amber-200/70 mt-1">
+              Este rig ainda guarda hitboxes globais por animação (formato antigo, não usadas pelo jogo após esta
+              atualização). Migre-as para WeaponHitboxProfiles — os dados antigos ficam no rig como backup até você
+              limpá-los explicitamente, e nenhuma família é associada automaticamente.
+            </p>
+            <button
+              type="button"
+              onClick={() => void handleMigrate()}
+              className={`${btn} border-amber-700 bg-amber-800/40 text-amber-200 hover:bg-amber-700/40 mt-2`}
+              disabled={migrating || weaponTablesMissing}
+            >
+              {migrating ? <Loader2 size={13} className="animate-spin" /> : <TriangleAlert size={13} />}
+              {migrating ? 'Migrando…' : 'Migrar hitboxes antigas'}
+            </button>
+          </div>
+        )}
+        {working && migratedBackupAnims.length > 0 && (
+          <div className="mt-3 border border-slate-700 bg-slate-900/60 rounded-lg p-3">
+            <div className="text-xs text-slate-300">
+              Backup da migração presente nas animações: <span className="font-mono">{migratedBackupAnims.join(', ')}</span>.
+              Esses dados antigos não são usados pelo jogo; quando tiver certeza, remova-os (a remoção só é
+              persistida ao Salvar).
+            </div>
+            <button type="button" onClick={handleCleanLegacy} className={`${neutralBtn} mt-2`}>
+              <Trash2 size={12} /> Limpar dados antigos (backup)
+            </button>
+          </div>
+        )}
+        {migrationMsg && (
+          <div className="mt-3 border border-emerald-800 bg-emerald-950/40 rounded-lg p-3 text-xs text-emerald-200 flex items-start gap-2">
+            <Check size={14} className="mt-0.5 shrink-0" />
+            <div className="flex-1">{migrationMsg}</div>
+            <button
+              type="button"
+              onClick={() => setMigrationMsg(null)}
+              className="text-emerald-400 hover:text-white text-[11px] shrink-0"
+            >
+              fechar
+            </button>
+          </div>
+        )}
         {invalidIds.length > 0 && (
           <div className="mt-3 border border-red-900 bg-red-950/40 rounded-lg p-2.5 text-xs text-red-300">
             Rigs com JSON inválido no banco (ignorados): {invalidIds.join(', ')}
@@ -945,13 +1705,35 @@ export function RigControllerPage() {
           )
         ) : (
           <div className="mt-4 grid grid-cols-1 xl:grid-cols-[300px_minmax(0,1fr)_320px] gap-4">
-            {/* Left: appearance */}
+            {/* Left: appearance + weapon profile */}
             <div className="space-y-3 min-w-0">
               <AppearancePanel
                 rigId={working.rigId}
                 recipe={working.previewAppearance}
                 onSaveRecipe={handleSaveRecipe}
                 onSheetChange={handleSheetChange}
+                onWeaponChange={handleWeaponChange}
+              />
+              <WeaponProfilePanel
+                rig={working}
+                profiles={profiles}
+                families={families}
+                catalog={weaponCatalog}
+                workingProfile={workingProfile}
+                profileDirty={profileDirty}
+                previewWeapon={previewWeapon}
+                animId={animId}
+                busy={weaponBusy}
+                weaponTablesMissing={weaponTablesMissing}
+                error={weaponError}
+                onSelectProfile={selectProfile}
+                onCreateProfile={handleCreateProfile}
+                onDeleteProfile={handleDeleteProfile}
+                onMutateProfile={mutateProfile}
+                onChangeProfileAnimation={handleChangeProfileAnimation}
+                onAssociateFamily={handleAssociateFamily}
+                onSetRigDefaultProfile={handleSetRigDefaultProfile}
+                onGoToProfileAnimation={handleGoToProfileAnimation}
               />
             </div>
 
@@ -1067,7 +1849,10 @@ export function RigControllerPage() {
                   {animFrames.map((col, i) => {
                     const fc = getRigFrameConfig(working, animId, dirId, i);
                     const hasHurt = fc.hurtbox.enabled && fc.hurtbox.rectangles.length > 0;
-                    const hasHit = fc.hitbox.enabled && fc.hitbox.rectangles.length > 0;
+                    const pf =
+                      profileMatchesAnim && workingProfile ? getWeaponProfileFrame(workingProfile, dirId, i) : null;
+                    const hasHit = !!pf && pf.hitbox.enabled && pf.hitbox.rectangles.length > 0;
+                    const hasLegacy = fc.hitbox.enabled && fc.hitbox.rectangles.length > 0;
                     return (
                       <button
                         key={i}
@@ -1082,8 +1867,9 @@ export function RigControllerPage() {
                       >
                         {i + 1}
                         <span className="absolute -bottom-0.5 left-1/2 -translate-x-1/2 flex gap-0.5">
-                          {hasHurt && <span className="w-1 h-1 rounded-full bg-emerald-400" />}
-                          {hasHit && <span className="w-1 h-1 rounded-full bg-fuchsia-400" />}
+                          {hasHurt && <span className="w-1 h-1 rounded-full bg-emerald-400" title="hurtbox (rig)" />}
+                          {hasHit && <span className="w-1 h-1 rounded-full bg-fuchsia-400" title="hitbox (perfil de arma)" />}
+                          {hasLegacy && <span className="w-1 h-1 rounded-full bg-amber-400" title="hitbox antiga (backup no rig)" />}
                         </span>
                       </button>
                     );
@@ -1187,56 +1973,7 @@ export function RigControllerPage() {
                 </button>
               </div>
 
-              {/* Combat per animation */}
-              <div className="border border-slate-800 rounded-lg p-3 bg-slate-900/60">
-                <div className="text-[11px] uppercase tracking-wider text-slate-500 font-semibold mb-2">
-                  Combate — animação "{animId}"
-                </div>
-                <label className="flex items-center gap-2 text-xs text-slate-300 cursor-pointer">
-                  <input
-                    type="checkbox"
-                    checked={combat.enabled}
-                    onChange={(e) =>
-                      mutateRig((r) => {
-                        const anim = (r.animationConfigs[animId] ??= { combat: defaultRigCombat(), directions: {} });
-                        anim.combat.enabled = e.target.checked;
-                      })
-                    }
-                    className="accent-fuchsia-500"
-                  />
-                  Animação causa dano
-                </label>
-                <label className="block mt-2">
-                  <span className="text-[10px] text-slate-500 font-mono">damagePerHit</span>
-                  <input
-                    type="number" min={0} max={1000} step={1} value={combat.damagePerHit}
-                    onChange={(e) => {
-                      const v = parseInt(e.target.value, 10);
-                      if (Number.isFinite(v))
-                        mutateRig((r) => {
-                          const anim = (r.animationConfigs[animId] ??= { combat: defaultRigCombat(), directions: {} });
-                          anim.combat.damagePerHit = Math.max(0, Math.min(1000, v));
-                        }, { undo: 'coalesce' });
-                    }}
-                    className={`${fieldCls} w-full`}
-                  />
-                </label>
-                <label className="flex items-center gap-2 mt-2 text-xs text-slate-300 cursor-pointer">
-                  <input
-                    type="checkbox"
-                    checked={combat.singleHitPerTarget}
-                    onChange={(e) =>
-                      mutateRig((r) => {
-                        const anim = (r.animationConfigs[animId] ??= { combat: defaultRigCombat(), directions: {} });
-                        anim.combat.singleHitPerTarget = e.target.checked;
-                      })
-                    }
-                    className="accent-fuchsia-500"
-                  />
-                  Um hit por alvo por ataque
-                </label>
-              </div>
-
+              {/* Combat settings moved to the weapon hitbox profile (left column). */}
               <BoxTools
                 frame={frame}
                 selection={selection}
@@ -1247,6 +1984,8 @@ export function RigControllerPage() {
                 canCopyNext={localFrame < frameCount - 1}
                 canPaste={clipboard !== null}
                 mirrorTarget={mirrorTarget}
+                hitboxEditable={profileMatchesAnim}
+                hitboxHint={hitboxHint}
                 onToolChange={setTool}
                 onSnapChange={setSnap1px}
                 onToggleGroup={handleToggleGroup}
