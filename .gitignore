@@ -48,3 +48,4 @@ Thumbs.db
 .cache/
 .local/
 artifacts/chessworld/public/assets/characters/manifest.json
+artifacts/chessworld/public/character-generator/manifest.json

@@ -1,0 +1,622 @@
+Quero que você implemente um Character Generator de teste no meu projeto, com foco em arquitetura reaproveitável, composição modular de sprites, prévia animada, recolorização de pele em tempo real, preview da spritesheet final completa e download do PNG final gerado.
+
+OBJETIVO
+
+Criar uma página de teste de gerador de personagem que:
+
+Leia os assets da pasta:
+public/character-generator/assets
+Descubra automaticamente todas as categorias e arquivos.
+Permita montar um personagem modular escolhendo peças por categoria.
+Permita escolher variações de cor/variações visuais dos assets (_c1, _c2, etc.).
+Permita escolher o tom de pele em tempo real.
+Monte o personagem em Canvas em tempo real.
+Exiba:
+uma prévia animada do personagem montado;
+uma prévia da spritesheet inteira completa já combinada em um único PNG.
+Tenha botão de Random.
+Tenha botão de Save, mas não salvar no servidor por enquanto:
+ao clicar em Save, deve fazer download do PNG final da spritesheet montada.
+Essa implementação deve ser pensada para ser reaproveitada depois no criador final de personagens dos jogadores.
+REQUISITOS GERAIS
+1) Não implementar ainda o sistema final de criação do jogador
+
+Isso é apenas um gerador de personagem de teste/admin/dev tool.
+
+Não precisa salvar no banco.
+Não precisa integrar com conta de jogador.
+Não precisa persistir configuração no servidor.
+Por enquanto, só precisamos:
+
+gerar;
+visualizar;
+animar;
+baixar o PNG final.
+2) Ferramentas / abordagem
+
+Use uma abordagem profissional e reaproveitável.
+
+Front-end
+
+Use a estrutura atual do projeto e crie uma página dedicada, por exemplo:
+
+/admin/character-generator
+ou outro caminho apropriado dentro do painel/admin/dev area existente.
+Canvas
+
+Use Canvas 2D para:
+
+compor as camadas do personagem;
+aplicar a recolorização de pele em tempo real;
+renderizar a prévia animada;
+renderizar a spritesheet final completa;
+exportar o PNG final.
+Manifest / descoberta de assets
+
+Como os arquivos estão em public/character-generator/assets, crie uma forma robusta de descobrir os assets.
+
+A forma recomendada é:
+
+criar um endpoint backend, por exemplo:
+GET /api/character-generator/manifest
+
+Esse endpoint deve:
+
+ler recursivamente a estrutura dentro de public/character-generator/assets;
+listar as categorias;
+listar os arquivos;
+agrupar base + variações;
+devolver um manifest JSON pronto para a interface consumir.
+ESTRUTURA DOS ASSETS
+Pasta base
+
+Os assets estarão em:
+
+public/character-generator/assets
+Categorias
+
+Todas estas categorias devem ser suportadas:
+
+backextra
+backhair
+bottom
+frontextra
+hair
+hat
+head
+shadow
+top
+weapon
+
+Todas devem aparecer no gerador.
+
+Regra de agrupamento dos arquivos
+
+Os arquivos seguem este padrão:
+
+Exemplo base
+backhair1.png
+Exemplo de variações desse mesmo item
+backhair1_c1.png
+backhair1_c2.png
+backhair1_c3.png
+etc.
+Interpretação correta
+
+Se existir:
+
+backhair1.png
+backhair1_c1.png
+backhair1_c2.png
+
+Então isso significa que existe uma família/base chamada:
+
+backhair1
+
+E ela possui as variantes:
+
+padrão/default = backhair1.png
+variante c1 = backhair1_c1.png
+variante c2 = backhair1_c2.png
+Regra de parsing
+
+Para cada categoria:
+
+Identifique os arquivos .png.
+Agrupe por “base name”.
+Um arquivo sem sufixo _cN é a variante padrão/default.
+Arquivos com sufixo _cN são variantes daquela mesma base.
+Exemplo
+crown1.png
+crown1_c2.png
+crown1_c3.png
+crown1_c4.png
+crown1_c5.png
+
+Interpretação:
+
+família/base = crown1
+variantes disponíveis:
+default
+c2
+c3
+c4
+c5
+Observação importante
+
+Pode existir item sem variação.
+Nesse caso ele deve aparecer normalmente com apenas uma opção.
+
+TAMANHO DA SPRITESHEET E GRID
+
+Todos os PNGs têm tamanho:
+
+largura total: 2208 px
+altura total: 384 px
+
+A sheet é organizada em:
+
+4 linhas
+23 colunas
+
+Portanto, cada célula/frame possui tamanho exato:
+
+frameWidth = 96 px
+frameHeight = 96 px
+DIREÇÕES (LINHAS)
+
+A sheet possui exatamente estas 4 linhas:
+
+linha 0 = South
+linha 1 = West
+linha 2 = East
+linha 3 = North
+
+Essa ordem é fixa e deve ser respeitada em toda a implementação.
+
+MAPEAMENTO DAS ANIMAÇÕES (COLUNAS)
+
+Use exatamente este mapeamento de colunas:
+
+1) Walk
+colunas: 0, 1, 2
+3 frames
+2) Stand
+usar o frame central do Walk
+coluna: 1
+1 frame
+ou seja: Stand = frame do meio do Walk
+3) Arms Up
+colunas: 3, 4, 5
+3 frames
+4) Crouch
+coluna: 6
+1 frame
+5) Jump
+colunas: 7, 8, 9
+3 frames
+6) Wind Up
+coluna: 10
+1 frame
+corresponde ao estado “anticip”
+7) Attack
+colunas: 11, 12, 13
+3 frames
+8) Attack Full
+colunas: 10, 11, 12, 13
+4 frames
+isso é uma animação combinada útil, pois junta Wind Up + Attack
+9) Knock
+coluna: 14
+1 frame
+corresponde ao “nock bow”
+10) Bow
+colunas: 15, 16, 17
+3 frames
+11) Knock And Bow
+colunas: 14, 15, 16, 17
+4 frames
+animação combinada útil
+12) Climb
+colunas: 18, 19, 20
+3 frames
+13) Sleep
+coluna: 21
+1 frame
+14) Dead / KO
+coluna: 22
+1 frame
+Não inventar Dash
+
+Não há sprites de Dash nesse sheet.
+Não implementar Dash agora.
+Se precisar, deixe isso explicitamente fora do escopo.
+
+TONS DE PELE
+
+Implementar um sistema de recolorização de pele em tempo real no Canvas.
+
+Regra
+
+Trocar somente estas 4 cores base:
+
+f4d29c
+dba463
+73172d
+bb7547
+Paletas disponíveis
+Green
+f4d29c -> afe356
+dba463 -> 6cb328
+73172d -> 184e3a
+bb7547 -> 3d8a3e
+Red
+f4d29c -> e96564
+dba463 -> c74934
+73172d -> 4e2218
+bb7547 -> 8f2416
+Tone 1
+f4d29c -> d49149
+dba463 -> b4723c
+73172d -> 561f2d
+bb7547 -> 9d5534
+Tone 2
+f4d29c -> b97e50
+dba463 -> 955123
+73172d -> 481c0e
+bb7547 -> 774128
+Tone 3
+f4d29c -> 986743
+dba463 -> 7b4c2d
+73172d -> 36150c
+bb7547 -> 583322
+Bone
+f4d29c -> e6e1e1
+dba463 -> b6acaa
+73172d -> 51393f
+bb7547 -> 89786c
+Como aplicar
+
+A recolorização deve acontecer no cliente, no Canvas, em tempo real.
+
+Ao trocar o skin tone:
+
+releia o asset original;
+aplique o mapeamento de cor;
+redesenhe o personagem composto.
+Regra prática
+
+Você não precisa “saber” quais categorias têm pele.
+Basta aplicar a troca de cor em todas as camadas selecionadas.
+Somente os pixels que tiverem exatamente as 4 cores-base serão alterados.
+Todo o resto permanece intacto.
+
+ORDEM DE COMPOSIÇÃO DAS CAMADAS
+
+Use esta ordem padrão de desenho das camadas, do fundo para frente:
+
+shadow
+backextra
+backhair
+bottom
+top
+head
+hair
+hat
+weapon
+frontextra
+
+Deixe essa ordem centralizada em uma constante fácil de ajustar no futuro.
+
+INTERFACE DO GERADOR
+
+Quero uma interface clara e funcional, inspirada nos exemplos que enviei, mas adaptada às nossas necessidades.
+
+Layout geral
+
+A página deve ter 3 áreas principais:
+
+A) Painel de seleção das camadas/categorias
+
+Para cada categoria:
+
+nome da categoria;
+seletor do item/família;
+seletor da variante do item selecionado;
+botão/ícone de olho para ocultar/mostrar a camada;
+botões anterior/próximo para navegar rapidamente entre os itens.
+
+Categorias:
+
+backextra
+backhair
+bottom
+frontextra
+hair
+hat
+head
+shadow
+top
+weapon
+Requisito importante: ocultar camada
+
+Cada categoria deve ter um controle tipo “eye toggle”.
+
+Quando desativado:
+
+a camada não deve ser desenhada na prévia;
+a camada não deve ser desenhada na spritesheet final.
+
+Isso serve para testar visualmente a composição.
+
+B) Área central de prévia animada
+
+No centro da UI, deve existir uma prévia ampliada do personagem montado.
+
+Essa área deve:
+
+mostrar o personagem composto;
+tocar a animação escolhida;
+permitir escolher a direção:
+South
+West
+East
+North
+permitir escolher a animação.
+
+A prévia deve ser ampliada com nearest-neighbor / image-rendering: pixelated.
+
+C) Área de controles globais
+
+Adicionar:
+
+seletor de skin tone;
+seletor de animação;
+seletor de direção;
+botão Random;
+botão Reset;
+botão Save.
+ANIMAÇÕES DISPONÍVEIS NO SELECT
+
+Crie um select com estas opções exatas:
+
+Stand
+Walk
+Arms Up
+Crouch
+Jump
+Wind Up
+Attack
+Attack Full
+Knock
+Bow
+Knock And Bow
+Climb
+Sleep
+Dead / KO
+
+Não incluir Dash por enquanto.
+
+RANDOM
+
+O botão Random deve:
+
+escolher aleatoriamente um item/família por categoria;
+escolher aleatoriamente uma variante disponível daquele item;
+escolher aleatoriamente um skin tone;
+atualizar imediatamente a prévia;
+atualizar também a preview da spritesheet final completa.
+PREVIEW DA SPRITESHEET FINAL COMPLETA
+
+Além da prévia animada, quero um segundo preview mostrando a spritesheet inteira final, já composta como um PNG único.
+
+Especificações
+tamanho final da preview composta:
+2208 x 384
+deve respeitar:
+4 linhas;
+23 colunas;
+cada frame 96x96;
+todas as camadas visíveis e selecionadas devem ser combinadas frame a frame no mesmo canvas final.
+
+Isso é importante para eu comparar se o PNG exportado ficou correto.
+
+BOTÃO SAVE
+
+O botão Save não deve salvar no servidor agora.
+
+Por enquanto ele deve:
+
+gerar o PNG final da spritesheet completa;
+iniciar o download do arquivo no navegador.
+Nome do arquivo
+
+Use um nome amigável, por exemplo:
+
+character-generator-preview.png
+
+ou algo semelhante.
+
+O objetivo é eu baixar o PNG e verificar se a composição final foi feita corretamente.
+
+BACKEND / MANIFEST
+
+Crie um endpoint backend para montar o manifest dos assets.
+
+Endpoint sugerido
+GET /api/character-generator/manifest
+O manifest deve conter
+
+Para cada categoria:
+
+nome da categoria;
+lista de famílias/base items;
+para cada família:
+id/base name;
+arquivo default;
+lista de variantes;
+URL pública de cada PNG.
+Exemplo conceitual
+{
+  "categories": {
+    "backhair": [
+      {
+        "id": "backhair1",
+        "default": {
+          "id": "default",
+          "file": "backhair1.png",
+          "url": "/character-generator/assets/backhair/backhair1.png"
+        },
+        "variants": [
+          {
+            "id": "default",
+            "file": "backhair1.png",
+            "url": "/character-generator/assets/backhair/backhair1.png"
+          },
+          {
+            "id": "c1",
+            "file": "backhair1_c1.png",
+            "url": "/character-generator/assets/backhair/backhair1_c1.png"
+          },
+          {
+            "id": "c2",
+            "file": "backhair1_c2.png",
+            "url": "/character-generator/assets/backhair/backhair1_c2.png"
+          }
+        ]
+      }
+    ]
+  }
+}
+Parsing
+
+A detecção das variantes deve ser feita por regex robusta.
+
+Sugestão:
+
+se o arquivo terminar com _c<number>.png, ele é uma variante;
+caso contrário, é o default/base.
+ESTADO INTERNO / ARQUITETURA
+
+Estruture a lógica para ser reaproveitável depois.
+
+Quero separar pelo menos estes conceitos:
+1. Manifest dos assets
+
+Responsável por descobrir o que existe nas pastas.
+
+2. Estado da seleção atual do personagem
+
+Por exemplo:
+
+item selecionado por categoria;
+variante selecionada por categoria;
+visibilidade da categoria;
+skin tone atual;
+animação atual;
+direção atual.
+3. Motor de composição
+
+Responsável por:
+
+carregar as imagens;
+aplicar recolorização;
+desenhar camadas;
+montar frame individual;
+montar preview animado;
+montar spritesheet final completa.
+4. Exportação
+
+Responsável por:
+
+converter canvas final para PNG;
+disparar download.
+COMPORTAMENTO ESPERADO
+Ao abrir a página
+o app carrega o manifest;
+escolhe automaticamente o primeiro item disponível de cada categoria;
+se houver shadow, deixe shadow visível por padrão;
+renderiza a prévia;
+renderiza a spritesheet final completa.
+Ao trocar item/variante
+atualizar imediatamente a prévia animada;
+atualizar imediatamente a preview da sheet final.
+Ao trocar skin tone
+aplicar recolor em tempo real;
+atualizar imediatamente tudo.
+Ao ocultar uma camada
+remover da prévia animada;
+remover da sheet final.
+Ao trocar animação
+alterar somente a prévia animada;
+a preview da spritesheet inteira continua mostrando a sheet completa.
+DETALHES VISUAIS IMPORTANTES
+Use image-rendering: pixelated nas prévias ampliadas.
+Não suavizar pixels.
+Fundo transparente na spritesheet final.
+A prévia animada pode ter fundo neutro escuro para contraste.
+A preview da spritesheet inteira pode ficar em uma área rolável, já que 2208px de largura é grande.
+Se quiser, exiba a resolução final na UI:
+2208 x 384
+Se quiser, exiba o frame size:
+96 x 96
+VALIDAÇÕES IMPORTANTES
+Se uma categoria não tiver itens, não quebrar a página.
+Se uma família não tiver variantes, funcionar normalmente.
+Se uma camada estiver invisível, não desenhar.
+Se uma imagem falhar ao carregar, exibir erro amigável no UI/debug.
+Não depender de banco de dados.
+Não salvar nada no servidor.
+Não inventar animações que não existem.
+ENTREGA ESPERADA
+
+Quero que você implemente:
+
+A página do gerador de personagem de teste.
+O endpoint/manifest de assets.
+O parser das famílias + variantes.
+O sistema de composição em Canvas.
+A prévia animada.
+A preview da sheet completa.
+O sistema de skin tone.
+O random.
+O hide/show por camada.
+O botão Save com download do PNG final.
+
+No final, me mostre claramente:
+
+quais arquivos foram criados/alterados;
+a rota da página;
+a rota do endpoint manifest;
+como testar.
+IMPORTANTE
+
+Não faça uma implementação improvisada.
+
+Eu quero uma solução:
+
+organizada;
+reutilizável;
+fácil de evoluir depois para criação real de personagem;
+com separação clara entre manifest, estado, renderização e exportação.
+
+Se precisar criar componentes reutilizáveis, crie.
+
+Se precisar criar utilitários separados para:
+
+parser de arquivos;
+recolorização;
+composição;
+exportação;
+faça isso.
+Resumo curto do que você deve construir
+Um character generator de teste
+lendo assets em public/character-generator/assets
+entendendo famílias e variantes (_cN)
+montando personagem por camadas
+com skin tone em tempo real
+com preview animado
+com preview da spritesheet completa
+com random
+com hide/show por categoria
+e com download do PNG final no botão Save

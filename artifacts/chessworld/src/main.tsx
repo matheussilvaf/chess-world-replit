@@ -18,6 +18,11 @@ const SwissTestPage = lazy(() =>
     default: m.SwissTestPage,
   })),
 );
+const CharacterGeneratorPage = lazy(() =>
+  import('./components/admin/character-generator/CharacterGeneratorPage.tsx').then((m) => ({
+    default: m.CharacterGeneratorPage,
+  })),
+);
 
 function RouteFallback() {
   return (
@@ -33,6 +38,7 @@ createRoot(document.getElementById('root')!).render(
       <Routes>
         <Route path="/admin" element={<AdminPage />} />
         <Route path="/admin/characters" element={<CharacterConfigEditor />} />
+        <Route path="/admin/character-generator" element={<CharacterGeneratorPage />} />
         <Route path="/swiss-test" element={<SwissTestPage />} />
         <Route path="*" element={<App />} />
       </Routes>
