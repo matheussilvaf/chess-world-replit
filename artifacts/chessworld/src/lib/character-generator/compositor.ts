@@ -7,7 +7,14 @@
  *    (equivalent to combining frame by frame, since every sheet shares the
  *    exact same grid).
  */
-import { FRAME_WIDTH, FRAME_HEIGHT, SHEET_WIDTH, SHEET_HEIGHT } from './constants';
+import {
+  FRAME_WIDTH,
+  FRAME_HEIGHT,
+  SHEET_WIDTH,
+  SHEET_HEIGHT,
+  SHEET_ROWS,
+  getLayerOrderForRow,
+} from './constants';
 import { getTonedLayer } from './recolor';
 import type { SkinTone } from './skinTones';
 
@@ -49,6 +56,19 @@ export async function loadLayerCanvases(specs: LayerSpec[], tone: SkinTone): Pro
   return { layers, failed };
 }
 
+/**
+ * Sort layers by the draw order of a given row (north renders the weapon
+ * below the head). Unknown categories keep their relative order at the end.
+ */
+function orderLayersForRow(layers: LoadedLayer[], row: number): LoadedLayer[] {
+  const order = getLayerOrderForRow(row);
+  const rank = new Map<string, number>();
+  order.forEach((c, i) => rank.set(c, i));
+  return [...layers].sort(
+    (a, b) => (rank.get(a.category) ?? order.length) - (rank.get(b.category) ?? order.length),
+  );
+}
+
 /** Draw one composite frame (row = direction, col = animation column). */
 export function drawCompositeFrame(
   ctx: CanvasRenderingContext2D,
@@ -59,7 +79,7 @@ export function drawCompositeFrame(
 ): void {
   ctx.imageSmoothingEnabled = false;
   ctx.clearRect(0, 0, destSize, destSize);
-  for (const layer of layers) {
+  for (const layer of orderLayersForRow(layers, row)) {
     ctx.drawImage(
       layer.canvas,
       col * FRAME_WIDTH,
@@ -82,8 +102,13 @@ export function composeSheet(layers: LoadedLayer[]): HTMLCanvasElement {
   const ctx = canvas.getContext('2d');
   if (!ctx) throw new Error('Canvas 2D não suportado neste navegador.');
   ctx.imageSmoothingEnabled = false;
-  for (const layer of layers) {
-    ctx.drawImage(layer.canvas, 0, 0);
+  // Compose row by row: each direction can have its own layer order
+  // (north draws the weapon below the head).
+  for (let row = 0; row < SHEET_ROWS; row++) {
+    const y = row * FRAME_HEIGHT;
+    for (const layer of orderLayersForRow(layers, row)) {
+      ctx.drawImage(layer.canvas, 0, y, SHEET_WIDTH, FRAME_HEIGHT, 0, y, SHEET_WIDTH, FRAME_HEIGHT);
+    }
   }
   return canvas;
 }

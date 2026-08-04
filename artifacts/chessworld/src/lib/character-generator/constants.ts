@@ -51,6 +51,24 @@ export const DIRECTIONS = [
 export type DirectionId = (typeof DIRECTIONS)[number]['id'];
 
 /**
+ * North (back view) draw order: same as LAYER_ORDER, but with the weapon moved
+ * to just below the head — weapon effects must not cover the head when the
+ * character faces away. Derived from LAYER_ORDER so the two never drift.
+ */
+const LAYER_ORDER_NORTH: readonly string[] = (() => {
+  const order = LAYER_ORDER.filter((c) => c !== 'weapon') as string[];
+  order.splice(order.indexOf('head'), 0, 'weapon');
+  return order;
+})();
+
+const NORTH_ROW = DIRECTIONS.find((d) => d.id === 'north')?.row ?? 3;
+
+/** Draw order for a given sheet row (direction-aware layering). */
+export function getLayerOrderForRow(row: number): readonly string[] {
+  return row === NORTH_ROW ? LAYER_ORDER_NORTH : LAYER_ORDER;
+}
+
+/**
  * Column mapping — exactly as specified for this asset pack.
  * (No Dash animation exists in these sheets — deliberately out of scope.)
  */
