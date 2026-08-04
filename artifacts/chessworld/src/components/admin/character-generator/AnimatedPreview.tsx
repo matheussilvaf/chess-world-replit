@@ -12,12 +12,12 @@ interface AnimatedPreviewProps {
   layers: LoadedLayer[];
   animId: AnimationId;
   dirId: DirectionId;
-  /** Canvas size in px (square). Default 96 = native frame size, drawn 1:1 (no upscaling). */
+  /** Canvas size in px (square). Default 192 = native 96px frame at exactly 2x (integer scale, stays crisp). */
   size?: number;
 }
 
 /** Center stage: the composed character playing the selected animation. */
-export function AnimatedPreview({ layers, animId, dirId, size = 96 }: AnimatedPreviewProps) {
+export function AnimatedPreview({ layers, animId, dirId, size = 192 }: AnimatedPreviewProps) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
 
   useEffect(() => {
