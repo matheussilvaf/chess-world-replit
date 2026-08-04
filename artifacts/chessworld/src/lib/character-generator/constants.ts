@@ -56,7 +56,8 @@ export type DirectionId = (typeof DIRECTIONS)[number]['id'];
  */
 export const ANIMATIONS = [
   { id: 'stand', label: 'Stand', frames: [1] },
-  { id: 'walk', label: 'Walk', frames: [0, 1, 2] },
+  // Walk plays 1st → 2nd → 3rd → back to middle, then repeats (0,1,2,1,0,1,2,1…).
+  { id: 'walk', label: 'Walk', frames: [0, 1, 2, 1] },
   { id: 'armsUp', label: 'Arms Up', frames: [3, 4, 5] },
   { id: 'crouch', label: 'Crouch', frames: [6] },
   { id: 'jump', label: 'Jump', frames: [7, 8, 9] },
