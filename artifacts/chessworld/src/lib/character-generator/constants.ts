@@ -84,7 +84,7 @@ export const ANIMATIONS = [
   { id: 'attackFull', label: 'Attack Full', frames: [10, 11, 12, 13] },
   { id: 'knock', label: 'Knock', frames: [14] },
   { id: 'bow', label: 'Bow', frames: [15, 16, 17] },
-  { id: 'knockAndBow', label: 'Knock And Bow', frames: [14, 15, 16, 17] },
+  { id: 'knockAndBow', label: 'Knock And Bow', frames: [15, 16, 17, 18] },
   { id: 'climb', label: 'Climb', frames: [18, 19, 20] },
   { id: 'sleep', label: 'Sleep', frames: [21] },
   { id: 'dead', label: 'Dead / KO', frames: [22] },
