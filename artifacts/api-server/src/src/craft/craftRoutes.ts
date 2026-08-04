@@ -7,11 +7,14 @@
  * Public (read-only, cached — the future player craft panel reads this):
  *   - GET /api/craft-data        → { items, recipes }
  *
- * Icons are uploaded as base64 data URLs (JSON body; the app-level parser
- * limit is raised in app.config.ts) and stored in the PUBLIC Supabase Storage
- * bucket `craft-items`; the persisted config keeps only the public URL.
+ * Icons are uploaded as RAW image bytes (Content-Type image/*), never JSON:
+ * @colyseus/tools registers its own express.json() (100kb cap) BEFORE any of
+ * our middleware, so base64-in-JSON dies there with 413 no matter what limit
+ * we set later. express.raw on this route sidesteps that parser entirely
+ * (json() only touches application/json bodies). Stored in the PUBLIC Supabase
+ * Storage bucket `craft-items`; the persisted config keeps only the public URL.
  */
-import { Router, type Request, type Response } from 'express';
+import { raw, Router, type Request, type Response } from 'express';
 import { requireSupabaseAuth } from '../auth/supabaseAuth.js';
 import {
   CRAFT_ITEM_ID_RE,
@@ -36,11 +39,11 @@ import {
 } from './craftRepository.js';
 
 const IMAGE_BUCKET = 'craft-items';
-const DATA_URL_RE = /^data:image\/(png|jpeg|webp|gif);base64,([A-Za-z0-9+/=]+)$/;
-const MAX_IMAGE_BYTES = 4 * 1024 * 1024; // 4MB decoded
+const MAX_IMAGE_BYTES = 4 * 1024 * 1024; // 4MB
+const IMAGE_MIME_TYPES = ['image/png', 'image/jpeg', 'image/webp', 'image/gif'];
 
 /**
- * O rótulo MIME do data URL é entrada do cliente — nunca confiável. O bucket é
+ * O Content-Type declarado é entrada do cliente — nunca confiável. O bucket é
  * PÚBLICO, então só sobem bytes cuja assinatura binária bate com o formato
  * declarado (evita hospedar conteúdo arbitrário disfarçado de imagem).
  */
@@ -185,32 +188,32 @@ craftItemsAdminRouter.delete('/:itemId', async (req: Request, res: Response) => 
   res.json({ ok: true });
 });
 
-craftItemsAdminRouter.post('/:itemId/image', async (req: Request, res: Response) => {
+// Bytes crus com Content-Type image/* — raw() só intercepta esses MIMEs, e o
+// express.json() embutido do @colyseus/tools (100kb) ignora corpos não-JSON,
+// então o limite real aqui é o MAX_IMAGE_BYTES do raw() (413 além dele).
+craftItemsAdminRouter.post(
+  '/:itemId/image',
+  raw({ type: IMAGE_MIME_TYPES, limit: MAX_IMAGE_BYTES }),
+  async (req: Request, res: Response) => {
   const itemId = String(req.params.itemId ?? '');
   if (badItemId(res, itemId)) return;
-  const dataUrl = (req.body as { dataUrl?: unknown })?.dataUrl;
-  if (typeof dataUrl !== 'string') {
-    res.status(400).json({ error: 'Corpo esperado: { dataUrl: "data:image/png;base64,..." }' });
+  if (!Buffer.isBuffer(req.body) || req.body.byteLength === 0) {
+    res.status(400).json({
+      error:
+        'Envie os bytes do arquivo direto no corpo da requisição, com Content-Type image/png, image/jpeg, image/webp ou image/gif',
+    });
     return;
   }
-  const match = DATA_URL_RE.exec(dataUrl);
-  if (!match) {
-    res.status(400).json({ error: 'dataUrl inválido — use PNG, JPEG, WEBP ou GIF em base64' });
-    return;
-  }
-  const ext = match[1] === 'jpeg' ? 'jpg' : match[1];
-  const bytes = Buffer.from(match[2], 'base64');
-  if (bytes.byteLength === 0 || bytes.byteLength > MAX_IMAGE_BYTES) {
-    res.status(400).json({ error: `Imagem vazia ou maior que ${MAX_IMAGE_BYTES / (1024 * 1024)}MB` });
-    return;
-  }
+  const bytes = req.body as Buffer;
+  const declared = String(req.headers['content-type'] ?? '').split(';')[0].trim().toLowerCase();
   const sniffed = sniffImageFormat(bytes);
-  if (sniffed !== match[1]) {
+  if (!sniffed || `image/${sniffed}` !== declared) {
     res.status(400).json({
       error: 'Os bytes do arquivo não correspondem ao formato declarado — envie uma imagem PNG, JPEG, WEBP ou GIF real',
     });
     return;
   }
+  const ext = sniffed === 'jpeg' ? 'jpg' : sniffed;
   const bucketError = await ensureImageBucket();
   if (bucketError) {
     res.status(500).json({ error: `Storage indisponível: ${bucketError}` });
@@ -231,7 +234,7 @@ craftItemsAdminRouter.post('/:itemId/image', async (req: Request, res: Response)
   }
   const path = `items/${itemId}-${Date.now()}.${ext}`;
   const upload = await client.storage.from(IMAGE_BUCKET).upload(path, bytes, {
-    contentType: `image/${match[1]}`,
+    contentType: `image/${sniffed}`,
     upsert: true,
   });
   if (upload.error) {
@@ -240,7 +243,8 @@ craftItemsAdminRouter.post('/:itemId/image', async (req: Request, res: Response)
   }
   const { data: pub } = client.storage.from(IMAGE_BUCKET).getPublicUrl(path);
   res.json({ imageUrl: pub.publicUrl });
-});
+  },
+);
 
 // ----------------------------------------------------------- admin: recipes
 

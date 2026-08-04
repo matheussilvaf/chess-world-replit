@@ -4,7 +4,6 @@ import { monitor } from "@colyseus/monitor";
 import { WorldRoom } from "./rooms/WorldRoom.js";
 import { TournamentRoom } from "./rooms/TournamentRoom.js";
 import type { Request, Response, NextFunction } from "express";
-import express from "express";
 import cors from "cors";
 import { AccessToken } from "livekit-server-sdk";
 import { tournamentRouter } from "./tournament/routes.js";
@@ -43,8 +42,10 @@ const config: ConfigOptions = {
   },
 
   initializeExpress: (app) => {
-    // 8mb: craft item icons travel as base64 data URLs in JSON (spec /admin/craft).
-    app.use(express.json({ limit: "8mb" }));
+    // NOTE: @colyseus/tools already registered express.json() (100kb cap)
+    // BEFORE this hook runs, so adding a bigger json parser here is dead code.
+    // Large uploads must avoid JSON: the craft icon route takes raw image
+    // bytes via express.raw (json() ignores non-application/json bodies).
 
     const allowedOrigins = [
       process.env.CLIENT_ORIGIN,
