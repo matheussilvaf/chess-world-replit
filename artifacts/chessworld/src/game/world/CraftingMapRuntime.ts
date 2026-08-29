@@ -89,7 +89,7 @@ export class CraftingMapRuntime {
     if (this.prepared) return;
 
     const usedByTs = this.collectUsedTileIds(tmj);
-    const queuedKeys: string[] = [];
+    const queued = new Map<string, string>(); // textureKey → url (p/ relatar faltantes com caminho legível)
 
     await this.runLoader(() => {
       for (const ts of tmj.tilesets || []) {
@@ -103,9 +103,9 @@ export class CraftingMapRuntime {
           // Chave por URL: tilesets duplicados (mesma imagem) compartilham textura.
           const key = `cw-img-${slug(String(ts.image))}`;
           this.sheetTextureByName.set(ts.name, key);
-          if (!scene.textures.exists(key) && !queuedKeys.includes(key)) {
+          if (!scene.textures.exists(key) && !queued.has(key)) {
             scene.load.image(key, encodeURI(String(ts.image)));
-            queuedKeys.push(key);
+            queued.set(key, String(ts.image));
           }
         } else if (Array.isArray(ts.tiles)) {
           // Image collection: só os tiles que o mapa realmente usa.
@@ -120,9 +120,9 @@ export class CraftingMapRuntime {
               width: tile.imagewidth || 32,
               height: tile.imageheight || 32,
             });
-            if (!scene.textures.exists(key) && !queuedKeys.includes(key)) {
+            if (!scene.textures.exists(key) && !queued.has(key)) {
               scene.load.image(key, encodeURI(String(tile.image)));
-              queuedKeys.push(key);
+              queued.set(key, String(tile.image));
             }
           }
         }
@@ -156,9 +156,12 @@ export class CraftingMapRuntime {
       }
     });
 
-    // Pixel art: NEAREST em tudo que acabou de entrar.
-    for (const key of queuedKeys) {
+    // Pixel art: NEAREST em tudo que acabou de entrar. Arquivo ausente no dev
+    // server vira HTML (200) → falha no DECODE, não no load: conferir se a
+    // textura realmente existe é o único jeito confiável de listar faltantes.
+    for (const [key, url] of queued) {
       if (scene.textures.exists(key)) scene.textures.get(key).setFilter(Phaser.Textures.FilterMode.NEAREST);
+      else if (!this.missing.includes(url)) this.missing.push(url);
     }
     for (const t of TREE_TYPES) {
       if (scene.textures.exists(treeTextureKey(t))) {

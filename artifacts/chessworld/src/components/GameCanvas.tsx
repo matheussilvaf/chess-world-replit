@@ -15,6 +15,7 @@ import {
   leaveWorldRoom,
   registerBoards,
   sendMovement,
+  getWorldRoomRegion,
 } from '../game/network/colyseusClient';
 import { seatTournamentPlayerWhenReady } from '../game/tournamentSeatClient';
 import { supabase } from '../lib/supabase';
@@ -437,11 +438,17 @@ export function GameCanvas() {
       // 2. Destroy all remote players from the old room
       scene.destroyAllRemotePlayers();
 
-      // 3. Leave the current room
+      // 3. Leave the current room. Viagem com TROCA DE REGIÃO (main ↔ Mundo de
+      // Coleta) também sai da sala world já aqui — senão eventos da sala antiga
+      // chegam durante o build do mapa. Teleportes na MESMA região (recepção de
+      // torneio) continuam reusando a sala, como sempre.
       if (targetRoomType === 'arena') {
         await leaveWorldRoom();
       } else {
         await leaveArenaRoom();
+        if (getWorldRoomRegion() !== (opts?.regionOverride ?? region)) {
+          await leaveWorldRoom();
+        }
       }
 
       // 4. Switch the visual map

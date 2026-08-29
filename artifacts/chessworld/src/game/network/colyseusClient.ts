@@ -39,6 +39,13 @@ export function getArenaRoom(): Room<any> | null {
   return arenaRoom;
 }
 
+/** Região da sala world atual — viagem p/ outra região (ex.: Mundo de Coleta) não pode reusar a sala. */
+let lastWorldRegion: string | null = null;
+
+export function getWorldRoomRegion(): string | null {
+  return lastWorldRegion;
+}
+
 export async function joinWorldRoom(options: {
   playerId: string;
   /** JWT do Supabase — o servidor deriva a identidade DELE, não do playerId. */
@@ -54,9 +61,14 @@ export async function joinWorldRoom(options: {
   }
 
   if (worldRoom) {
-    console.log('[Colyseus] Already connected to world, reusing');
-    activeRoomType = 'world';
-    return worldRoom;
+    if (lastWorldRegion === options.region) {
+      console.log('[Colyseus] Already connected to world, reusing');
+      activeRoomType = 'world';
+      return worldRoom;
+    }
+    // Região mudou (main ↔ Mundo de Coleta): a sala antiga não serve.
+    console.log(`[Colyseus] Region change ${lastWorldRegion} -> ${options.region}, leaving old world room`);
+    await leaveWorldRoom();
   }
 
   if (joinInProgress) {
@@ -70,6 +82,7 @@ export async function joinWorldRoom(options: {
   try {
     const room = await joinInProgress;
     worldRoom = room;
+    lastWorldRegion = options.region;
     activeRoomType = 'world';
     console.log(`[Colyseus] world roomId: ${room.roomId}, sessionId: ${room.sessionId}`);
     return room;
@@ -80,6 +93,7 @@ export async function joinWorldRoom(options: {
 
 export async function leaveWorldRoom(): Promise<void> {
   joinInProgress = null;
+  lastWorldRegion = null;
   if (worldRoom) {
     const room = worldRoom;
     worldRoom = null;

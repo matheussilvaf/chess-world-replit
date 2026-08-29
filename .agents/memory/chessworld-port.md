@@ -195,3 +195,9 @@ Rotas Express custom do servidor devem ser registradas COM o prefixo `/api` (ex.
 - Salas Colyseus por região com prefixo ("craft:<região>") isolam mapas sem novo room type; coordinator de torneio DEVE pular salas craft:* em: teleporte, presença (hasPlayerById/hasActivePlayerById) e anyWorldRoomPlaying.
 - Viagem por request no zustand: o effect deve CONSUMIR a request sempre (setar null antes dos guards), senão clique repetido com mesmo valor não re-dispara o effect (zustand não notifica valor igual) e o botão "morre". transitionToRoom retorna boolean; só atualizar estado de UI (currentWorld) com sucesso confirmado.
 - Assets ausentes do repo (2 PNGs de grama base do CraftingWorld: "Tileset-Terrain-new grass.png" e "...- transparency.png", 1760×2304): mapa renderiza com buracos verdes até o usuário subir os arquivos em public/assets/CraftingWorld/Tilesets/ — corrige sozinho, sem mudança de código.
+
+## Reuso de sala world é por REGIÃO (viagem entre mundos)
+- `joinWorldRoom` reusa a sala se `worldRoom` existe; viagens mundo→mundo (main ↔ CraftingWorld) só saíam da sala de ARENA → região `craft:` nunca ativava e o jogador ficava na sala principal.
+- **Regra:** reuso só quando a região pedida == região da sala atual (`lastWorldRegion` no colyseusClient). Região diferente → leave + join novo. Teleportes de recepção de torneio usam a MESMA região e DEPENDEM do reuso — não forçar leave incondicional.
+- **Why:** sair da sala world durante fluxo de torneio na mesma região = risco de walkover (presença some).
+- Os warns `switchMap: unknown tileset` ($fountain, shop, exterior…) ao voltar pro mapa principal são RUÍDO pré-existente: tilesets de objetos resolvem via `findTilesetForGidInMap`/`renderTileObjects`, não pelo loop de camadas. Não "consertar".

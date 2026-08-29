@@ -97,6 +97,43 @@ function parseTsx(tsxPath: string, firstgid: number) {
   return embedded;
 }
 
+/** Lê width/height do IHDR de um PNG (bytes 16-24). */
+function pngSize(file: string): { w: number; h: number } | null {
+  try {
+    const fd = fs.openSync(file, 'r');
+    const b = Buffer.alloc(24);
+    fs.readSync(fd, b, 0, 24, 0);
+    fs.closeSync(fd);
+    return { w: b.readUInt32BE(16), h: b.readUInt32BE(20) };
+  } catch {
+    return null;
+  }
+}
+
+/** .tsx que não vieram no export do Tiled mas cuja imagem foi reposta no repo:
+ *  sintetiza um tileset-collection de 1 tile para o objeto voltar ao mapa. */
+const RESCUED_TSX: Record<string, string> = {
+  'bigchessboard.tsx': 'CraftingWorld/images/bigchessboard.png',
+};
+
+function rescueTileset(source: string, firstgid: number) {
+  const rel = RESCUED_TSX[path.basename(source)];
+  if (!rel) return null;
+  const size = pngSize(path.resolve(ASSETS_DIR, rel));
+  if (!size) return null;
+  return {
+    firstgid,
+    name: path.basename(source, '.tsx'),
+    tilewidth: size.w,
+    tileheight: size.h,
+    tilecount: 1,
+    columns: 0,
+    margin: 0,
+    spacing: 0,
+    tiles: [{ id: 0, image: `/assets/${rel}`, imagewidth: size.w, imageheight: size.h }],
+  };
+}
+
 function stripObjectsInGidRanges(layers: any[], ranges: [number, number][]) {
   const inRange = (gid: number) => {
     const g = gid & 0x0fffffff;
@@ -134,7 +171,7 @@ export function buildEmbeddedCraftingMap(): string {
       continue;
     }
     const tsxPath = resolveTsxPath(ts.source);
-    const parsed = tsxPath ? parseTsx(tsxPath, ts.firstgid) : null;
+    const parsed = tsxPath ? parseTsx(tsxPath, ts.firstgid) : rescueTileset(ts.source, ts.firstgid);
     if (!parsed) {
       console.warn(`[crafting-map] tileset ausente, descartado: ${ts.source} (gids ${ts.firstgid}..${nextFirst - 1})`);
       droppedRanges.push([ts.firstgid, nextFirst]);
