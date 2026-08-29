@@ -9,7 +9,7 @@ import { REGIONS } from '../../config/game';
 import { voiceClient } from '../../game/voice/livekitVoiceClient';
 import { leaveWorldRoom } from '../../game/network/colyseusClient';
 import {
-  User, MessageSquare, Users, Settings, DoorOpen, Mic, Maximize, Minimize,
+  User, MessageSquare, Users, Settings, DoorOpen, Mic, Maximize, Minimize, TreePine, Castle,
 } from 'lucide-react';
 
 // iPhone Safari has no Fullscreen API for arbitrary elements — hide the button there.
@@ -19,7 +19,7 @@ const FULLSCREEN_SUPPORTED =
 
 export function HUD() {
   const { profile } = useAuthStore();
-  const { region, onlinePlayers, unreadChat, liveChatMessage, showChat, toggleChat, toggleProfile, toggleFriends, toggleSettings, toggleVoiceChat } = useGameStore();
+  const { region, onlinePlayers, unreadChat, liveChatMessage, showChat, toggleChat, toggleProfile, toggleFriends, toggleSettings, toggleVoiceChat, currentWorld, setTravelRequest } = useGameStore();
   const { phase } = useColyseusStore();
   const matchId = useChessStore(s => s.matchId);
   const chatPreviewSeconds = useGameSettingsStore((s) => s.chatPreviewSeconds);
@@ -169,6 +169,13 @@ export function HUD() {
               </button>
             )}
           </div>
+          {!inGame && (
+            <HUDButton
+              icon={currentWorld === 'crafting' ? <Castle className="w-4 h-4" /> : <TreePine className="w-4 h-4" />}
+              onClick={() => setTravelRequest(currentWorld === 'crafting' ? 'main' : 'crafting')}
+              label={currentWorld === 'crafting' ? 'Voltar ao Mundo Principal' : 'Mundo de Coleta (dev)'}
+            />
+          )}
           <HUDButton icon={<Mic className="w-4 h-4" />} onClick={toggleVoiceChat} label="Voice" />
           <HUDButton icon={<Settings className="w-4 h-4" />} onClick={toggleSettings} label="Settings" />
           {FULLSCREEN_SUPPORTED && (

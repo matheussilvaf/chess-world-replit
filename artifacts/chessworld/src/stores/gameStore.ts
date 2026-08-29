@@ -82,6 +82,13 @@ interface GameState {
   toggleSettings: () => void;
   toggleVoiceChat: () => void;
 
+  /** Mundo em que o jogador está (mapa principal ou Mundo de Coleta). */
+  currentWorld: 'main' | 'crafting';
+  setCurrentWorld: (w: 'main' | 'crafting') => void;
+  /** Pedido de viagem do botão dev no HUD; o GameCanvas consome e limpa. */
+  travelRequest: 'crafting' | 'main' | null;
+  setTravelRequest: (t: 'crafting' | 'main' | null) => void;
+
   enterRegion: (region: Region, userId: string) => Promise<void>;
   updatePosition: (x: number, y: number, userId: string) => Promise<void>;
   loadBoards: (region: Region) => Promise<void>;
@@ -116,6 +123,10 @@ export const useGameStore = create<GameState>((set, get) => ({
   lastEvent: '',
   opponentDisconnected: null,
   woNotice: null,
+  currentWorld: 'main',
+  travelRequest: null,
+  setCurrentWorld: (w) => set({ currentWorld: w }),
+  setTravelRequest: (t) => set({ travelRequest: t }),
 
   setRegion: (region) => set({ region }),
   setPlayerPosition: (pos) => set({ playerPosition: pos }),

@@ -1,4 +1,5 @@
 import { useEffect, useRef } from 'react';
+import { CRAFTING_MAP, CRAFT_REGION_PREFIX } from '../game/config/craftingMapConfig';
 import Phaser from 'phaser';
 import { createPhaserGame, getWorldScene } from '../game/PhaserGame';
 import { useGameStore } from '../stores/gameStore';
@@ -391,20 +392,42 @@ export function GameCanvas() {
     attachListeners(scene, room);
   }
 
+  // Botão dev do HUD: viagem entre o mapa principal e o Mundo de Coleta
+  const travelRequest = useGameStore((s) => s.travelRequest);
+  useEffect(() => {
+    if (!travelRequest) return;
+    const store = useGameStore.getState();
+    // Consome SEMPRE a request: clique durante transição é descartado (e o
+    // próximo clique volta a disparar o effect, já que null -> valor muda).
+    store.setTravelRequest(null);
+    if (!gameRef.current || !sceneReadyRef.current || transitionInProgressRef.current) return;
+    const scene = getWorldScene(gameRef.current);
+    if (!scene || !store.region) return;
+    if (travelRequest === 'crafting') {
+      transitionToRoom(scene, 'world', CRAFTING_MAP.path, CRAFTING_MAP.spawnId, {
+        regionOverride: `${CRAFT_REGION_PREFIX}${store.region}`,
+      }).then((ok) => { if (ok) useGameStore.getState().setCurrentWorld('crafting'); });
+    } else {
+      transitionToRoom(scene, 'world', '/assets/world-v2/main_world.tmj', 'main_player_spawn')
+        .then((ok) => { if (ok) useGameStore.getState().setCurrentWorld('main'); });
+    }
+  }, [travelRequest]);
+
   async function transitionToRoom(
     scene: WorldScene,
     targetRoomType: 'world' | 'arena',
     mapPath: string,
-    targetSpawn: string
-  ) {
-    if (transitionInProgressRef.current) return;
+    targetSpawn: string,
+    opts?: { regionOverride?: string }
+  ): Promise<boolean> {
+    if (transitionInProgressRef.current) return false;
     transitionInProgressRef.current = true;
 
     const { user, profile } = useAuthStore.getState();
     const { region } = useGameStore.getState();
     if (!user || !region) {
       transitionInProgressRef.current = false;
-      return;
+      return false;
     }
 
     try {
@@ -433,7 +456,7 @@ export function GameCanvas() {
         token: sessionData.session?.access_token ?? null,
         username: profile?.username || 'Player',
         rating: profile?.rating || 1200,
-        region,
+        region: opts?.regionOverride ?? region,
         x: pos.x,
         y: pos.y,
       };
@@ -458,8 +481,10 @@ export function GameCanvas() {
       }
 
       console.log(`[GameCanvas] Room transition complete -> ${targetRoomType}`);
+      return true;
     } catch (err) {
       console.error('[GameCanvas] Room transition failed:', err);
+      return false;
     } finally {
       transitionInProgressRef.current = false;
     }

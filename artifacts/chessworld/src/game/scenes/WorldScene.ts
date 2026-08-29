@@ -1,6 +1,8 @@
 import Phaser from 'phaser';
 import decomp from 'poly-decomp';
 import { MAP_CONFIG } from '../config/mapConfig';
+import { CRAFTING_MAP } from '../config/craftingMapConfig';
+import { CraftingMapRuntime } from '../world/CraftingMapRuntime';
 import { WORLD_TILESETS, ALL_TILESETS, EXTRA_TILESETS, findTilesetForGid, findTilesetForGidInMap, getTextureKeyForTileset } from '../config/worldAssets';
 import { ArenaModuleManager } from '../map/ArenaModuleManager';
 import {
@@ -785,7 +787,8 @@ export class WorldScene extends Phaser.Scene {
       const isAbove = parentAbove || cls === 'above_player' || lowerFull.includes('(above)');
 
       if (l.type === 'group') {
-        const groupAbove = isAbove || name.toLowerCase() === 'visual_above';
+        const lowerGroup = name.toLowerCase();
+        const groupAbove = isAbove || lowerGroup === 'visual_above' || lowerGroup === 'above player';
         this.collectAbovePlayerLayers(l.layers || [], groupAbove, result, fullName);
       } else if (l.type === 'tilelayer') {
         if (isAbove) {
@@ -1182,8 +1185,18 @@ export class WorldScene extends Phaser.Scene {
     if (this.localDef) this.ensureCharacterAnimations(this.localDef);
   }
 
+  private craftingRuntime = new CraftingMapRuntime(this);
+
   update() {
     if (!this.player || !this.playerBody) return;
+
+    // Mundo de Coleta: profundidade por Y — player passa atrás/na frente de árvores etc.
+    if (this.craftingRuntime.active) {
+      this.player.setDepth(this.craftingRuntime.depthForY(this.player.y));
+      this.otherPlayers.forEach((remote) => {
+        remote.container.setDepth(this.craftingRuntime.depthForY(remote.container.y));
+      });
+    }
 
     // Smooth zoom interpolation — snap to target once close enough
     const currentZoom = this.cameras.main.zoom;
@@ -2426,6 +2439,9 @@ export class WorldScene extends Phaser.Scene {
   // =========================================================
 
   private teardownCurrentMap() {
+    // Mundo de Coleta: sprites de recursos/collections e timer da água
+    this.craftingRuntime.teardown();
+
     // Destroy tile layers
     for (const layer of this.mapTileLayers) {
       layer.destroy();
@@ -2634,10 +2650,18 @@ export class WorldScene extends Phaser.Scene {
 
     // Determine map key from path
     let mapKey: string;
+    const isCrafting = this.craftingRuntime.isCraftingPath(mapPath);
     if (mapPath === MAP_CONFIG.path || mapPath === '/assets/world-v2/main_world.tmj') {
       mapKey = MAP_CONFIG.key;
+    } else if (isCrafting) {
+      mapKey = CRAFTING_MAP.key;
     } else {
       mapKey = mapPath.replace(/^\/assets\/world-v2\//, '').replace('.tmj', '');
+    }
+
+    // Mundo de Coleta: garante TMJ embutido + texturas dinâmicas ANTES de montar o mapa
+    if (isCrafting) {
+      await this.craftingRuntime.prepare();
     }
 
     // Hide all remote players during transition
@@ -2678,9 +2702,10 @@ export class WorldScene extends Phaser.Scene {
     // Add tilesets (match TMJ tileset names to our texture keys)
     const tilesets: Phaser.Tilemaps.Tileset[] = [];
     for (const ts of tmjData.tilesets) {
-      const textureKey = getTextureKeyForTileset(ts.name);
+      const textureKey = getTextureKeyForTileset(ts.name) ?? this.craftingRuntime.textureKeyForTileset(ts.name);
       if (!textureKey) {
-        console.warn('[WorldScene] switchMap: unknown tileset', ts.name);
+        // Collections do Mundo de Coleta são desenhadas pelo runtime, não via createLayer
+        if (!isCrafting) console.warn('[WorldScene] switchMap: unknown tileset', ts.name);
         continue;
       }
       const tileset = map.addTilesetImage(ts.name, textureKey);
@@ -2734,11 +2759,18 @@ export class WorldScene extends Phaser.Scene {
     // Load table anchors from new map
     this.loadTableAnchorsFromTMJ(mapKey);
 
+    // Conteúdo específico do Mundo de Coleta (collections, água animada, recursos)
+    if (isCrafting) {
+      this.craftingRuntime.postBuild(map, tmjData);
+    } else if (this.player) {
+      this.player.setDepth(100); // restaura o depth fixo fora do Mundo de Coleta
+    }
+
     // Position player at target spawn
     this.positionAtSpawn(tmjData, targetSpawnId);
 
     // Set appropriate background color for the map
-    if (mapKey === MAP_CONFIG.key) {
+    if (mapKey === MAP_CONFIG.key || isCrafting) {
       this.cameras.main.setBackgroundColor(0x2d5a27);
     } else {
       this.cameras.main.setBackgroundColor(0x1a1a2e);
@@ -2762,7 +2794,9 @@ export class WorldScene extends Phaser.Scene {
   }
 
   private positionAtSpawn(tmjData: any, spawnId: string) {
-    const spawns = this.findTMJObjectLayer(tmjData.layers, 'spawns');
+    // Mapas sem camada 'spawns' (ex.: Mundo de Coleta) usam 'character_spawn' (pontos simples)
+    const spawns = this.findTMJObjectLayer(tmjData.layers, 'spawns')
+      ?? this.findTMJObjectLayer(tmjData.layers, 'character_spawn');
     if (!spawns) {
       console.warn('[WorldScene] positionAtSpawn: no spawns layer');
       return;
@@ -2772,15 +2806,19 @@ export class WorldScene extends Phaser.Scene {
     for (const obj of spawns) {
       const props: any[] = obj.properties || [];
       const sid = props.find((p: any) => p.name === 'spawnId')?.value;
-      if (sid === spawnId) {
+      if (sid === spawnId || obj.name === spawnId) {
         spawnObj = obj;
         break;
       }
     }
 
     if (!spawnObj) {
-      console.warn('[WorldScene] positionAtSpawn: spawn not found:', spawnId);
-      return;
+      // Pontos de character_spawn não têm spawnId — usa o primeiro da camada
+      spawnObj = spawns[0];
+      if (!spawnObj) {
+        console.warn('[WorldScene] positionAtSpawn: spawn not found:', spawnId);
+        return;
+      }
     }
 
     const props: any[] = spawnObj.properties || [];

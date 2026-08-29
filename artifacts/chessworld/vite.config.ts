@@ -7,6 +7,7 @@ import runtimeErrorOverlay from '@replit/vite-plugin-runtime-error-modal';
 
 import { characterManifestPlugin } from './vite-plugins/character-manifest';
 import { characterGeneratorManifestPlugin } from './vite-plugins/character-generator-manifest';
+import { craftingMapPlugin } from './vite-plugins/crafting-map';
 
 // Gzip everything the dev server sends (TMJ maps are multi-MB JSON that
 // compresses ~10x; the unbundled dev JS also shrinks massively). Production
@@ -45,6 +46,7 @@ export default defineConfig({
   plugins: [
     react(),
     devGzip(),
+    craftingMapPlugin(),
     characterManifestPlugin(),
     characterGeneratorManifestPlugin(),
     runtimeErrorOverlay(),

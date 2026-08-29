@@ -34,6 +34,8 @@ const activeGames = new Map<string, Chess>();
 
 export class WorldRoom extends Room<WorldState> {
   private readonly TICK_RATE = 20;
+  /** Região da sala (ex.: 'Europe' ou 'craft:Europe' no Mundo de Coleta). Lida pelo coordinator. */
+  public region = 'default';
   /** Per-player reconnect grace timers: matchId → (playerId → timer). A
    *  single timer per match let a second disconnect overwrite the first and
    *  let a refresh by EITHER participant cancel the other one's countdown. */
@@ -58,6 +60,8 @@ export class WorldRoom extends Room<WorldState> {
     // other clients ~17ms sooner on average; patches are tiny position deltas.
     this.setPatchRate(1000 / 30);
     this.maxClients = 100;
+
+    this.region = String(options.region || 'default');
 
     coordinator.registerWorldRoom(this);
 

@@ -33,6 +33,8 @@ export interface ForceStartPairing {
 }
 export interface WorldRoomLike {
   roomName?: string;
+  /** Região da sala; salas 'craft:*' (Mundo de Coleta) ficam FORA de presença/teleporte de torneio. */
+  region?: string;
   isBoardPlaying(boardId: string): boolean;
   hasPlayerById?(playerId: string): boolean;
   hasActivePlayerById?(playerId: string): boolean;
@@ -56,12 +58,17 @@ export function setWorldRoomInstance(room: WorldRoomLike | null) {
 }
 function anyWorldRoomPlaying(boardId: string): boolean {
   for (const room of worldRooms) {
+    if (isCraftRoom(room)) continue;
     try { if (room.isBoardPlaying(boardId)) return true; } catch { /* disposed */ }
   }
   return false;
 }
+/** Salas do Mundo de Coleta não participam da mecânica de torneio. */
+const isCraftRoom = (room: WorldRoomLike) => (room.region || '').startsWith('craft:');
+
 function teleportTournamentPlayers(tournamentId: string): void {
   for (const room of worldRooms) {
+    if (isCraftRoom(room)) continue;
     try {
       room.teleportTournamentPlayersToReception(tournamentId);
     } catch (e) {
@@ -1702,7 +1709,7 @@ const CLAIM_GRACE_MS = 15_000;
 function hostsPlayer(playerId: string): boolean {
   for (const room of worldRooms) {
     try {
-      if (room.hasPlayerById?.(playerId)) return true;
+      if (!isCraftRoom(room) && room.hasPlayerById?.(playerId)) return true;
     } catch { /* disposed */ }
   }
   const lobby = getTournamentRoomInstance();
@@ -1794,9 +1801,9 @@ async function isPlayerPresent(playerId: string): Promise<boolean | null> {
   for (const room of worldRooms) {
     try {
       if (room.roomName !== 'arena') continue;
-      const present = room.hasActivePlayerById
+      const present = !isCraftRoom(room) && (room.hasActivePlayerById
         ? room.hasActivePlayerById(playerId)
-        : room.hasPlayerById?.(playerId);
+        : room.hasPlayerById?.(playerId));
       if (present) return true;
     } catch { /* disposed */ }
   }
