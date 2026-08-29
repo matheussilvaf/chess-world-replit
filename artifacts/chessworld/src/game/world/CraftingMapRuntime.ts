@@ -15,11 +15,28 @@ import {
   craftDepthForY,
   ANIMALS,
   ANIMAL_SHEET,
+  ANIMAL_DIRECTIONS,
+  ANIMAL_WANDER,
   animalTextureKey,
+  animalWalkTextureKey,
   animalAnimKey,
+  HERBS,
+  herbTextureKey,
+  herbUrl,
+  RESOURCE_HITS_TO_BREAK,
+  RESOURCE_DROP,
+  mineralBreakAnimKey,
+  mineralDropTextureKey,
+  mineralDropUrl,
+  treeDropTextureKey,
+  treeDropUrl,
+  type AnimalDef,
+  type AnimalDirection,
   type TreeType,
 } from '../config/craftingMapConfig';
 import { getTextureKeyForTileset } from '../config/worldAssets';
+import { loadCollectionWorldConfig } from '../config/collectionConfigLoader';
+import type { CollectionWorldConfig, ResourceHurtbox } from '../../shared/collection/CollectionShapes';
 
 /**
  * Runtime do Mundo de Coleta.
@@ -49,6 +66,38 @@ interface AnimCell {
   frames: number[]; // gids
 }
 
+/** Estado do passeio de um animal (IA local: comer parado ↔ andar até um ponto perto de casa). */
+interface AnimalAgent {
+  sprite: Phaser.GameObjects.Sprite;
+  def: AnimalDef;
+  homeX: number;
+  homeY: number;
+  state: 'eat' | 'walk';
+  dir: AnimalDirection;
+  /** No estado eat: tempo restante em ms até o próximo passeio. */
+  timerMs: number;
+  targetX: number;
+  targetY: number;
+}
+
+/** Nó de recurso golpeável (fase de teste: N golpes → quebra/coleta). */
+interface ResourceNode {
+  sprite: Phaser.GameObjects.Image | Phaser.GameObjects.Sprite;
+  /** Chave de hurtbox do admin: mineral:<id> | tree:<tipo> | herb:<id> | bush | hand_stone | animal:<id>. */
+  key: string;
+  kind: 'mineral' | 'tree' | 'herb' | 'bush' | 'hand_stone' | 'animal';
+  id: string;
+  hits: number;
+  broken: boolean;
+}
+
+/** Mini-item dropado por um nó quebrado (pulo → imã → coleta). */
+interface DropItem {
+  sprite: Phaser.GameObjects.Image;
+  /** 'pop' durante o tween inicial/sumiço; 'idle' esperando o imã. */
+  state: 'pop' | 'idle';
+}
+
 const GID_FLAGS = 0x0fffffff;
 const FLIPPED_H = 0x80000000;
 const FLIPPED_V = 0x40000000;
@@ -60,6 +109,13 @@ export class CraftingMapRuntime {
   /** `${tiledName}:${localId}` → textura de tile de collection usado no mapa. */
   private collectionTextures = new Map<string, CollectionTexEntry>();
   private sprites: (Phaser.GameObjects.Image | Phaser.GameObjects.Sprite)[] = [];
+  private animals: AnimalAgent[] = [];
+  /** Config do admin (quantidades de minérios + hurtboxes); null → defaults do código. */
+  private worldConfig: CollectionWorldConfig | null = null;
+  /** Nós golpeáveis do mapa atual (recursos + animais). */
+  private nodes: ResourceNode[] = [];
+  /** Drops vivos (pulo → imã → coleta). */
+  private drops: DropItem[] = [];
   private animEvent: Phaser.Time.TimerEvent | null = null;
   private animTick = 0;
   private missing: string[] = [];
@@ -80,6 +136,9 @@ export class CraftingMapRuntime {
   /** Garante TMJ no cache + todas as texturas necessárias carregadas. */
   async prepare(): Promise<void> {
     const scene = this.scene;
+
+    // Config do admin relida a cada entrada — mudanças valem na próxima visita.
+    this.worldConfig = await loadCollectionWorldConfig();
 
     if (!scene.cache.tilemap.has(CRAFTING_MAP.key)) {
       await this.runLoader(() => {
@@ -158,12 +217,30 @@ export class CraftingMapRuntime {
       if (!scene.textures.exists(BUSH.textureKey)) {
         scene.load.image(BUSH.textureKey, encodeURI(BUSH.url));
       }
+      for (const h of HERBS) {
+        if (!scene.textures.exists(herbTextureKey(h.id))) {
+          scene.load.image(herbTextureKey(h.id), encodeURI(herbUrl(h.file)));
+        }
+      }
       for (const a of ANIMALS) {
+        const size = { frameWidth: a.frameSize, frameHeight: a.frameSize };
         if (!scene.textures.exists(animalTextureKey(a.id))) {
-          scene.load.spritesheet(animalTextureKey(a.id), encodeURI(`${RESOURCES_BASE}animais/${a.file}`), {
-            frameWidth: a.frameSize,
-            frameHeight: a.frameSize,
-          });
+          scene.load.spritesheet(animalTextureKey(a.id), encodeURI(`${RESOURCES_BASE}animais/${a.file}`), size);
+        }
+        if (!scene.textures.exists(animalWalkTextureKey(a.id))) {
+          scene.load.spritesheet(animalWalkTextureKey(a.id), encodeURI(`${RESOURCES_BASE}animais/${a.walkFile}`), size);
+        }
+      }
+
+      // Drops (mini-itens que pulam do nó quebrado): minérios 32×32, troncos 64×64.
+      for (const m of MINERALS) {
+        if (!scene.textures.exists(mineralDropTextureKey(m.id))) {
+          scene.load.image(mineralDropTextureKey(m.id), encodeURI(mineralDropUrl(m.file)));
+        }
+      }
+      for (const t of TREE_TYPES) {
+        if (!scene.textures.exists(treeDropTextureKey(t))) {
+          scene.load.image(treeDropTextureKey(t), encodeURI(treeDropUrl(t)));
         }
       }
     });
@@ -191,6 +268,22 @@ export class CraftingMapRuntime {
     for (const m of MINERALS) {
       if (scene.textures.exists(mineralTextureKey(m.id))) {
         scene.textures.get(mineralTextureKey(m.id)).setFilter(Phaser.Textures.FilterMode.NEAREST);
+        if (!scene.anims.exists(mineralBreakAnimKey(m.id))) {
+          scene.anims.create({
+            key: mineralBreakAnimKey(m.id),
+            frames: scene.anims.generateFrameNumbers(mineralTextureKey(m.id), { start: 0, end: MINERAL_SHEET.frames - 1 }),
+            frameRate: 14,
+            repeat: 0,
+          });
+        }
+      }
+      if (scene.textures.exists(mineralDropTextureKey(m.id))) {
+        scene.textures.get(mineralDropTextureKey(m.id)).setFilter(Phaser.Textures.FilterMode.NEAREST);
+      }
+    }
+    for (const t of TREE_TYPES) {
+      if (scene.textures.exists(treeDropTextureKey(t))) {
+        scene.textures.get(treeDropTextureKey(t)).setFilter(Phaser.Textures.FilterMode.NEAREST);
       }
     }
     if (scene.textures.exists(HAND_STONE.textureKey)) {
@@ -199,18 +292,34 @@ export class CraftingMapRuntime {
     if (scene.textures.exists(BUSH.textureKey)) {
       scene.textures.get(BUSH.textureKey).setFilter(Phaser.Textures.FilterMode.NEAREST);
     }
+    for (const h of HERBS) {
+      if (scene.textures.exists(herbTextureKey(h.id))) {
+        scene.textures.get(herbTextureKey(h.id)).setFilter(Phaser.Textures.FilterMode.NEAREST);
+      }
+    }
+    // Animais: cada sheet tem 4 linhas de 7 frames — uma animação por direção.
     for (const a of ANIMALS) {
-      const key = animalTextureKey(a.id);
-      if (scene.textures.exists(key)) {
+      const sheets: Array<['eat' | 'walk', string, number]> = [
+        ['eat', animalTextureKey(a.id), ANIMAL_SHEET.eatFrameRate],
+        ['walk', animalWalkTextureKey(a.id), ANIMAL_SHEET.walkFrameRate],
+      ];
+      for (const [action, key, frameRate] of sheets) {
+        if (!scene.textures.exists(key)) continue;
         scene.textures.get(key).setFilter(Phaser.Textures.FilterMode.NEAREST);
-        if (!scene.anims.exists(animalAnimKey(a.id))) {
-          scene.anims.create({
-            key: animalAnimKey(a.id),
-            frames: scene.anims.generateFrameNumbers(key, { start: 0, end: ANIMAL_SHEET.loopFrames - 1 }),
-            frameRate: ANIMAL_SHEET.frameRate,
-            repeat: -1,
-          });
-        }
+        ANIMAL_DIRECTIONS.forEach((dir, row) => {
+          const animKey = animalAnimKey(a.id, action, dir);
+          if (!scene.anims.exists(animKey)) {
+            scene.anims.create({
+              key: animKey,
+              frames: scene.anims.generateFrameNumbers(key, {
+                start: row * ANIMAL_SHEET.columns,
+                end: row * ANIMAL_SHEET.columns + ANIMAL_SHEET.frames - 1,
+              }),
+              frameRate,
+              repeat: -1,
+            });
+          }
+        });
       }
     }
 
@@ -234,8 +343,13 @@ export class CraftingMapRuntime {
   }
 
   teardown() {
+    this.mapGeneration++;
     for (const s of this.sprites) s.destroy();
     this.sprites = [];
+    this.animals = [];
+    this.nodes = [];
+    for (const d of this.drops) d.sprite.destroy();
+    this.drops = [];
     if (this.animEvent) {
       this.animEvent.remove();
       this.animEvent = null;
@@ -246,6 +360,229 @@ export class CraftingMapRuntime {
 
   depthForY(y: number): number {
     return craftDepthForY(y, this.mapHeightPx);
+  }
+
+  /** Muda a cada saída do mapa — invalida callbacks atrasados de sessões antigas. */
+  private mapGeneration = 0;
+
+  /** Geração atual (capturada por callbacks atrasados do WorldScene). */
+  get generation(): number {
+    return this.mapGeneration;
+  }
+
+  /** Passeio dos animais + drops — chamado pelo WorldScene.update() enquanto o mapa está ativo. */
+  update(deltaMs: number, playerX?: number, playerY?: number) {
+    if (!this.active) return;
+    this.updateDrops(deltaMs, playerX, playerY);
+    for (const ag of this.animals) {
+      if (!ag.sprite.active) continue;
+      if (ag.state === 'eat') {
+        ag.timerMs -= deltaMs;
+        if (ag.timerMs > 0) continue;
+        // Escolhe um destino perto de "casa" (evita o bicho migrar pelo mapa).
+        const ang = Math.random() * Math.PI * 2;
+        const rad = ANIMAL_WANDER.radius * (0.35 + 0.65 * Math.random());
+        ag.targetX = ag.homeX + Math.cos(ang) * rad;
+        ag.targetY = ag.homeY + Math.sin(ang) * rad;
+        const dx = ag.targetX - ag.sprite.x;
+        const dy = ag.targetY - ag.sprite.y;
+        ag.dir = Math.abs(dx) >= Math.abs(dy) ? (dx >= 0 ? 'east' : 'west') : (dy >= 0 ? 'south' : 'north');
+        ag.state = 'walk';
+        ag.sprite.play(animalAnimKey(ag.def.id, 'walk', ag.dir));
+      } else {
+        const dx = ag.targetX - ag.sprite.x;
+        const dy = ag.targetY - ag.sprite.y;
+        const dist = Math.hypot(dx, dy);
+        const step = (ag.def.speed * deltaMs) / 1000;
+        if (dist <= step || dist === 0) {
+          ag.sprite.setPosition(ag.targetX, ag.targetY);
+          ag.state = 'eat';
+          ag.timerMs = ANIMAL_WANDER.eatMinMs + Math.random() * (ANIMAL_WANDER.eatMaxMs - ANIMAL_WANDER.eatMinMs);
+          ag.sprite.play({
+            key: animalAnimKey(ag.def.id, 'eat', ag.dir),
+            startFrame: Math.floor(Math.random() * ANIMAL_SHEET.frames),
+          });
+        } else {
+          ag.sprite.setPosition(ag.sprite.x + (dx / dist) * step, ag.sprite.y + (dy / dist) * step);
+        }
+        ag.sprite.setDepth(this.depthForY(ag.sprite.y));
+      }
+    }
+  }
+
+  // ------------------------------------------------------------------
+  // golpes em recursos (fase de teste: 3 golpes → quebra + drops)
+  // ------------------------------------------------------------------
+
+  /** Hurtbox do admin (px do frame fonte, ancorada no pé do sprite) → retângulo no mundo. */
+  private nodeHurtboxRect(node: ResourceNode): Phaser.Geom.Rectangle {
+    const spr = node.sprite;
+    const hb: ResourceHurtbox | undefined = this.worldConfig?.hurtboxes?.[node.key];
+    const frameW = spr.frame?.realWidth ?? spr.width;
+    const frameH = spr.frame?.realHeight ?? spr.height;
+    const sx = spr.scaleX || 1;
+    const sy = spr.scaleY || 1;
+    const w = (hb?.width ?? frameW) * sx;
+    const h = (hb?.height ?? frameH) * sy;
+    const cx = spr.x + (hb?.offsetX ?? 0) * sx;
+    const bottom = spr.y - (hb?.offsetY ?? 0) * sy;
+    return new Phaser.Geom.Rectangle(cx - w / 2, bottom - h, w, h);
+  }
+
+  /**
+   * Um golpe do jogador no mundo de coleta: caixa na frente do jogador na
+   * direção olhada; acerta só o nó mais próximo. Retorna true se acertou algo.
+   */
+  tryHitResource(playerX: number, playerY: number, direction: string): boolean {
+    if (!this.active || !this.nodes.length) return false;
+    const reach = 46;
+    const dir = String(direction || 'down').toLowerCase();
+    let dx = 0;
+    let dy = 0;
+    if (dir.includes('left')) dx -= 1;
+    if (dir.includes('right')) dx += 1;
+    if (dir.includes('up')) dy -= 1;
+    if (dir.includes('down')) dy += 1;
+    if (!dx && !dy) dy = 1;
+    const norm = Math.hypot(dx, dy);
+    const cx = playerX + (dx / norm) * reach;
+    const cy = playerY - 20 + (dy / norm) * reach; // -20: altura do corpo, não o pé
+    const swing = new Phaser.Geom.Rectangle(cx - 30, cy - 26, 60, 52);
+
+    let best: ResourceNode | null = null;
+    let bestDist = Infinity;
+    for (const node of this.nodes) {
+      if (node.broken || !node.sprite.active) continue;
+      if (!Phaser.Geom.Rectangle.Overlaps(swing, this.nodeHurtboxRect(node))) continue;
+      const d = Phaser.Math.Distance.Between(playerX, playerY, node.sprite.x, node.sprite.y);
+      if (d < bestDist) {
+        bestDist = d;
+        best = node;
+      }
+    }
+    if (!best) return false;
+    this.applyHit(best);
+    return true;
+  }
+
+  private applyHit(node: ResourceNode): void {
+    const spr = node.sprite;
+    // Flash branco curto — feedback visual do golpe.
+    // Phaser 4: fill-tint é setTint + setTintMode (setTintFill não recebe cor).
+    spr.setTint(0xffffff);
+    spr.setTintMode(Phaser.TintModes.FILL);
+    this.scene.time.delayedCall(90, () => {
+      if (spr.active) {
+        spr.clearTint();
+        spr.setTintMode(Phaser.TintModes.MULTIPLY);
+      }
+    });
+    if (node.kind === 'animal') {
+      // Animais ainda não morrem (a morte será especificada depois): só reagem.
+      return;
+    }
+    node.hits++;
+    if (node.hits >= RESOURCE_HITS_TO_BREAK) {
+      node.broken = true;
+      this.breakNode(node);
+    } else {
+      // Tremidinha de dano.
+      this.scene.tweens.add({ targets: spr, x: spr.x + 2, duration: 45, yoyo: true, repeat: 1 });
+    }
+  }
+
+  private breakNode(node: ResourceNode): void {
+    const scene = this.scene;
+    const spr = node.sprite;
+    const dropX = spr.x;
+    const dropY = spr.y;
+    if (node.kind === 'mineral' && spr instanceof Phaser.GameObjects.Sprite && scene.anims.exists(mineralBreakAnimKey(node.id))) {
+      spr.play(mineralBreakAnimKey(node.id));
+      spr.once(Phaser.Animations.Events.ANIMATION_COMPLETE, () => {
+        this.spawnDrops(mineralDropTextureKey(node.id), dropX, dropY);
+        spr.destroy();
+      });
+      return;
+    }
+    if (node.kind === 'tree' && spr instanceof Phaser.GameObjects.Sprite && scene.anims.exists(treeFallAnimKey(node.id as TreeType))) {
+      spr.play(treeFallAnimKey(node.id as TreeType));
+      spr.once(Phaser.Animations.Events.ANIMATION_COMPLETE, () => {
+        // Toco (último frame) permanece; drops saem da base do tronco.
+        this.spawnDrops(treeDropTextureKey(node.id as TreeType), dropX, dropY);
+      });
+      return;
+    }
+    // Ervas, arbusto e pedra de mão: sem arquivos de drop — coleta direta (fade).
+    scene.tweens.add({
+      targets: spr,
+      alpha: 0,
+      scaleX: spr.scaleX * 0.6,
+      scaleY: spr.scaleY * 0.6,
+      duration: 280,
+      ease: 'Quad.easeIn',
+      onComplete: () => spr.destroy(),
+    });
+  }
+
+  /** Mini-itens pulam do nó quebrado; o imã do updateDrops() puxa e coleta. */
+  private spawnDrops(textureKey: string, x: number, y: number): void {
+    const scene = this.scene;
+    if (!scene.textures.exists(textureKey)) {
+      console.warn(`[CraftingMap] textura de drop ausente: ${textureKey}`);
+      return;
+    }
+    for (let i = 0; i < RESOURCE_DROP.count; i++) {
+      const ang = Math.random() * Math.PI * 2;
+      const rad = RESOURCE_DROP.scatterRadius * (0.5 + 0.5 * Math.random());
+      const spr = scene.add.image(x, y - 8, textureKey);
+      spr.setOrigin(0.5, 0.5);
+      spr.setDepth(this.depthForY(y) + 1);
+      spr.setScale(0);
+      const item: DropItem = { sprite: spr, state: 'pop' };
+      this.drops.push(item);
+      scene.tweens.add({
+        targets: spr,
+        x: x + Math.cos(ang) * rad,
+        y: y - 8 + Math.sin(ang) * rad * 0.6,
+        scaleX: 1,
+        scaleY: 1,
+        duration: RESOURCE_DROP.popMs,
+        ease: 'Back.easeOut',
+        onComplete: () => {
+          item.state = 'idle';
+        },
+      });
+    }
+  }
+
+  private updateDrops(deltaMs: number, playerX?: number, playerY?: number): void {
+    if (!this.drops.length || playerX === undefined || playerY === undefined) return;
+    const py = playerY - 12; // alvo: canela do jogador, não o pé exato
+    for (const d of this.drops) {
+      if (d.state !== 'idle' || !d.sprite.active) continue;
+      const dx = playerX - d.sprite.x;
+      const dy = py - d.sprite.y;
+      const dist = Math.hypot(dx, dy);
+      if (dist > RESOURCE_DROP.magnetRadius) continue;
+      if (dist <= RESOURCE_DROP.collectRadius) {
+        d.state = 'pop'; // trava o imã enquanto some
+        this.scene.tweens.add({
+          targets: d.sprite,
+          alpha: 0,
+          scaleX: 0.2,
+          scaleY: 0.2,
+          duration: 110,
+          onComplete: () => d.sprite.destroy(),
+        });
+        continue;
+      }
+      // Imã: acelera conforme chega mais perto.
+      const speed = RESOURCE_DROP.magnetSpeed * (1.25 - Math.min(1, dist / RESOURCE_DROP.magnetRadius) * 0.5);
+      const step = (speed * deltaMs) / 1000;
+      d.sprite.setPosition(d.sprite.x + (dx / dist) * step, d.sprite.y + (dy / dist) * step);
+    }
+    // Poda ocasional dos destruídos (barata: só quando a lista cresce).
+    if (this.drops.length > 32) this.drops = this.drops.filter((d) => d.sprite.active);
   }
 
   // ------------------------------------------------------------------
@@ -454,15 +791,16 @@ export class CraftingMapRuntime {
 
   private placeResources(tmj: any) {
     const scene = this.scene;
-    const place = (x: number, y: number, texture: string, frame?: number): Phaser.GameObjects.Image | null => {
+    // Sprites (não Images) para todos: permite animação de quebra/queda no corte.
+    const place = (x: number, y: number, texture: string, frame?: number): Phaser.GameObjects.Sprite | null => {
       if (!scene.textures.exists(texture)) return null;
-      const img = frame !== undefined
-        ? scene.add.image(x, y, texture, frame)
-        : scene.add.image(x, y, texture);
-      img.setOrigin(0.5, 1);
-      img.setDepth(this.depthForY(y));
-      this.sprites.push(img);
-      return img;
+      const spr = frame !== undefined
+        ? scene.add.sprite(x, y, texture, frame)
+        : scene.add.sprite(x, y, texture);
+      spr.setOrigin(0.5, 1);
+      spr.setDepth(this.depthForY(y));
+      this.sprites.push(spr);
+      return spr;
     };
 
     // Árvores: frame 0 = em pé; a animação de queda já fica registrada p/ o corte.
@@ -474,7 +812,10 @@ export class CraftingMapRuntime {
         continue;
       }
       const img = place(obj.x, obj.y, treeTextureKey(type as TreeType), 0);
-      if (img) img.setData('treeType', type);
+      if (img) {
+        img.setData('treeType', type);
+        this.nodes.push({ sprite: img, key: `tree:${type}`, kind: 'tree', id: type, hits: 0, broken: false });
+      }
     }
     if (unknownTreeTypes) console.warn(`[CraftingMap] ${unknownTreeTypes} pontos de árvore com treeType desconhecido`);
 
@@ -487,27 +828,42 @@ export class CraftingMapRuntime {
       const j = Math.floor(rng() * (i + 1));
       [mineralPoints[i], mineralPoints[j]] = [mineralPoints[j], mineralPoints[i]];
     }
+    const counts = this.worldConfig?.mineralCounts;
     let cursor = 0;
     for (const m of MINERALS) {
-      for (let n = 0; n < m.defaultCount && cursor < mineralPoints.length; n++, cursor++) {
+      const want = counts?.[m.id] ?? m.defaultCount;
+      for (let n = 0; n < want && cursor < mineralPoints.length; n++, cursor++) {
         const p = mineralPoints[cursor];
         const img = place(p.x, p.y, mineralTextureKey(m.id), 0);
-        if (img) img.setData('mineralId', m.id);
+        if (img) {
+          img.setData('mineralId', m.id);
+          this.nodes.push({ sprite: img, key: `mineral:${m.id}`, kind: 'mineral', id: m.id, hits: 0, broken: false });
+        }
       }
     }
 
     // Pedras coletáveis com a mão (posições fixas do mapa).
     for (const obj of this.findObjects(tmj, 'fallen_simple_stones')) {
-      place(obj.x, obj.y, HAND_STONE.textureKey, 0);
+      const img = place(obj.x, obj.y, HAND_STONE.textureKey, 0);
+      if (img) this.nodes.push({ sprite: img, key: 'hand_stone', kind: 'hand_stone', id: 'hand_stone', hits: 0, broken: false });
     }
 
     // Arbustos simples.
     for (const obj of this.findObjects(tmj, 'simple_bush')) {
-      place(obj.x, obj.y, BUSH.textureKey);
+      const img = place(obj.x, obj.y, BUSH.textureKey);
+      if (img) this.nodes.push({ sprite: img, key: 'bush', kind: 'bush', id: 'bush', hits: 0, broken: false });
     }
 
-    // Animais (visuais por enquanto; IA/coleta ficam para a camada de mecânicas).
-    // startFrame aleatório dessincroniza o "comendo" entre os bichos.
+    // Ervas e plantas (erva-da-cura, erva vermelha, erva azul, espinho da dama, raiz do cavalo).
+    for (const h of HERBS) {
+      for (const obj of this.findObjects(tmj, h.layer)) {
+        const img = place(obj.x, obj.y, herbTextureKey(h.id));
+        if (img) this.nodes.push({ sprite: img, key: `herb:${h.id}`, kind: 'herb', id: h.id, hits: 0, broken: false });
+      }
+    }
+
+    // Animais: começam comendo numa direção aleatória; o passeio roda no update().
+    // startFrame aleatório dessincroniza os bichos.
     for (const a of ANIMALS) {
       const key = animalTextureKey(a.id);
       if (!scene.textures.exists(key)) continue;
@@ -515,8 +871,22 @@ export class CraftingMapRuntime {
         const spr = scene.add.sprite(obj.x, obj.y, key, 0);
         spr.setOrigin(0.5, 1);
         spr.setDepth(this.depthForY(obj.y));
-        spr.play({ key: animalAnimKey(a.id), startFrame: Math.floor(Math.random() * ANIMAL_SHEET.loopFrames) });
+        const dir = ANIMAL_DIRECTIONS[Math.floor(Math.random() * ANIMAL_DIRECTIONS.length)];
+        spr.play({ key: animalAnimKey(a.id, 'eat', dir), startFrame: Math.floor(Math.random() * ANIMAL_SHEET.frames) });
         this.sprites.push(spr);
+        this.animals.push({
+          sprite: spr,
+          def: a,
+          homeX: obj.x,
+          homeY: obj.y,
+          state: 'eat',
+          dir,
+          timerMs: ANIMAL_WANDER.eatMinMs + Math.random() * (ANIMAL_WANDER.eatMaxMs - ANIMAL_WANDER.eatMinMs),
+          targetX: obj.x,
+          targetY: obj.y,
+        });
+        // Animais também recebem golpes (só reagem — morte será especificada depois).
+        this.nodes.push({ sprite: spr, key: `animal:${a.id}`, kind: 'animal', id: a.id, hits: 0, broken: false });
       }
     }
   }

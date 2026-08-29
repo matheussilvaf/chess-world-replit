@@ -2,7 +2,7 @@ import { useEffect, useState, useCallback } from 'react';
 import { supabase } from '../../lib/supabase';
 import { useInteractionStore } from '../../stores/interactionStore';
 import { getColyseusHttpUrl } from '../../config/colyseus';
-import { Settings, Gauge, ZoomIn, ArrowLeft, Crosshair, Bug, Waypoints, Monitor, Smartphone, MessageSquare, Wand2, Swords, Hammer, Boxes } from 'lucide-react';
+import { Settings, Gauge, ZoomIn, ArrowLeft, Crosshair, Bug, Waypoints, Monitor, Smartphone, MessageSquare, Wand2, Swords, Hammer, Boxes, Sprout } from 'lucide-react';
 import { TournamentConfigSection } from './TournamentConfigSection';
 
 interface GameSettings {
@@ -188,6 +188,18 @@ export function AdminPage() {
             <div>
               <p className="text-sm font-medium text-white">Craft</p>
               <p className="text-xs text-slate-400">Receitas das ferramentas e craft items</p>
+            </div>
+          </a>
+          <a
+            href="/admin/mundo-coleta"
+            className="flex items-center gap-3 rounded-xl border border-slate-800 bg-slate-900 hover:border-emerald-500/50 hover:bg-slate-800/80 transition-colors p-4"
+          >
+            <div className="w-9 h-9 rounded-lg bg-emerald-500/10 flex items-center justify-center">
+              <Sprout className="w-4 h-4 text-emerald-400" />
+            </div>
+            <div>
+              <p className="text-sm font-medium text-white">Mundo de Coleta</p>
+              <p className="text-xs text-slate-400">Minérios e caixas de acerto dos recursos</p>
             </div>
           </a>
           <a

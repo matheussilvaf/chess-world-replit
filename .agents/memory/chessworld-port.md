@@ -201,3 +201,8 @@ Rotas Express custom do servidor devem ser registradas COM o prefixo `/api` (ex.
 - **Regra:** reuso só quando a região pedida == região da sala atual (`lastWorldRegion` no colyseusClient). Região diferente → leave + join novo. Teleportes de recepção de torneio usam a MESMA região e DEPENDEM do reuso — não forçar leave incondicional.
 - **Why:** sair da sala world durante fluxo de torneio na mesma região = risco de walkover (presença some).
 - Os warns `switchMap: unknown tileset` ($fountain, shop, exterior…) ao voltar pro mapa principal são RUÍDO pré-existente: tilesets de objetos resolvem via `findTilesetForGidInMap`/`renderTileObjects`, não pelo loop de camadas. Não "consertar".
+
+## Fase mundo de coleta — lições (ago/2026)
+- Phaser 4: `setTintFill()` não aceita cor (assinatura vazia). Flash de dano = `setTint(cor)` + `setTintMode(Phaser.TintModes.FILL)`, e ao limpar: `clearTint()` + `setTintMode(MULTIPLY)`.
+- Rotas admin HTTP novas devem usar `requireSupabaseAdmin` (auth/supabaseAuth.ts): allowlist `ADMIN_EMAILS` (vírgulas); sem a var só libera em NODE_ENV=development, senão 403 fail-closed. Colyseus Cloud precisa da var definida. Rotas admin antigas (rig/craft/assets) ainda são só-auth — pendência conhecida.
+- Callbacks atrasados que mexem no mapa de coleta (ex.: golpe no meio do swing) capturam `craftingRuntime.generation` (incrementado no teardown) para não acertar recursos de uma sessão nova do mapa.

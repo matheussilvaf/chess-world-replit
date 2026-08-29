@@ -23,6 +23,10 @@ import {
   publicCraftDataHandler,
 } from "./craft/craftRoutes.js";
 import {
+  collectionAdminRouter,
+  publicCollectionConfigHandler,
+} from "./collection/collectionRoutes.js";
+import {
   assetCategoriesAdminRouter,
   publicAssetCategoryDataHandler,
 } from "./assets/assetCategoryRoutes.js";
@@ -170,6 +174,11 @@ const config: ConfigOptions = {
     app.get("/api/craft-data", publicCraftDataHandler);
     app.use("/api/admin/craft-items", craftItemsAdminRouter);
     app.use("/api/admin/craft-recipes", craftRecipesAdminRouter);
+
+    // Mundo de Coleta: config única (quantidades de minérios + hurtboxes).
+    // GET público cacheado — o runtime do mapa lê ao entrar no mundo.
+    app.get("/api/collection-world-config", publicCollectionConfigHandler);
+    app.use("/api/admin/collection-world-config", collectionAdminRouter);
 
     // Assets Controller (spec: /admin/assets-controller): categorias de
     // permissão de assets; GET público cacheado para features futuras.

@@ -1187,11 +1187,12 @@ export class WorldScene extends Phaser.Scene {
 
   private craftingRuntime = new CraftingMapRuntime(this);
 
-  update() {
+  update(_time: number = 0, delta: number = 16.7) {
     if (!this.player || !this.playerBody) return;
 
     // Mundo de Coleta: profundidade por Y — player passa atrás/na frente de árvores etc.
     if (this.craftingRuntime.active) {
+      this.craftingRuntime.update(delta, this.player?.x, this.player?.y);
       this.player.setDepth(this.craftingRuntime.depthForY(this.player.y));
       this.otherPlayers.forEach((remote) => {
         remote.container.setDepth(this.craftingRuntime.depthForY(remote.container.y));
@@ -3225,6 +3226,20 @@ export class WorldScene extends Phaser.Scene {
     if (this.attackLocksMovement) this.emitMovement(false, dir);
     // Intent only — the server owns validation, timing and hit detection.
     this.attackSender?.({ type: 'attack', movement: attackMv.movement, direction: dir, characterId: def.id });
+    // Mundo de coleta (fase de teste): o mesmo golpe tenta acertar um recurso
+    // local no meio do swing (cliente-local; a coleta autoritativa vem depois).
+    if (this.craftingRuntime.active) {
+      const midSwingMs = Math.min(240, ((attackMv.columns / 12) * 1000) / 2);
+      // Captura geração + direção no início do golpe: se o jogador sair do
+      // mapa (e até voltar) antes do meio do swing, o callback vira no-op.
+      const swingGen = this.craftingRuntime.generation;
+      const swingDir = dir;
+      this.time.delayedCall(midSwingMs, () => {
+        if (this.player && this.craftingRuntime.active && this.craftingRuntime.generation === swingGen) {
+          this.craftingRuntime.tryHitResource(this.player.x, this.player.y, swingDir);
+        }
+      });
+    }
     return true;
   }
 
