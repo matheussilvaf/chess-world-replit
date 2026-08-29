@@ -13,6 +13,10 @@ import {
   HAND_STONE,
   BUSH,
   craftDepthForY,
+  ANIMALS,
+  ANIMAL_SHEET,
+  animalTextureKey,
+  animalAnimKey,
   type TreeType,
 } from '../config/craftingMapConfig';
 import { getTextureKeyForTileset } from '../config/worldAssets';
@@ -55,7 +59,7 @@ export class CraftingMapRuntime {
   private sheetTextureByName = new Map<string, string>();
   /** `${tiledName}:${localId}` → textura de tile de collection usado no mapa. */
   private collectionTextures = new Map<string, CollectionTexEntry>();
-  private sprites: Phaser.GameObjects.Image[] = [];
+  private sprites: (Phaser.GameObjects.Image | Phaser.GameObjects.Sprite)[] = [];
   private animEvent: Phaser.Time.TimerEvent | null = null;
   private animTick = 0;
   private missing: string[] = [];
@@ -154,6 +158,14 @@ export class CraftingMapRuntime {
       if (!scene.textures.exists(BUSH.textureKey)) {
         scene.load.image(BUSH.textureKey, encodeURI(BUSH.url));
       }
+      for (const a of ANIMALS) {
+        if (!scene.textures.exists(animalTextureKey(a.id))) {
+          scene.load.spritesheet(animalTextureKey(a.id), encodeURI(`${RESOURCES_BASE}animais/${a.file}`), {
+            frameWidth: a.frameSize,
+            frameHeight: a.frameSize,
+          });
+        }
+      }
     });
 
     // Pixel art: NEAREST em tudo que acabou de entrar. Arquivo ausente no dev
@@ -186,6 +198,20 @@ export class CraftingMapRuntime {
     }
     if (scene.textures.exists(BUSH.textureKey)) {
       scene.textures.get(BUSH.textureKey).setFilter(Phaser.Textures.FilterMode.NEAREST);
+    }
+    for (const a of ANIMALS) {
+      const key = animalTextureKey(a.id);
+      if (scene.textures.exists(key)) {
+        scene.textures.get(key).setFilter(Phaser.Textures.FilterMode.NEAREST);
+        if (!scene.anims.exists(animalAnimKey(a.id))) {
+          scene.anims.create({
+            key: animalAnimKey(a.id),
+            frames: scene.anims.generateFrameNumbers(key, { start: 0, end: ANIMAL_SHEET.loopFrames - 1 }),
+            frameRate: ANIMAL_SHEET.frameRate,
+            repeat: -1,
+          });
+        }
+      }
     }
 
     if (this.missing.length) {
@@ -478,6 +504,20 @@ export class CraftingMapRuntime {
     // Arbustos simples.
     for (const obj of this.findObjects(tmj, 'simple_bush')) {
       place(obj.x, obj.y, BUSH.textureKey);
+    }
+
+    // Animais (visuais por enquanto; IA/coleta ficam para a camada de mecânicas).
+    // startFrame aleatório dessincroniza o "comendo" entre os bichos.
+    for (const a of ANIMALS) {
+      const key = animalTextureKey(a.id);
+      if (!scene.textures.exists(key)) continue;
+      for (const obj of this.findObjects(tmj, a.layer)) {
+        const spr = scene.add.sprite(obj.x, obj.y, key, 0);
+        spr.setOrigin(0.5, 1);
+        spr.setDepth(this.depthForY(obj.y));
+        spr.play({ key: animalAnimKey(a.id), startFrame: Math.floor(Math.random() * ANIMAL_SHEET.loopFrames) });
+        this.sprites.push(spr);
+      }
     }
   }
 }

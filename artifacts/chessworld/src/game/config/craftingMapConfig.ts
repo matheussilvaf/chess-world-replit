@@ -77,6 +77,28 @@ export const BUSH = {
   url: `${RESOURCES_BASE}ervas e plantas/bush.png`,
 } as const;
 
+/** Animais: sheets "eating" com grade 7×4 de frames quadrados; loop usa a 1ª linha. */
+export const ANIMAL_SHEET = { columns: 7, rows: 4, loopFrames: 7, frameRate: 6 } as const;
+
+export interface AnimalDef {
+  id: string;
+  /** Nome da camada de pontos (insert points) no TMJ. */
+  layer: string;
+  /** Arquivo dentro de resources/animais/ */
+  file: string;
+  /** Lado do frame quadrado no sheet. */
+  frameSize: number;
+}
+
+export const ANIMALS: AnimalDef[] = [
+  { id: 'cow', layer: 'cows', file: 'cow/coweating.png', frameSize: 140 },
+  { id: 'sheep', layer: 'sheeps', file: 'sheep/sheepeating.png', frameSize: 116 },
+  { id: 'chicken', layer: 'chickens', file: 'chicken/chickeneating.png', frameSize: 44 },
+];
+
+export const animalTextureKey = (id: string) => `craft-animal-${id}`;
+export const animalAnimKey = (id: string) => `craft-animal-eat-${id}`;
+
 /**
  * Y-sort do mundo de coleta: profundidade em função do Y (pé do sprite),
  * numa banda entre as camadas de chão (0) e as camadas "above player" (200).

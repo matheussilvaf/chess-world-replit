@@ -13003,7 +13003,7 @@
                         }],
                  "opacity":1,
                  "type":"objectgroup",
-                 "visible":true,
+                 "visible":false,
                  "x":0,
                  "y":0
                 }, 
@@ -16566,14 +16566,13 @@
                         }],
                  "opacity":1,
                  "type":"objectgroup",
-                 "visible":true,
+                 "visible":false,
                  "x":0,
                  "y":0
                 }, 
                 {
                  "draworder":"topdown",
                  "id":121,
-                 "locked":true,
                  "name":"minerals_spawns",
                  "objects":[
                         {
@@ -19554,7 +19553,7 @@
                         }],
                  "opacity":1,
                  "type":"objectgroup",
-                 "visible":true,
+                 "visible":false,
                  "x":0,
                  "y":0
                 }, 
@@ -19831,7 +19830,7 @@
                         }],
                  "opacity":1,
                  "type":"objectgroup",
-                 "visible":true,
+                 "visible":false,
                  "x":0,
                  "y":0
                 }, 
@@ -20370,7 +20369,7 @@
                         }],
                  "opacity":1,
                  "type":"objectgroup",
-                 "visible":true,
+                 "visible":false,
                  "x":0,
                  "y":0
                 }, 
@@ -20765,7 +20764,7 @@
                         }],
                  "opacity":1,
                  "type":"objectgroup",
-                 "visible":true,
+                 "visible":false,
                  "x":0,
                  "y":0
                 }, 
@@ -21160,7 +21159,7 @@
                         }],
                  "opacity":1,
                  "type":"objectgroup",
-                 "visible":true,
+                 "visible":false,
                  "x":0,
                  "y":0
                 }, 
@@ -21627,7 +21626,7 @@
                         }],
                  "opacity":1,
                  "type":"objectgroup",
-                 "visible":true,
+                 "visible":false,
                  "x":0,
                  "y":0
                 }, 
@@ -21830,7 +21829,7 @@
                         }],
                  "opacity":1,
                  "type":"objectgroup",
-                 "visible":true,
+                 "visible":false,
                  "x":0,
                  "y":0
                 }, 
@@ -22417,7 +22416,7 @@
                         }],
                  "opacity":1,
                  "type":"objectgroup",
-                 "visible":true,
+                 "visible":false,
                  "x":0,
                  "y":0
                 }, 
@@ -22593,10 +22592,21 @@
                          "width":0,
                          "x":2984,
                          "y":4833.33
-                        }, 
+                        }],
+                 "opacity":1,
+                 "type":"objectgroup",
+                 "visible":false,
+                 "x":0,
+                 "y":0
+                }, 
+                {
+                 "draworder":"topdown",
+                 "id":129,
+                 "name":"sheeps",
+                 "objects":[
                         {
                          "height":0,
-                         "id":744,
+                         "id":1108,
                          "name":"",
                          "opacity":1,
                          "point":true,
@@ -22615,12 +22625,12 @@
                          "type":"",
                          "visible":true,
                          "width":0,
-                         "x":3643,
-                         "y":4530
+                         "x":3659.33333333333,
+                         "y":4529.66666666667
                         }, 
                         {
                          "height":0,
-                         "id":745,
+                         "id":1109,
                          "name":"",
                          "opacity":1,
                          "point":true,
@@ -22639,12 +22649,12 @@
                          "type":"",
                          "visible":true,
                          "width":0,
-                         "x":3803,
-                         "y":4475
+                         "x":3819.33333333333,
+                         "y":4474.66666666667
                         }, 
                         {
                          "height":0,
-                         "id":746,
+                         "id":1110,
                          "name":"",
                          "opacity":1,
                          "point":true,
@@ -22663,12 +22673,12 @@
                          "type":"",
                          "visible":true,
                          "width":0,
-                         "x":3805,
-                         "y":4570
+                         "x":3821.33333333333,
+                         "y":4569.66666666667
                         }, 
                         {
                          "height":0,
-                         "id":747,
+                         "id":1111,
                          "name":"",
                          "opacity":1,
                          "point":true,
@@ -22687,12 +22697,12 @@
                          "type":"",
                          "visible":true,
                          "width":0,
-                         "x":3637,
-                         "y":4698
+                         "x":3653.33333333333,
+                         "y":4697.66666666667
                         }, 
                         {
                          "height":0,
-                         "id":748,
+                         "id":1112,
                          "name":"",
                          "opacity":1,
                          "point":true,
@@ -22711,12 +22721,12 @@
                          "type":"",
                          "visible":true,
                          "width":0,
-                         "x":3834,
-                         "y":4728
+                         "x":3850.33333333333,
+                         "y":4727.66666666667
                         }, 
                         {
                          "height":0,
-                         "id":749,
+                         "id":1113,
                          "name":"",
                          "opacity":1,
                          "point":true,
@@ -22735,12 +22745,12 @@
                          "type":"",
                          "visible":true,
                          "width":0,
-                         "x":3932,
-                         "y":4630
+                         "x":3948.33333333333,
+                         "y":4629.66666666667
                         }, 
                         {
                          "height":0,
-                         "id":750,
+                         "id":1114,
                          "name":"",
                          "opacity":1,
                          "point":true,
@@ -22759,12 +22769,12 @@
                          "type":"",
                          "visible":true,
                          "width":0,
-                         "x":3641,
-                         "y":4828
+                         "x":3657.33333333333,
+                         "y":4827.66666666667
                         }, 
                         {
                          "height":0,
-                         "id":751,
+                         "id":1115,
                          "name":"",
                          "opacity":1,
                          "point":true,
@@ -22783,23 +22793,12 @@
                          "type":"",
                          "visible":true,
                          "width":0,
-                         "x":3933,
-                         "y":4791
+                         "x":3949.33333333333,
+                         "y":4790.66666666667
                         }],
                  "opacity":1,
                  "type":"objectgroup",
-                 "visible":true,
-                 "x":0,
-                 "y":0
-                }, 
-                {
-                 "draworder":"topdown",
-                 "id":129,
-                 "name":"sheeps",
-                 "objects":[],
-                 "opacity":1,
-                 "type":"objectgroup",
-                 "visible":true,
+                 "visible":false,
                  "x":0,
                  "y":0
                 }, 
@@ -23338,7 +23337,7 @@
                         }],
                  "opacity":1,
                  "type":"objectgroup",
-                 "visible":true,
+                 "visible":false,
                  "x":0,
                  "y":0
                 }, 
@@ -23410,7 +23409,7 @@
                         }],
                  "opacity":1,
                  "type":"objectgroup",
-                 "visible":true,
+                 "visible":false,
                  "x":0,
                  "y":0
                 }, 
@@ -23469,7 +23468,7 @@
                         }],
                  "opacity":1,
                  "type":"objectgroup",
-                 "visible":true,
+                 "visible":false,
                  "x":0,
                  "y":0
                 }, 
@@ -24347,7 +24346,7 @@
                         }],
                  "opacity":1,
                  "type":"objectgroup",
-                 "visible":true,
+                 "visible":false,
                  "x":0,
                  "y":0
                 }, 
@@ -24419,7 +24418,7 @@
                         }],
                  "opacity":1,
                  "type":"objectgroup",
-                 "visible":true,
+                 "visible":false,
                  "x":0,
                  "y":0
                 }],
@@ -24431,7 +24430,7 @@
          "y":0
         }],
  "nextlayerid":140,
- "nextobjectid":1108,
+ "nextobjectid":1116,
  "orientation":"orthogonal",
  "renderorder":"right-down",
  "tiledversion":"1.12.2",
