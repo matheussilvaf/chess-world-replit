@@ -120,6 +120,20 @@ interface DropItem {
   itemKey: string;
 }
 
+/**
+ * Estado do golpe do jogador consultado a cada frame (injetado pelo
+ * WorldScene): hitboxes da ARMA equipada, vindas do perfil autorado no
+ * Character Rig Controller (/admin/rigs), já em coordenadas de mundo.
+ */
+export interface PlayerSwingState {
+  /** Identidade do golpe — cada golpe acerta no máximo um nó. */
+  swingId: number;
+  playerX: number;
+  playerY: number;
+  /** Hitboxes do frame ATUAL da animação (vazio = frame sem hitbox). */
+  rects: Phaser.Geom.Rectangle[];
+}
+
 const GID_FLAGS = 0x0fffffff;
 const FLIPPED_H = 0x80000000;
 const FLIPPED_V = 0x40000000;
@@ -161,6 +175,16 @@ export class CraftingMapRuntime {
   /** Injetada pelo WorldScene ao montar o mapa — animais respeitam as colisões do jogador. */
   setCollisionQuery(fn: (x: number, y: number) => boolean): void {
     this.isBlockedAt = fn;
+  }
+
+  /** Consulta do golpe atual (hitboxes do rig/arma); null = fora de golpe. */
+  private playerSwingQuery: (() => PlayerSwingState | null) | null = null;
+  /** Último golpe que já conectou — um golpe nunca acerta duas vezes. */
+  private lastConsumedSwingId = 0;
+
+  /** Injetada pelo WorldScene — o golpe do jogador vem do perfil de hitbox da arma. */
+  setPlayerSwingQuery(fn: () => PlayerSwingState | null): void {
+    this.playerSwingQuery = fn;
   }
 
   /**
@@ -391,6 +415,10 @@ export class CraftingMapRuntime {
 
   /** Chamado pelo switchMap depois das camadas padrão serem criadas. */
   postBuild(map: Phaser.Tilemaps.Tilemap, tmjData: any) {
+    // Golpe iniciado ANTES de (re)entrar no mapa não vale contra nós recém-
+    // criados: consome qualquer golpe em andamento na abertura da sessão.
+    const inFlight = this.playerSwingQuery?.();
+    if (inFlight) this.lastConsumedSwingId = inFlight.swingId;
     this.active = true;
     this.placeCollectionContent(tmjData);
     this.startTileAnimations(map);
@@ -398,7 +426,6 @@ export class CraftingMapRuntime {
   }
 
   teardown() {
-    this.mapGeneration++;
     for (const s of this.sprites) s.destroy();
     this.sprites = [];
     this.animals = [];
@@ -417,17 +444,10 @@ export class CraftingMapRuntime {
     return craftDepthForY(y, this.mapHeightPx);
   }
 
-  /** Muda a cada saída do mapa — invalida callbacks atrasados de sessões antigas. */
-  private mapGeneration = 0;
-
-  /** Geração atual (capturada por callbacks atrasados do WorldScene). */
-  get generation(): number {
-    return this.mapGeneration;
-  }
-
   /** Passeio/fuga dos animais + drops + respawns — chamado pelo WorldScene.update(). */
   update(deltaMs: number, playerX?: number, playerY?: number) {
     if (!this.active) return;
+    this.pollPlayerSwing();
     this.updateDrops(deltaMs, playerX, playerY);
     this.updateRespawns();
     const now = this.scene.time.now;
@@ -613,27 +633,41 @@ export class CraftingMapRuntime {
   }
 
   /**
-   * Um golpe do jogador no mundo de coleta: caixa na frente do jogador na
-   * direção olhada; acerta só o nó mais próximo. Retorna true se acertou algo.
+   * Nó que as hitboxes atuais acertariam: entre os nós cuja hurtbox toca
+   * alguma hitbox do frame, vence o mais próximo do jogador. (Fase de teste:
+   * QUALQUER arma/ferramenta acerta QUALQUER elemento; o pareamento
+   * ferramenta→elemento, ex. minério exige picareta, vem depois.)
    */
-  tryHitResource(playerX: number, playerY: number, direction: string): boolean {
-    if (!this.active || !this.nodes.length) return false;
-    const swing = this.swingRectFor(playerX, playerY, direction);
-
+  private swingTargetFor(state: PlayerSwingState): ResourceNode | null {
     let best: ResourceNode | null = null;
     let bestDist = Infinity;
     for (const node of this.nodes) {
       if (node.broken || !node.sprite.active) continue;
-      if (!Phaser.Geom.Rectangle.Overlaps(swing, this.nodeHurtboxRect(node))) continue;
-      const d = Phaser.Math.Distance.Between(playerX, playerY, node.sprite.x, node.sprite.y);
+      const hurt = this.nodeHurtboxRect(node);
+      if (!state.rects.some((r) => Phaser.Geom.Rectangle.Overlaps(r, hurt))) continue;
+      const d = Phaser.Math.Distance.Between(state.playerX, state.playerY, node.sprite.x, node.sprite.y);
       if (d < bestDist) {
         bestDist = d;
         best = node;
       }
     }
-    if (!best) return false;
+    return best;
+  }
+
+  /**
+   * Golpe frame a frame: enquanto a animação de ataque mostra hitboxes (perfil
+   * da arma no Character Rig Controller), testa contra as hurtboxes dos nós.
+   * O golpe conecta no PRIMEIRO frame em que uma hitbox toca um nó — e cada
+   * golpe (swingId) acerta no máximo uma vez.
+   */
+  private pollPlayerSwing(): void {
+    if (!this.nodes.length) return;
+    const state = this.playerSwingQuery?.();
+    if (!state || state.swingId === this.lastConsumedSwingId || state.rects.length === 0) return;
+    const best = this.swingTargetFor(state);
+    if (!best) return;
+    this.lastConsumedSwingId = state.swingId;
     this.applyHit(best);
-    return true;
   }
 
   /** Itens por quebra (config do admin ou padrão 3). */
@@ -657,48 +691,22 @@ export class CraftingMapRuntime {
   }
 
   /**
-   * Caixa de golpe na frente do jogador — ÚNICA fonte da conta usada pelo
-   * gameplay (tryHitResource) e pelo debug (drawDebug); as duas são idênticas
-   * por construção, o que torna o debug confiável.
+   * Debug Visuals (/admin): hurtbox de cada recurso/animal (lima), amarelo =
+   * nó que o golpe acertaria NESTE frame (mesma regra do gameplay: hitbox da
+   * arma × hurtbox + mais próximo) e círculo ciano = raio de fuga. As caixas
+   * do PERSONAGEM (hurtbox do rig + hitbox da arma) são desenhadas pelo
+   * WorldScene.drawCombatDebug — aqui só o lado dos recursos.
    */
-  swingRectFor(playerX: number, playerY: number, direction: string): Phaser.Geom.Rectangle {
-    const reach = 46;
-    const dir = String(direction || 'down').toLowerCase();
-    let dx = 0;
-    let dy = 0;
-    if (dir.includes('left')) dx -= 1;
-    if (dir.includes('right')) dx += 1;
-    if (dir.includes('up')) dy -= 1;
-    if (dir.includes('down')) dy += 1;
-    if (!dx && !dy) dy = 1;
-    const norm = Math.hypot(dx, dy);
-    const cx = playerX + (dx / norm) * reach;
-    const cy = playerY - 20 + (dy / norm) * reach; // -20: altura do corpo, não o pé
-    return new Phaser.Geom.Rectangle(cx - 30, cy - 26, 60, 52);
-  }
-
-  /**
-   * Debug Visuals (/admin): hurtbox de cada recurso/animal (lima), caixa de
-   * golpe na direção olhada (magenta), amarelo = nó que o golpe acertaria
-   * AGORA (mesma regra do gameplay: overlap + mais próximo) e círculo ciano =
-   * raio de fuga de quem está fugindo.
-   */
-  drawDebug(gfx: Phaser.GameObjects.Graphics, playerX: number, playerY: number, facing: string): void {
+  drawDebug(gfx: Phaser.GameObjects.Graphics): void {
     if (!this.active) return;
-    const swing = this.swingRectFor(playerX, playerY, facing);
 
-    // Mesmo critério do golpe: entre os nós com overlap, vence o mais próximo.
-    let wouldHit: ResourceNode | null = null;
-    let bestDist = Infinity;
-    for (const node of this.nodes) {
-      if (node.broken || !node.sprite.active) continue;
-      if (!Phaser.Geom.Rectangle.Overlaps(swing, this.nodeHurtboxRect(node))) continue;
-      const d = Phaser.Math.Distance.Between(playerX, playerY, node.sprite.x, node.sprite.y);
-      if (d < bestDist) {
-        bestDist = d;
-        wouldHit = node;
-      }
-    }
+    // Mesmo critério do golpe: hitboxes do frame atual (se houver golpe em
+    // andamento que ainda não conectou) contra as hurtboxes dos nós.
+    const state = this.playerSwingQuery?.();
+    const wouldHit =
+      state && state.swingId !== this.lastConsumedSwingId && state.rects.length > 0
+        ? this.swingTargetFor(state)
+        : null;
 
     for (const node of this.nodes) {
       if (node.broken || !node.sprite.active) continue;
@@ -712,10 +720,6 @@ export class CraftingMapRuntime {
       }
       gfx.strokeRect(r.x, r.y, r.width, r.height);
     }
-
-    // Caixa de golpe (magenta, como o hitbox do combate).
-    gfx.lineStyle(1.5, 0xff00ff, 0.95);
-    gfx.strokeRect(swing.x, swing.y, swing.width, swing.height);
 
     // Fuga em andamento: âncora + raio.
     const now = this.scene.time.now;

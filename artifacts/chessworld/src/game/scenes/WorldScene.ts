@@ -14,10 +14,23 @@ import {
   rowIndexFor,
   animKeyFor,
   directionForVector,
+  RUNTIME_CHARACTER_PREFIX,
   type WorldCharacterDef,
   type Direction8,
 } from '../characters/characterCatalog';
 import { composedDefIdFor, ensureAppearanceDef, pruneComposedAppearances } from '../characters/appearanceRuntime';
+import { COMPOSED_SHEET } from '../../shared/characters/PlayerCharacterShapes';
+import { loadRigConfig } from '../rigs/rigLoader';
+import { resolveWeaponProfileForFamily } from '../rigs/weaponLoader';
+import {
+  RIG_DIRECTION_BY_ROW,
+  composedFrameColumn,
+  rigHurtboxRectsFor,
+  weaponFamilyFromRef,
+  weaponHitboxRectsFor,
+} from '../rigs/composedRigFrames';
+import { localRectToWorldRect, type RigConfig } from '../../shared/combat/RigShapes';
+import type { WeaponHitboxProfile } from '../../shared/combat/WeaponShapes';
 import {
   ATTACK_COOLDOWN_CLIENT_MARGIN_MS,
   ATTACK_COOLDOWN_PAD_MS,
@@ -163,6 +176,15 @@ export class WorldScene extends Phaser.Scene {
   private localMaxHp = 100;
   private localHpBar: Phaser.GameObjects.Graphics | null = null;
   private combatDebugLabel: Phaser.GameObjects.Text | null = null;
+  // --- Character Rig Controller no jogo (defs compostos pc-…) ---
+  /** Rig carregado de /admin/rigs — dono das hurtboxes e do contrato da folha. */
+  private localRig: RigConfig | null = null;
+  /** Ref da arma equipada local ('' = desarmado) — chave do perfil de hitbox. */
+  private localWeaponRef: string | null = null;
+  /** Perfis de hitbox resolvidos por ref de arma; null = arma sem perfil. */
+  private weaponProfilesByRef = new Map<string, WeaponHitboxProfile | null>();
+  /** Identidade do golpe local — o mundo de coleta consome cada golpe uma vez. */
+  private swingSeq = 0;
   private currentDirection: Direction8 = 'down';
   private playerSpeed = MAP_CONFIG.playerSpeed;
   private showDebugVisuals = false;
@@ -613,9 +635,10 @@ export class WorldScene extends Phaser.Scene {
     // Combat boxes (hurtbox lime / hitbox magenta) following the live frame
     this.drawCombatDebug();
 
-    // Mundo de Coleta: hurtboxes dos recursos/animais + caixa de golpe do jogador
+    // Mundo de Coleta: hurtboxes dos recursos/animais (as caixas do personagem
+    // saem do drawCombatDebug acima, direto do Character Rig Controller).
     if (this.craftingRuntime.active) {
-      this.craftingRuntime.drawDebug(this.debugGfx, this.player.x, this.player.y, this.currentDirection);
+      this.craftingRuntime.drawDebug(this.debugGfx);
     }
   }
 
@@ -2769,6 +2792,9 @@ export class WorldScene extends Phaser.Scene {
     if (isCrafting) {
       // Animais respeitam as mesmas colisões do jogador (grade do pathfinder).
       this.craftingRuntime.setCollisionQuery((x, y) => this.pathfinder.isWorldBlockedAt(x, y));
+      // Golpes em recursos usam as hitboxes da arma equipada (perfil do
+      // Character Rig Controller), frame a frame.
+      this.craftingRuntime.setPlayerSwingQuery(() => this.currentSwingState());
       this.craftingRuntime.postBuild(map, tmjData);
     } else if (this.player) {
       this.player.setDepth(100); // restaura o depth fixo fora do Mundo de Coleta
@@ -3122,6 +3148,10 @@ export class WorldScene extends Phaser.Scene {
    */
   public async setLocalAppearance(appearanceRaw: string, weaponRef: string | null): Promise<boolean> {
     const seq = ++this.localAppearanceSeq;
+    // Arma equipada → perfil de hitbox do Character Rig Controller (golpes de
+    // coleta + debug). Carrega em paralelo com a composição da textura.
+    this.localWeaponRef = weaponRef ?? '';
+    this.ensureRigWeaponData(weaponRef ?? '');
     // Marca o alvo ANTES do await: um prune disparado no meio (saída de
     // remote etc.) não pode coletar o def que estamos construindo.
     this.localAppearanceTargetId = composedDefIdFor(appearanceRaw, weaponRef);
@@ -3233,20 +3263,10 @@ export class WorldScene extends Phaser.Scene {
     if (this.attackLocksMovement) this.emitMovement(false, dir);
     // Intent only — the server owns validation, timing and hit detection.
     this.attackSender?.({ type: 'attack', movement: attackMv.movement, direction: dir, characterId: def.id });
-    // Mundo de coleta (fase de teste): o mesmo golpe tenta acertar um recurso
-    // local no meio do swing (cliente-local; a coleta autoritativa vem depois).
-    if (this.craftingRuntime.active) {
-      const midSwingMs = Math.min(240, ((attackMv.columns / 12) * 1000) / 2);
-      // Captura geração + direção no início do golpe: se o jogador sair do
-      // mapa (e até voltar) antes do meio do swing, o callback vira no-op.
-      const swingGen = this.craftingRuntime.generation;
-      const swingDir = dir;
-      this.time.delayedCall(midSwingMs, () => {
-        if (this.player && this.craftingRuntime.active && this.craftingRuntime.generation === swingGen) {
-          this.craftingRuntime.tryHitResource(this.player.x, this.player.y, swingDir);
-        }
-      });
-    }
+    // Novo golpe: no mundo de coleta, as hitboxes da ARMA (perfil autorado no
+    // Character Rig Controller) são testadas frame a frame via
+    // setPlayerSwingQuery — nada de caixa fixa no cliente.
+    this.swingSeq += 1;
     return true;
   }
 
@@ -3540,8 +3560,131 @@ export class WorldScene extends Phaser.Scene {
     return { assetKey: walk.assetKey, direction: dir, frameInDir: Math.max(0, frameInDir) };
   }
 
+  /**
+   * Carrega (com cache) o rig do Character Rig Controller e o perfil de
+   * hitbox da arma `ref` — as MESMAS caixas autoradas em /admin/rigs valem
+   * no jogo (debug + golpes de coleta), em qualquer mapa.
+   */
+  private ensureRigWeaponData(ref: string): void {
+    void (async () => {
+      try {
+        const rig = this.localRig ?? (await loadRigConfig());
+        this.localRig = rig;
+        if (!this.weaponProfilesByRef.has(ref)) {
+          // Ref persistida (gen:weapon/...) → família → perfil. Sem família
+          // (mão limpa/ref inválida) fica null: sem perfil, sem golpe.
+          const family = weaponFamilyFromRef(ref);
+          const profile = family ? await resolveWeaponProfileForFamily(family, rig) : null;
+          this.weaponProfilesByRef.set(ref, profile);
+        }
+      } catch (e) {
+        console.warn('[WorldScene] rig/perfil de arma indisponível:', e instanceof Error ? e.message : e);
+      }
+    })();
+  }
+
+  /** Perfil já resolvido para uma ref de arma; dispara o fetch na 1ª consulta. */
+  private weaponProfileFor(ref: string | null | undefined): WeaponHitboxProfile | null {
+    const key = ref ?? '';
+    const cached = this.weaponProfilesByRef.get(key);
+    if (cached !== undefined) return cached;
+    this.ensureRigWeaponData(key); // popula o cache; até lá, sem hitboxes
+    return null;
+  }
+
+  /**
+   * Frame que um sprite COMPOSTO (def `pc-<hash>`) mostra agora, em termos do
+   * rig: movimento, direção (linha do pack) e COLUNA da folha (elo com o rig).
+   */
+  private composedSpriteState(
+    sprite: Phaser.GameObjects.Sprite,
+    def: WorldCharacterDef,
+    fallbackDirection: string,
+  ): { movement: string; direction: string; column: number; playing: boolean } | null {
+    if (!def.id.startsWith(RUNTIME_CHARACTER_PREFIX)) return null;
+    // Texturas estrangeiras (poses sentadas) não têm frames da folha composta.
+    const composedTex = def.movements.get('walk')?.textureKey;
+    if (!composedTex || sprite.texture.key !== composedTex) return null;
+    const column = composedFrameColumn(sprite.frame.name);
+    if (column === null) return null;
+    const anim = sprite.anims.currentAnim;
+    if (anim && sprite.anims.isPlaying) {
+      const parts = anim.key.split(':'); // char:<defId>:<movement>:<direction>
+      if (parts.length !== 4 || parts[0] !== 'char' || parts[1] !== def.id) return null;
+      return { movement: parts[2], direction: parts[3], column, playing: true };
+    }
+    // Pose congelada: morto mostra a coluna 22; qualquer outra é parada.
+    const movement = column === COMPOSED_SHEET.deadFrame ? 'death' : 'idle';
+    return { movement, direction: this.dirForDef(def, fallbackDirection), column, playing: false };
+  }
+
+  /**
+   * Hitboxes de MUNDO do golpe local em andamento — direto do perfil da arma
+   * equipada (Character Rig Controller). Fora de golpe, sem perfil ou frame
+   * sem caixa autorada → null/vazio; nunca uma caixa inventada.
+   */
+  private currentSwingState(): {
+    swingId: number;
+    playerX: number;
+    playerY: number;
+    rects: Phaser.Geom.Rectangle[];
+  } | null {
+    if (!this.player || !this.localDef) return null;
+    if (Date.now() >= this.attackingUntil) return null;
+    const rig = this.localRig;
+    const profile = this.weaponProfileFor(this.localWeaponRef);
+    if (!rig || !profile) return null;
+    const st = this.composedSpriteState(this.player, this.localDef, this.currentDirection);
+    if (!st || !st.playing || st.movement !== 'attack') return null;
+    const rigDir = RIG_DIRECTION_BY_ROW[st.direction];
+    if (!rigDir) return null;
+    const rects = weaponHitboxRectsFor(rig, profile, rigDir, st.column).map((r) => {
+      const w = localRectToWorldRect(r, this.player.x, this.player.y);
+      return new Phaser.Geom.Rectangle(w.x, w.y, w.width, w.height);
+    });
+    return { swingId: this.swingSeq, playerX: this.player.x, playerY: this.player.y, rects };
+  }
+
   private drawCombatDebug() {
     let labelText = '';
+
+    // Defs COMPOSTOS (pc-…): as caixas vêm do Character Rig Controller —
+    // hurtboxes no rig, hitboxes no perfil da arma equipada. Vale em qualquer
+    // mapa; frame sem caixa autorada simplesmente não desenha nada.
+    const drawRigFor = (
+      sprite: Phaser.GameObjects.Sprite,
+      def: WorldCharacterDef,
+      fallbackDirection: string,
+      originWorldX: number,
+      originWorldY: number,
+      isLocal: boolean,
+      weaponRef: string | null,
+    ) => {
+      const rig = this.localRig;
+      if (!rig) return;
+      const st = this.composedSpriteState(sprite, def, fallbackDirection);
+      if (!st) return;
+      const rigDir = RIG_DIRECTION_BY_ROW[st.direction];
+      if (!rigDir) return;
+      const profile = this.weaponProfileFor(weaponRef);
+      const hurt = rigHurtboxRectsFor(rig, st.movement, rigDir, st.column);
+      const hit = profile ? weaponHitboxRectsFor(rig, profile, rigDir, st.column) : [];
+      this.debugGfx.lineStyle(1, 0x00ff66, 0.95); // lima = hurtbox (rig)
+      for (const r of hurt) {
+        const w = localRectToWorldRect(r, originWorldX, originWorldY);
+        this.debugGfx.strokeRect(w.x, w.y, w.width, w.height);
+      }
+      this.debugGfx.lineStyle(1, 0xff00ff, 0.95); // magenta = hitbox (arma)
+      for (const r of hit) {
+        const w = localRectToWorldRect(r, originWorldX, originWorldY);
+        this.debugGfx.strokeRect(w.x, w.y, w.width, w.height);
+      }
+      if (isLocal) {
+        labelText = `rig ${st.movement} ${st.direction} c${st.column}${
+          profile ? '' : ' — arma sem perfil de hitbox'
+        }`;
+      }
+    };
 
     const drawFor = (
       sprite: Phaser.GameObjects.Sprite,
@@ -3550,11 +3693,18 @@ export class WorldScene extends Phaser.Scene {
       originWorldX: number,
       originWorldY: number,
       isLocal: boolean,
+      weaponRef: string | null,
     ) => {
+      if (!def) return;
+      // Sem config legada → def composto: caixas do Character Rig Controller.
+      if (!def.combat) {
+        drawRigFor(sprite, def, fallbackDirection, originWorldX, originWorldY, isLocal, weaponRef);
+        return;
+      }
+      // Legado (character NN): config de combate própria do personagem.
       // Debug shows the SAVED boxes even when "Ativas no jogo" is off —
       // that flag gates gameplay damage (server side), not inspection.
-      const combat = def?.combat;
-      if (!def || !combat) return;
+      const combat = def.combat;
       const state = this.currentSpriteCombatState(sprite, def, fallbackDirection);
       if (!state) return;
       const hurt = getActiveHurtboxRects(combat, state.assetKey, state.direction, state.frameInDir);
@@ -3577,11 +3727,19 @@ export class WorldScene extends Phaser.Scene {
     };
 
     if (this.player && this.localDef) {
-      drawFor(this.player, this.localDef, this.currentDirection, this.player.x, this.player.y, true);
+      drawFor(this.player, this.localDef, this.currentDirection, this.player.x, this.player.y, true, this.localWeaponRef);
     }
     this.otherPlayers.forEach((remote) => {
       if (remote.seated) return;
-      drawFor(remote.sprite, remote.def, remote.direction, remote.container.x, remote.container.y, false);
+      drawFor(
+        remote.sprite,
+        remote.def,
+        remote.direction,
+        remote.container.x,
+        remote.container.y,
+        false,
+        remote.equippedWeaponRef ?? null,
+      );
     });
 
     if (labelText) {

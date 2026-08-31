@@ -119,7 +119,22 @@ export async function resolveWeaponProfileForAsset(
   weaponAssetId: string | null,
   rig: RigConfig,
 ): Promise<WeaponHitboxProfile | null> {
-  const familyId = weaponAssetId ? parseWeaponAssetId(weaponAssetId).familyId : null;
+  return resolveWeaponProfileForFamily(
+    weaponAssetId ? parseWeaponAssetId(weaponAssetId).familyId : null,
+    rig,
+  );
+}
+
+/**
+ * Resolução por FAMÍLIA (variantes compartilham o perfil da família). É o
+ * caminho certo para refs persistidas `gen:weapon/<família>/<variante>`, onde
+ * a família já vem explícita — nada de reconstruir asset id do gerador.
+ * familyId null → segue a cadeia normal (rig default → null).
+ */
+export async function resolveWeaponProfileForFamily(
+  familyId: string | null,
+  rig: RigConfig,
+): Promise<WeaponHitboxProfile | null> {
   const families = familyId ? await loadWeaponFamiliesMap() : {};
   const family = familyId ? (families[familyId] ?? null) : null;
   const familyConfig: WeaponFamilyConfig | null =

@@ -209,3 +209,4 @@ Rotas Express custom do servidor devem ser registradas COM o prefixo `/api` (ex.
 
 - Config do Mundo de Coleta: a rota PUT admin monta uma cópia normalizada com whitelist explícita de campos — todo campo novo no CollectionWorldConfig precisa ser copiado ali também, senão é dropado em silêncio ao salvar.
 - Inventário de coleta (fase de teste): POST /api/collection/collect confia no cliente (qualquer usuário autenticado pode "mintar" itens); aceito até a fase server-authoritative. Fila client-side: single-flight + backoff + presa ao user id do authStore.
+- Arma tem DOIS formatos de id: ref persistida `gen:weapon/<família>[/<variante>]` (o que chega no equip/appearance) ≠ asset id do gerador (`sword1_c2`). Perfil de hitbox resolve por FAMÍLIA extraída do ref — nunca reconstruir asset id. Mão vazia/ref inválida não herda o perfil default do rig (default é só para arma sem perfil próprio).
