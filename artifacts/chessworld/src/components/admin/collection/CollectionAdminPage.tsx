@@ -5,7 +5,11 @@ import {
   COLLECTIBLE_ITEM_KEYS,
   COLLECTION_CONFIG_ID,
   DEFAULT_DROP_COUNT,
+  DEFAULT_FLEE_RADIUS,
   DEFAULT_RESPAWN_SECONDS,
+  FLEE_RADIUS_RANGE,
+  FLEE_SPEED_RANGE,
+  FLEEING_ANIMAL_KEYS,
   RESOURCE_KEYS,
   RESPAWN_OPTIONS_SECONDS,
   type CollectionWorldConfig,
@@ -13,6 +17,7 @@ import {
   validateCollectionWorldConfig,
 } from '../../../shared/collection/CollectionShapes';
 import {
+  ANIMAL_FLEE,
   ANIMALS,
   BUSH,
   CRAFTING_MAP,
@@ -116,6 +121,13 @@ const resources: ResourceDefinition[] = [
     frameHeight: animal.frameSize,
   })),
 ];
+
+/** Velocidade de fuga padrão (px/s) = speedMultiplier × o passeio do bicho. */
+const defaultFleeSpeed = (key: string): number => {
+  const id = key.split(':')[1] ?? key;
+  const def = ANIMALS.find((animal) => animal.id === id);
+  return Math.round((def?.speed ?? 22) * ANIMAL_FLEE.speedMultiplier);
+};
 
 const fullFrame = (width: number, height: number): ResourceHurtbox => ({
   offsetX: 0,
@@ -360,6 +372,12 @@ export function CollectionAdminPage() {
   const [respawnSeconds, setRespawnSeconds] = useState<Record<string, number>>(
     Object.fromEntries(RESOURCE_KEYS.map((key) => [key, DEFAULT_RESPAWN_SECONDS])),
   );
+  const [fleeRadius, setFleeRadius] = useState<Record<string, number>>(
+    Object.fromEntries(FLEEING_ANIMAL_KEYS.map((key) => [key, DEFAULT_FLEE_RADIUS])),
+  );
+  const [fleeSpeed, setFleeSpeed] = useState<Record<string, number>>(
+    Object.fromEntries(FLEEING_ANIMAL_KEYS.map((key) => [key, defaultFleeSpeed(key)])),
+  );
   const [availablePoints, setAvailablePoints] = useState<number | null>(null);
   const [mapError, setMapError] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -450,6 +468,18 @@ export function CollectionAdminPage() {
             config.respawnSeconds?.[key] ?? DEFAULT_RESPAWN_SECONDS,
           ]),
         ));
+        setFleeRadius(Object.fromEntries(
+          FLEEING_ANIMAL_KEYS.map((key) => [
+            key,
+            config.fleeRadius?.[key] ?? DEFAULT_FLEE_RADIUS,
+          ]),
+        ));
+        setFleeSpeed(Object.fromEntries(
+          FLEEING_ANIMAL_KEYS.map((key) => [
+            key,
+            config.fleeSpeed?.[key] ?? defaultFleeSpeed(key),
+          ]),
+        ));
       } else {
         setHurtboxes({});
         setDropCounts(Object.fromEntries(
@@ -457,6 +487,12 @@ export function CollectionAdminPage() {
         ));
         setRespawnSeconds(Object.fromEntries(
           RESOURCE_KEYS.map((key) => [key, DEFAULT_RESPAWN_SECONDS]),
+        ));
+        setFleeRadius(Object.fromEntries(
+          FLEEING_ANIMAL_KEYS.map((key) => [key, DEFAULT_FLEE_RADIUS]),
+        ));
+        setFleeSpeed(Object.fromEntries(
+          FLEEING_ANIMAL_KEYS.map((key) => [key, defaultFleeSpeed(key)]),
         ));
       }
     } catch (cause) {
@@ -526,6 +562,12 @@ export function CollectionAdminPage() {
       respawnSeconds: Object.fromEntries(
         RESOURCE_KEYS.map((key) => [key, respawnSeconds[key] ?? DEFAULT_RESPAWN_SECONDS]),
       ),
+      fleeRadius: Object.fromEntries(
+        FLEEING_ANIMAL_KEYS.map((key) => [key, fleeRadius[key] ?? DEFAULT_FLEE_RADIUS]),
+      ),
+      fleeSpeed: Object.fromEntries(
+        FLEEING_ANIMAL_KEYS.map((key) => [key, fleeSpeed[key] ?? defaultFleeSpeed(key)]),
+      ),
     };
     const validation = validateCollectionWorldConfig(config);
     if (!validation.ok) {
@@ -549,6 +591,18 @@ export function CollectionAdminPage() {
         RESOURCE_KEYS.map((key) => [
           key,
           response.config.respawnSeconds?.[key] ?? DEFAULT_RESPAWN_SECONDS,
+        ]),
+      ));
+      setFleeRadius(Object.fromEntries(
+        FLEEING_ANIMAL_KEYS.map((key) => [
+          key,
+          response.config.fleeRadius?.[key] ?? DEFAULT_FLEE_RADIUS,
+        ]),
+      ));
+      setFleeSpeed(Object.fromEntries(
+        FLEEING_ANIMAL_KEYS.map((key) => [
+          key,
+          response.config.fleeSpeed?.[key] ?? defaultFleeSpeed(key),
         ]),
       ));
       setSuccess('Configuração salva com sucesso.');
@@ -789,6 +843,58 @@ export function CollectionAdminPage() {
                               ))}
                             </select>
                           </label>
+                          {FLEEING_ANIMAL_KEYS.includes(resource.key) && (
+                            <>
+                              <label className="text-[10px] text-slate-500">
+                                Raio de fuga (px)
+                                <input
+                                  type="number"
+                                  min={FLEE_RADIUS_RANGE.min}
+                                  max={FLEE_RADIUS_RANGE.max}
+                                  step={10}
+                                  disabled={busy || tableMissing}
+                                  value={fleeRadius[resource.key] ?? DEFAULT_FLEE_RADIUS}
+                                  onChange={(event) => {
+                                    const value = Number(event.target.value);
+                                    if (Number.isFinite(value)) {
+                                      setFleeRadius((current) => ({
+                                        ...current,
+                                        [resource.key]: Math.max(
+                                          FLEE_RADIUS_RANGE.min,
+                                          Math.min(FLEE_RADIUS_RANGE.max, Math.round(value)),
+                                        ),
+                                      }));
+                                    }
+                                  }}
+                                  className={`${inputClass} mt-0.5`}
+                                />
+                              </label>
+                              <label className="text-[10px] text-slate-500">
+                                Velocidade de fuga (px/s)
+                                <input
+                                  type="number"
+                                  min={FLEE_SPEED_RANGE.min}
+                                  max={FLEE_SPEED_RANGE.max}
+                                  step={5}
+                                  disabled={busy || tableMissing}
+                                  value={fleeSpeed[resource.key] ?? defaultFleeSpeed(resource.key)}
+                                  onChange={(event) => {
+                                    const value = Number(event.target.value);
+                                    if (Number.isFinite(value)) {
+                                      setFleeSpeed((current) => ({
+                                        ...current,
+                                        [resource.key]: Math.max(
+                                          FLEE_SPEED_RANGE.min,
+                                          Math.min(FLEE_SPEED_RANGE.max, Math.round(value)),
+                                        ),
+                                      }));
+                                    }
+                                  }}
+                                  className={`${inputClass} mt-0.5`}
+                                />
+                              </label>
+                            </>
+                          )}
                         </div>
                       </div>
                     </div>

@@ -55,6 +55,15 @@ export const RESPAWN_OPTIONS_SECONDS: readonly number[] = [
 export const DEFAULT_DROP_COUNT = 3;
 export const DEFAULT_RESPAWN_SECONDS = 60;
 
+/** Animais que fogem ao apanhar (galinha nunca foge). */
+export const FLEEING_ANIMAL_KEYS: readonly string[] = ['animal:cow', 'animal:sheep'];
+
+/** Fuga: raio padrão (px a partir do ponto do 1º golpe) e faixas dos overrides do admin. */
+export const DEFAULT_FLEE_RADIUS = 240;
+export const FLEE_RADIUS_RANGE = { min: 40, max: 1200 } as const;
+/** Velocidade de fuga em px/s (sem override: 2.2× a velocidade de passeio do bicho). */
+export const FLEE_SPEED_RANGE = { min: 10, max: 400 } as const;
+
 export interface ResourceHurtbox {
   /** Deslocamento horizontal a partir do centro do pé do sprite (px; + = direita). */
   offsetX: number;
@@ -74,6 +83,10 @@ export interface CollectionWorldConfig {
   dropCounts?: Record<string, number>;
   /** resourceKey → segundos até renascer (padrão 60). Opcional p/ configs antigas. */
   respawnSeconds?: Record<string, number>;
+  /** animal:<id> → raio de fuga em px (padrão DEFAULT_FLEE_RADIUS). */
+  fleeRadius?: Record<string, number>;
+  /** animal:<id> → velocidade de fuga em px/s (padrão: 2.2× o passeio do bicho). */
+  fleeSpeed?: Record<string, number>;
 }
 
 export interface ValidationResult {
@@ -146,6 +159,36 @@ export function validateCollectionWorldConfig(value: unknown): ValidationResult 
         if (!KEY_RE.test(k)) errors.push(`respawnSeconds["${k}"]: chave inválida`);
         if (typeof v !== 'number' || !Number.isInteger(v) || v < 10 || v > 86400) {
           errors.push(`respawnSeconds["${k}"]: inteiro entre 10 e 86400 segundos`);
+        }
+      }
+    }
+  }
+  if (value.fleeRadius !== undefined) {
+    if (!isRecord(value.fleeRadius)) {
+      errors.push('fleeRadius deve ser um objeto {animalKey: px}');
+    } else {
+      for (const [k, v] of Object.entries(value.fleeRadius)) {
+        if (!KEY_RE.test(k)) errors.push(`fleeRadius["${k}"]: chave inválida`);
+        if (
+          typeof v !== 'number' || !Number.isInteger(v) ||
+          v < FLEE_RADIUS_RANGE.min || v > FLEE_RADIUS_RANGE.max
+        ) {
+          errors.push(`fleeRadius["${k}"]: inteiro entre ${FLEE_RADIUS_RANGE.min} e ${FLEE_RADIUS_RANGE.max} px`);
+        }
+      }
+    }
+  }
+  if (value.fleeSpeed !== undefined) {
+    if (!isRecord(value.fleeSpeed)) {
+      errors.push('fleeSpeed deve ser um objeto {animalKey: px/s}');
+    } else {
+      for (const [k, v] of Object.entries(value.fleeSpeed)) {
+        if (!KEY_RE.test(k)) errors.push(`fleeSpeed["${k}"]: chave inválida`);
+        if (
+          typeof v !== 'number' || !Number.isInteger(v) ||
+          v < FLEE_SPEED_RANGE.min || v > FLEE_SPEED_RANGE.max
+        ) {
+          errors.push(`fleeSpeed["${k}"]: inteiro entre ${FLEE_SPEED_RANGE.min} e ${FLEE_SPEED_RANGE.max} px/s`);
         }
       }
     }

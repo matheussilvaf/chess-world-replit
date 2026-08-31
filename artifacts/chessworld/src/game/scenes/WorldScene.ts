@@ -612,6 +612,11 @@ export class WorldScene extends Phaser.Scene {
 
     // Combat boxes (hurtbox lime / hitbox magenta) following the live frame
     this.drawCombatDebug();
+
+    // Mundo de Coleta: hurtboxes dos recursos/animais + caixa de golpe do jogador
+    if (this.craftingRuntime.active) {
+      this.craftingRuntime.drawDebug(this.debugGfx, this.player.x, this.player.y, this.currentDirection);
+    }
   }
 
   private setupZoom() {
@@ -2762,6 +2767,8 @@ export class WorldScene extends Phaser.Scene {
 
     // Conteúdo específico do Mundo de Coleta (collections, água animada, recursos)
     if (isCrafting) {
+      // Animais respeitam as mesmas colisões do jogador (grade do pathfinder).
+      this.craftingRuntime.setCollisionQuery((x, y) => this.pathfinder.isWorldBlockedAt(x, y));
       this.craftingRuntime.postBuild(map, tmjData);
     } else if (this.player) {
       this.player.setDepth(100); // restaura o depth fixo fora do Mundo de Coleta

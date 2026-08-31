@@ -131,10 +131,11 @@ export const ANIMALS: AnimalDef[] = [
 export const ANIMAL_WANDER = { radius: 72, eatMinMs: 2500, eatMaxMs: 7000 } as const;
 
 /**
- * Fuga (vaca/ovelha; galinha ignora): raio limitado a partir do ponto onde o
- * animal levou o 1º golpe, velocidade moderada e duração após o último golpe.
+ * Fuga (vaca/ovelha; galinha ignora): duração após o último golpe e velocidade
+ * padrão = speedMultiplier × passeio. Raio e velocidade têm override por animal
+ * no admin (fleeRadius/fleeSpeed da config de coleta; raio padrão nas shapes).
  */
-export const ANIMAL_FLEE = { radius: 110, durationMs: 5000, speedMultiplier: 2.2 } as const;
+export const ANIMAL_FLEE = { durationMs: 5000, speedMultiplier: 2.2 } as const;
 
 /** Escala dos mini-drops que reusam a própria textura do recurso. */
 export const SELF_DROP_SCALE = { herb: 0.45, bush: 0.45, hand_stone: 0.6 } as const;

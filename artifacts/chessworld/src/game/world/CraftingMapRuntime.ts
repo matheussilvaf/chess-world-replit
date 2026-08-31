@@ -41,9 +41,11 @@ import { loadCollectionWorldConfig } from '../config/collectionConfigLoader';
 import {
   DEFAULT_DROP_COUNT,
   DEFAULT_RESPAWN_SECONDS,
+  DEFAULT_FLEE_RADIUS,
   type CollectionWorldConfig,
   type ResourceHurtbox,
 } from '../../shared/collection/CollectionShapes';
+import { sweepPath } from './moveSweep';
 import { queueCollect } from '../../stores/collectionInventoryStore';
 
 /**
@@ -90,6 +92,10 @@ interface AnimalAgent {
   fleeUntilMs?: number;
   fleeAnchorX?: number;
   fleeAnchorY?: number;
+  /** Sinal da tangente escolhido ao encostar na borda do raio (evita flip-flop). */
+  fleeTangentSign?: 1 | -1;
+  /** Animação só pode trocar depois deste timestamp (anti-flicker de frames). */
+  animLockUntilMs?: number;
 }
 
 /** Nó de recurso golpeável (fase de teste: N golpes → quebra/coleta). */
@@ -147,6 +153,39 @@ export class CraftingMapRuntime {
 
   isCraftingPath(mapPath: string): boolean {
     return mapPath === CRAFTING_MAP.path;
+  }
+
+  /** Consulta de colisão do mapa (grade do pathfinder); null = sem colisão. */
+  private isBlockedAt: ((x: number, y: number) => boolean) | null = null;
+
+  /** Injetada pelo WorldScene ao montar o mapa — animais respeitam as colisões do jogador. */
+  setCollisionQuery(fn: (x: number, y: number) => boolean): void {
+    this.isBlockedAt = fn;
+  }
+
+  /**
+   * Movimento com colisão: varre o trajeto em substeps de meia célula (nunca
+   * atravessa bloqueio fino, mesmo em frame lento); se barrar, desliza num
+   * eixo só, também com varredura.
+   */
+  private tryMove(
+    spr: Phaser.GameObjects.Sprite | Phaser.GameObjects.Image,
+    nx: number,
+    ny: number,
+  ): { dx: number; dy: number } | null {
+    const blocked = this.isBlockedAt;
+    const fromX = spr.x;
+    const fromY = spr.y;
+    if (!blocked) {
+      spr.setPosition(nx, ny);
+      return { dx: nx - fromX, dy: ny - fromY };
+    }
+    let r = sweepPath(fromX, fromY, nx, ny, blocked);
+    if (!r.moved && nx !== fromX) r = sweepPath(fromX, fromY, nx, fromY, blocked);
+    if (!r.moved && ny !== fromY) r = sweepPath(fromX, fromY, fromX, ny, blocked);
+    if (!r.moved) return null; // totalmente barrado
+    spr.setPosition(r.x, r.y);
+    return { dx: r.x - fromX, dy: r.y - fromY };
   }
 
   /** Garante TMJ no cache + todas as texturas necessárias carregadas. */
@@ -409,11 +448,22 @@ export class CraftingMapRuntime {
       if (ag.state === 'eat') {
         ag.timerMs -= deltaMs;
         if (ag.timerMs > 0) continue;
-        // Escolhe um destino perto de "casa" (evita o bicho migrar pelo mapa).
-        const ang = Math.random() * Math.PI * 2;
-        const rad = ANIMAL_WANDER.radius * (0.35 + 0.65 * Math.random());
-        ag.targetX = ag.homeX + Math.cos(ang) * rad;
-        ag.targetY = ag.homeY + Math.sin(ang) * rad;
+        // Destino perto de "casa" que não caia numa colisão do mapa.
+        let found = false;
+        for (let attempt = 0; attempt < 8 && !found; attempt++) {
+          const ang = Math.random() * Math.PI * 2;
+          const rad = ANIMAL_WANDER.radius * (0.35 + 0.65 * Math.random());
+          const tx = ag.homeX + Math.cos(ang) * rad;
+          const ty = ag.homeY + Math.sin(ang) * rad;
+          if (this.isBlockedAt?.(tx, ty)) continue;
+          ag.targetX = tx;
+          ag.targetY = ty;
+          found = true;
+        }
+        if (!found) {
+          ag.timerMs = 900; // tudo bloqueado por perto — tenta de novo já já
+          continue;
+        }
         const dx = ag.targetX - ag.sprite.x;
         const dy = ag.targetY - ag.sprite.y;
         ag.dir = Math.abs(dx) >= Math.abs(dy) ? (dx >= 0 ? 'east' : 'west') : (dy >= 0 ? 'south' : 'north');
@@ -424,23 +474,25 @@ export class CraftingMapRuntime {
         const dy = ag.targetY - ag.sprite.y;
         const dist = Math.hypot(dx, dy);
         const step = (ag.def.speed * deltaMs) / 1000;
-        if (dist <= step || dist === 0) {
-          ag.sprite.setPosition(ag.targetX, ag.targetY);
+        const arrived = dist <= step || dist === 0;
+        const moved = arrived
+          ? this.tryMove(ag.sprite, ag.targetX, ag.targetY)
+          : this.tryMove(ag.sprite, ag.sprite.x + (dx / dist) * step, ag.sprite.y + (dy / dist) * step);
+        if (arrived || !moved) {
+          // Chegou — ou uma colisão barrou o caminho: para onde está e come.
           ag.state = 'eat';
           ag.timerMs = ANIMAL_WANDER.eatMinMs + Math.random() * (ANIMAL_WANDER.eatMaxMs - ANIMAL_WANDER.eatMinMs);
           ag.sprite.play({
             key: animalAnimKey(ag.def.id, 'eat', ag.dir),
             startFrame: Math.floor(Math.random() * ANIMAL_SHEET.frames),
           });
-        } else {
-          ag.sprite.setPosition(ag.sprite.x + (dx / dist) * step, ag.sprite.y + (dy / dist) * step);
         }
         ag.sprite.setDepth(this.depthForY(ag.sprite.y));
       }
     }
   }
 
-  /** Fuga: afasta do jogador em velocidade moderada, presa ao raio da âncora. */
+  /** Fuga: afasta do jogador, presa ao raio da âncora e às colisões do mapa. */
   private updateFlee(ag: AnimalAgent, deltaMs: number, playerX?: number, playerY?: number): void {
     const spr = ag.sprite;
     const ax = ag.fleeAnchorX ?? spr.x;
@@ -458,28 +510,51 @@ export class CraftingMapRuntime {
     }
     vx /= len;
     vy /= len;
-    const step = (ag.def.speed * ANIMAL_FLEE.speedMultiplier * deltaMs) / 1000;
+    const radius = this.fleeRadiusFor(`animal:${ag.def.id}`);
+    // Frame lento (aba em 2º plano/stall) não vira teleporte: delta limitado a
+    // 100ms e passo a 45% do raio — assim o 1º passo saindo da âncora nunca
+    // estoura a borda com vetor radial zero (que travava o bicho parado).
+    const dt = Math.min(deltaMs, 100);
+    const step = Math.min((this.fleeSpeedFor(ag) * dt) / 1000, radius * 0.45);
     let nx = spr.x + vx * step;
     let ny = spr.y + vy * step;
-    if (Math.hypot(nx - ax, ny - ay) > ANIMAL_FLEE.radius) {
-      // Borda do raio: desliza pela tangente que mais se afasta do jogador,
-      // com leve puxão para dentro (não fica raspando na borda).
+    const nextDist = Math.hypot(nx - ax, ny - ay);
+    if (nextDist > radius) {
+      // Borda do raio: desliza pela tangente, com leve puxão para dentro.
+      // O sinal da tangente é escolhido UMA vez por encosto — o flip-flop a
+      // cada frame era uma das causas do flicker de frames.
       const rx = spr.x - ax;
       const ry = spr.y - ay;
-      const rlen = Math.hypot(rx, ry) || 1;
-      const t1x = -ry / rlen;
-      const t1y = rx / rlen;
-      const useT1 = t1x * vx + t1y * vy >= 0;
-      const dx = (useT1 ? t1x : -t1x) - (rx / rlen) * 0.35;
-      const dy = (useT1 ? t1y : -t1y) - (ry / rlen) * 0.35;
-      const dlen = Math.hypot(dx, dy) || 1;
-      vx = dx / dlen;
-      vy = dy / dlen;
-      nx = spr.x + vx * step;
-      ny = spr.y + vy * step;
+      const rlen = Math.hypot(rx, ry);
+      if (rlen > 0.001) {
+        if (ag.fleeTangentSign === undefined) {
+          ag.fleeTangentSign = (-ry / rlen) * vx + (rx / rlen) * vy >= 0 ? 1 : -1;
+        }
+        const s = ag.fleeTangentSign;
+        const dx = (s * -ry) / rlen - (rx / rlen) * 0.35;
+        const dy = (s * rx) / rlen - (ry / rlen) * 0.35;
+        const dlen = Math.hypot(dx, dy) || 1;
+        vx = dx / dlen;
+        vy = dy / dlen;
+        nx = spr.x + vx * step;
+        ny = spr.y + vy * step;
+      }
+      // rlen≈0 (em cima da âncora): passo já limitado a 0.45×raio, segue reto.
+    } else if (nextDist < radius * 0.85) {
+      ag.fleeTangentSign = undefined; // longe da borda — libera o próximo encosto
     }
-    spr.setPosition(nx, ny);
-    spr.setDepth(this.depthForY(ny));
+    const moved = this.tryMove(spr, nx, ny);
+    if (moved) {
+      spr.setDepth(this.depthForY(spr.y));
+      const mlen = Math.hypot(moved.dx, moved.dy);
+      if (mlen > 0.0001) {
+        vx = moved.dx / mlen; // direção real (pós-deslize em paredes)
+        vy = moved.dy / mlen;
+      }
+    }
+    // Troca de animação com histerese (>=160ms) — sem frames alternando loucamente.
+    const now = this.scene.time.now;
+    if (now < (ag.animLockUntilMs ?? 0)) return;
     const dir: AnimalDirection =
       Math.abs(vx) >= Math.abs(vy) ? (vx >= 0 ? 'east' : 'west') : (vy >= 0 ? 'south' : 'north');
     const animKey = animalAnimKey(ag.def.id, 'walk', dir);
@@ -487,6 +562,7 @@ export class CraftingMapRuntime {
       ag.state = 'walk';
       ag.dir = dir;
       spr.play(animKey);
+      ag.animLockUntilMs = now + 160;
     }
   }
 
@@ -542,19 +618,7 @@ export class CraftingMapRuntime {
    */
   tryHitResource(playerX: number, playerY: number, direction: string): boolean {
     if (!this.active || !this.nodes.length) return false;
-    const reach = 46;
-    const dir = String(direction || 'down').toLowerCase();
-    let dx = 0;
-    let dy = 0;
-    if (dir.includes('left')) dx -= 1;
-    if (dir.includes('right')) dx += 1;
-    if (dir.includes('up')) dy -= 1;
-    if (dir.includes('down')) dy += 1;
-    if (!dx && !dy) dy = 1;
-    const norm = Math.hypot(dx, dy);
-    const cx = playerX + (dx / norm) * reach;
-    const cy = playerY - 20 + (dy / norm) * reach; // -20: altura do corpo, não o pé
-    const swing = new Phaser.Geom.Rectangle(cx - 30, cy - 26, 60, 52);
+    const swing = this.swingRectFor(playerX, playerY, direction);
 
     let best: ResourceNode | null = null;
     let bestDist = Infinity;
@@ -582,6 +646,90 @@ export class CraftingMapRuntime {
     return this.worldConfig?.respawnSeconds?.[key] ?? DEFAULT_RESPAWN_SECONDS;
   }
 
+  /** Raio de fuga em px (config do admin ou padrão). */
+  private fleeRadiusFor(key: string): number {
+    return this.worldConfig?.fleeRadius?.[key] ?? DEFAULT_FLEE_RADIUS;
+  }
+
+  /** Velocidade de fuga em px/s (config do admin ou 2.2× o passeio). */
+  private fleeSpeedFor(ag: AnimalAgent): number {
+    return this.worldConfig?.fleeSpeed?.[`animal:${ag.def.id}`] ?? ag.def.speed * ANIMAL_FLEE.speedMultiplier;
+  }
+
+  /**
+   * Caixa de golpe na frente do jogador — ÚNICA fonte da conta usada pelo
+   * gameplay (tryHitResource) e pelo debug (drawDebug); as duas são idênticas
+   * por construção, o que torna o debug confiável.
+   */
+  swingRectFor(playerX: number, playerY: number, direction: string): Phaser.Geom.Rectangle {
+    const reach = 46;
+    const dir = String(direction || 'down').toLowerCase();
+    let dx = 0;
+    let dy = 0;
+    if (dir.includes('left')) dx -= 1;
+    if (dir.includes('right')) dx += 1;
+    if (dir.includes('up')) dy -= 1;
+    if (dir.includes('down')) dy += 1;
+    if (!dx && !dy) dy = 1;
+    const norm = Math.hypot(dx, dy);
+    const cx = playerX + (dx / norm) * reach;
+    const cy = playerY - 20 + (dy / norm) * reach; // -20: altura do corpo, não o pé
+    return new Phaser.Geom.Rectangle(cx - 30, cy - 26, 60, 52);
+  }
+
+  /**
+   * Debug Visuals (/admin): hurtbox de cada recurso/animal (lima), caixa de
+   * golpe na direção olhada (magenta), amarelo = nó que o golpe acertaria
+   * AGORA (mesma regra do gameplay: overlap + mais próximo) e círculo ciano =
+   * raio de fuga de quem está fugindo.
+   */
+  drawDebug(gfx: Phaser.GameObjects.Graphics, playerX: number, playerY: number, facing: string): void {
+    if (!this.active) return;
+    const swing = this.swingRectFor(playerX, playerY, facing);
+
+    // Mesmo critério do golpe: entre os nós com overlap, vence o mais próximo.
+    let wouldHit: ResourceNode | null = null;
+    let bestDist = Infinity;
+    for (const node of this.nodes) {
+      if (node.broken || !node.sprite.active) continue;
+      if (!Phaser.Geom.Rectangle.Overlaps(swing, this.nodeHurtboxRect(node))) continue;
+      const d = Phaser.Math.Distance.Between(playerX, playerY, node.sprite.x, node.sprite.y);
+      if (d < bestDist) {
+        bestDist = d;
+        wouldHit = node;
+      }
+    }
+
+    for (const node of this.nodes) {
+      if (node.broken || !node.sprite.active) continue;
+      const r = this.nodeHurtboxRect(node);
+      if (node === wouldHit) {
+        gfx.fillStyle(0xffe100, 0.14);
+        gfx.fillRect(r.x, r.y, r.width, r.height);
+        gfx.lineStyle(2, 0xffe100, 1); // amarelo: este seria acertado agora
+      } else {
+        gfx.lineStyle(1, 0x00ff66, 0.9); // lima: hurtbox (mesma cor do combate)
+      }
+      gfx.strokeRect(r.x, r.y, r.width, r.height);
+    }
+
+    // Caixa de golpe (magenta, como o hitbox do combate).
+    gfx.lineStyle(1.5, 0xff00ff, 0.95);
+    gfx.strokeRect(swing.x, swing.y, swing.width, swing.height);
+
+    // Fuga em andamento: âncora + raio.
+    const now = this.scene.time.now;
+    for (const ag of this.animals) {
+      if (ag.fleeUntilMs === undefined || now >= ag.fleeUntilMs) continue;
+      const ax = ag.fleeAnchorX ?? ag.sprite.x;
+      const ay = ag.fleeAnchorY ?? ag.sprite.y;
+      gfx.lineStyle(1, 0x00e5ff, 0.6);
+      gfx.strokeCircle(ax, ay, this.fleeRadiusFor(`animal:${ag.def.id}`));
+      gfx.fillStyle(0x00e5ff, 0.9);
+      gfx.fillCircle(ax, ay, 2.5);
+    }
+  }
+
   private applyHit(node: ResourceNode): void {
     const spr = node.sprite;
     // Flash branco curto — feedback visual do golpe.
@@ -604,6 +752,8 @@ export class CraftingMapRuntime {
           // 1º golpe desta fuga: âncora do raio = onde o animal estava.
           ag.fleeAnchorX = ag.sprite.x;
           ag.fleeAnchorY = ag.sprite.y;
+          ag.fleeTangentSign = undefined;
+          ag.animLockUntilMs = 0; // reage virando na hora
         }
         ag.fleeUntilMs = now + ANIMAL_FLEE.durationMs; // cada golpe renova a fuga
       }

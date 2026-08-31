@@ -78,6 +78,20 @@ collectionAdminRouter.put('/', async (req: Request, res: Response) => {
           ),
         }
       : {}),
+    ...(body.fleeRadius
+      ? {
+          fleeRadius: Object.fromEntries(
+            Object.entries(body.fleeRadius).map(([k, v]) => [k, Math.round(v)]),
+          ),
+        }
+      : {}),
+    ...(body.fleeSpeed
+      ? {
+          fleeSpeed: Object.fromEntries(
+            Object.entries(body.fleeSpeed).map(([k, v]) => [k, Math.round(v)]),
+          ),
+        }
+      : {}),
   };
   const result = await saveCollectionConfig(config);
   if (!result.ok) {

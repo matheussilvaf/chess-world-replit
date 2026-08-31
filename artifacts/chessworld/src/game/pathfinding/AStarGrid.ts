@@ -174,6 +174,18 @@ export default class AStarGrid {
   }
 
   /**
+   * True se o ponto (coordenadas do mundo) cai numa célula bloqueada — ou fora
+   * da grade (fora do mapa = bloqueado). Usado pelos animais do Mundo de
+   * Coleta para respeitarem as mesmas colisões do jogador.
+   */
+  isWorldBlockedAt(worldX: number, worldY: number): boolean {
+    const gx = Math.floor((worldX - this.originX) / this.cellSize);
+    const gy = Math.floor((worldY - this.originY) / this.cellSize);
+    if (gx < 0 || gy < 0 || gx >= this.gridWidth || gy >= this.gridHeight) return true;
+    return this.blocked[gy * this.gridWidth + gx] === 1;
+  }
+
+  /**
    * Find a path from (startX, startY) to (endX, endY) in world coordinates.
    * Returns an array of world-space waypoints (center of each cell).
    * If the end point is blocked, finds the nearest unblocked cell as destination.
