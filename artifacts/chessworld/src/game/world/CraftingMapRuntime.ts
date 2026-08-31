@@ -25,6 +25,8 @@ import {
   herbUrl,
   RESOURCE_HITS_TO_BREAK,
   RESOURCE_DROP,
+  ANIMAL_FLEE,
+  SELF_DROP_SCALE,
   mineralBreakAnimKey,
   mineralDropTextureKey,
   mineralDropUrl,
@@ -36,7 +38,13 @@ import {
 } from '../config/craftingMapConfig';
 import { getTextureKeyForTileset } from '../config/worldAssets';
 import { loadCollectionWorldConfig } from '../config/collectionConfigLoader';
-import type { CollectionWorldConfig, ResourceHurtbox } from '../../shared/collection/CollectionShapes';
+import {
+  DEFAULT_DROP_COUNT,
+  DEFAULT_RESPAWN_SECONDS,
+  type CollectionWorldConfig,
+  type ResourceHurtbox,
+} from '../../shared/collection/CollectionShapes';
+import { queueCollect } from '../../stores/collectionInventoryStore';
 
 /**
  * Runtime do Mundo de Coleta.
@@ -78,6 +86,10 @@ interface AnimalAgent {
   timerMs: number;
   targetX: number;
   targetY: number;
+  /** Fuga (após golpe): até quando foge e âncora do raio (ponto do 1º golpe). */
+  fleeUntilMs?: number;
+  fleeAnchorX?: number;
+  fleeAnchorY?: number;
 }
 
 /** Nó de recurso golpeável (fase de teste: N golpes → quebra/coleta). */
@@ -89,6 +101,8 @@ interface ResourceNode {
   id: string;
   hits: number;
   broken: boolean;
+  /** Quando renasce (scene.time.now em ms); definido ao quebrar. */
+  respawnAtMs?: number;
 }
 
 /** Mini-item dropado por um nó quebrado (pulo → imã → coleta). */
@@ -96,6 +110,8 @@ interface DropItem {
   sprite: Phaser.GameObjects.Image;
   /** 'pop' durante o tween inicial/sumiço; 'idle' esperando o imã. */
   state: 'pop' | 'idle';
+  /** Chave do item para o inventário (igual à chave do nó). */
+  itemKey: string;
 }
 
 const GID_FLAGS = 0x0fffffff;
@@ -370,12 +386,26 @@ export class CraftingMapRuntime {
     return this.mapGeneration;
   }
 
-  /** Passeio dos animais + drops — chamado pelo WorldScene.update() enquanto o mapa está ativo. */
+  /** Passeio/fuga dos animais + drops + respawns — chamado pelo WorldScene.update(). */
   update(deltaMs: number, playerX?: number, playerY?: number) {
     if (!this.active) return;
     this.updateDrops(deltaMs, playerX, playerY);
+    this.updateRespawns();
+    const now = this.scene.time.now;
     for (const ag of this.animals) {
       if (!ag.sprite.active) continue;
+      if (ag.fleeUntilMs !== undefined) {
+        if (now < ag.fleeUntilMs) {
+          this.updateFlee(ag, deltaMs, playerX, playerY);
+          continue;
+        }
+        // Fim da fuga: volta ao ciclo comer/andar.
+        ag.fleeUntilMs = undefined;
+        ag.state = 'eat';
+        ag.timerMs = ANIMAL_WANDER.eatMinMs + Math.random() * (ANIMAL_WANDER.eatMaxMs - ANIMAL_WANDER.eatMinMs);
+        ag.sprite.play(animalAnimKey(ag.def.id, 'eat', ag.dir));
+        continue;
+      }
       if (ag.state === 'eat') {
         ag.timerMs -= deltaMs;
         if (ag.timerMs > 0) continue;
@@ -408,6 +438,83 @@ export class CraftingMapRuntime {
         ag.sprite.setDepth(this.depthForY(ag.sprite.y));
       }
     }
+  }
+
+  /** Fuga: afasta do jogador em velocidade moderada, presa ao raio da âncora. */
+  private updateFlee(ag: AnimalAgent, deltaMs: number, playerX?: number, playerY?: number): void {
+    const spr = ag.sprite;
+    const ax = ag.fleeAnchorX ?? spr.x;
+    const ay = ag.fleeAnchorY ?? spr.y;
+    const srcX = playerX ?? ax;
+    const srcY = playerY ?? ay;
+    let vx = spr.x - srcX;
+    let vy = spr.y - srcY;
+    let len = Math.hypot(vx, vy);
+    if (len < 0.001) {
+      const a = Math.random() * Math.PI * 2;
+      vx = Math.cos(a);
+      vy = Math.sin(a);
+      len = 1;
+    }
+    vx /= len;
+    vy /= len;
+    const step = (ag.def.speed * ANIMAL_FLEE.speedMultiplier * deltaMs) / 1000;
+    let nx = spr.x + vx * step;
+    let ny = spr.y + vy * step;
+    if (Math.hypot(nx - ax, ny - ay) > ANIMAL_FLEE.radius) {
+      // Borda do raio: desliza pela tangente que mais se afasta do jogador,
+      // com leve puxão para dentro (não fica raspando na borda).
+      const rx = spr.x - ax;
+      const ry = spr.y - ay;
+      const rlen = Math.hypot(rx, ry) || 1;
+      const t1x = -ry / rlen;
+      const t1y = rx / rlen;
+      const useT1 = t1x * vx + t1y * vy >= 0;
+      const dx = (useT1 ? t1x : -t1x) - (rx / rlen) * 0.35;
+      const dy = (useT1 ? t1y : -t1y) - (ry / rlen) * 0.35;
+      const dlen = Math.hypot(dx, dy) || 1;
+      vx = dx / dlen;
+      vy = dy / dlen;
+      nx = spr.x + vx * step;
+      ny = spr.y + vy * step;
+    }
+    spr.setPosition(nx, ny);
+    spr.setDepth(this.depthForY(ny));
+    const dir: AnimalDirection =
+      Math.abs(vx) >= Math.abs(vy) ? (vx >= 0 ? 'east' : 'west') : (vy >= 0 ? 'south' : 'north');
+    const animKey = animalAnimKey(ag.def.id, 'walk', dir);
+    if (ag.state !== 'walk' || ag.dir !== dir || spr.anims.currentAnim?.key !== animKey) {
+      ag.state = 'walk';
+      ag.dir = dir;
+      spr.play(animKey);
+    }
+  }
+
+  /** Devolve nós quebrados cujo cooldown terminou. */
+  private updateRespawns(): void {
+    if (!this.nodes.length) return;
+    const now = this.scene.time.now;
+    for (const node of this.nodes) {
+      if (!node.broken || node.respawnAtMs === undefined || now < node.respawnAtMs) continue;
+      this.respawnNode(node);
+    }
+  }
+
+  /** Restaura um nó quebrado (árvore: toco → frame 0; demais: reaparecem com pop). */
+  private respawnNode(node: ResourceNode): void {
+    const spr = node.sprite;
+    if (!spr.active) return; // destruído no teardown — não ocorre com o mapa ativo
+    node.hits = 0;
+    node.broken = false;
+    node.respawnAtMs = undefined;
+    if ((node.kind === 'mineral' || node.kind === 'tree') && spr instanceof Phaser.GameObjects.Sprite) {
+      spr.setFrame(0); // sai do último frame da quebra/toco
+    }
+    if (node.kind === 'tree') return; // árvore nunca sumiu (toco) — só volta inteira
+    spr.setVisible(true);
+    spr.setAlpha(1);
+    spr.setScale(0.7); // pop de nascimento
+    this.scene.tweens.add({ targets: spr, scaleX: 1, scaleY: 1, duration: 180, ease: 'Back.easeOut' });
   }
 
   // ------------------------------------------------------------------
@@ -465,6 +572,16 @@ export class CraftingMapRuntime {
     return true;
   }
 
+  /** Itens por quebra (config do admin ou padrão 3). */
+  private dropCountFor(key: string): number {
+    return this.worldConfig?.dropCounts?.[key] ?? DEFAULT_DROP_COUNT;
+  }
+
+  /** Segundos até renascer (config do admin ou padrão 60). */
+  private respawnSecondsFor(key: string): number {
+    return this.worldConfig?.respawnSeconds?.[key] ?? DEFAULT_RESPAWN_SECONDS;
+  }
+
   private applyHit(node: ResourceNode): void {
     const spr = node.sprite;
     // Flash branco curto — feedback visual do golpe.
@@ -478,7 +595,18 @@ export class CraftingMapRuntime {
       }
     });
     if (node.kind === 'animal') {
-      // Animais ainda não morrem (a morte será especificada depois): só reagem.
+      // Animais ainda não morrem (a morte será especificada depois).
+      // Vaca/ovelha fogem em raio limitado; galinha só toma o flash.
+      const ag = this.animals.find((a) => a.sprite === node.sprite);
+      if (ag && ag.def.id !== 'chicken') {
+        const now = this.scene.time.now;
+        if ((ag.fleeUntilMs ?? 0) <= now) {
+          // 1º golpe desta fuga: âncora do raio = onde o animal estava.
+          ag.fleeAnchorX = ag.sprite.x;
+          ag.fleeAnchorY = ag.sprite.y;
+        }
+        ag.fleeUntilMs = now + ANIMAL_FLEE.durationMs; // cada golpe renova a fuga
+      }
       return;
     }
     node.hits++;
@@ -496,23 +624,26 @@ export class CraftingMapRuntime {
     const spr = node.sprite;
     const dropX = spr.x;
     const dropY = spr.y;
+    // Agenda o renascimento (cooldown do admin ou padrão).
+    node.respawnAtMs = scene.time.now + this.respawnSecondsFor(node.key) * 1000;
     if (node.kind === 'mineral' && spr instanceof Phaser.GameObjects.Sprite && scene.anims.exists(mineralBreakAnimKey(node.id))) {
       spr.play(mineralBreakAnimKey(node.id));
       spr.once(Phaser.Animations.Events.ANIMATION_COMPLETE, () => {
-        this.spawnDrops(mineralDropTextureKey(node.id), dropX, dropY);
-        spr.destroy();
+        this.spawnDrops(node, dropX, dropY);
+        spr.setVisible(false); // some até o respawn
       });
       return;
     }
     if (node.kind === 'tree' && spr instanceof Phaser.GameObjects.Sprite && scene.anims.exists(treeFallAnimKey(node.id as TreeType))) {
       spr.play(treeFallAnimKey(node.id as TreeType));
       spr.once(Phaser.Animations.Events.ANIMATION_COMPLETE, () => {
-        // Toco (último frame) permanece; drops saem da base do tronco.
-        this.spawnDrops(treeDropTextureKey(node.id as TreeType), dropX, dropY);
+        // Toco (último frame) permanece durante o cooldown; drops na base.
+        this.spawnDrops(node, dropX, dropY);
       });
       return;
     }
-    // Ervas, arbusto e pedra de mão: sem arquivos de drop — coleta direta (fade).
+    // Ervas, arbusto e pedra de mão: mini-versões da própria imagem pulam do nó.
+    this.spawnDrops(node, dropX, dropY);
     scene.tweens.add({
       targets: spr,
       alpha: 0,
@@ -520,32 +651,68 @@ export class CraftingMapRuntime {
       scaleY: spr.scaleY * 0.6,
       duration: 280,
       ease: 'Quad.easeIn',
-      onComplete: () => spr.destroy(),
+      onComplete: () => spr.setVisible(false), // alpha/escala voltam no respawn
     });
   }
 
-  /** Mini-itens pulam do nó quebrado; o imã do updateDrops() puxa e coleta. */
-  private spawnDrops(textureKey: string, x: number, y: number): void {
+  /**
+   * Mini-itens pulam do nó quebrado em setores angulares iguais (+ leve ruído),
+   * para nunca nascerem uns por cima dos outros; o imã do updateDrops() coleta.
+   */
+  private spawnDrops(node: ResourceNode, x: number, y: number): void {
     const scene = this.scene;
+    let textureKey: string;
+    let frame: number | undefined;
+    let scale = 1;
+    switch (node.kind) {
+      case 'mineral':
+        textureKey = mineralDropTextureKey(node.id);
+        break;
+      case 'tree':
+        textureKey = treeDropTextureKey(node.id as TreeType);
+        break;
+      case 'herb':
+        textureKey = herbTextureKey(node.id);
+        scale = SELF_DROP_SCALE.herb;
+        break;
+      case 'bush':
+        textureKey = BUSH.textureKey;
+        scale = SELF_DROP_SCALE.bush;
+        break;
+      case 'hand_stone':
+        textureKey = HAND_STONE.textureKey;
+        frame = 0; // sheet de 10 frames — o drop usa só o primeiro
+        scale = SELF_DROP_SCALE.hand_stone;
+        break;
+      default:
+        return; // animais não dropam (ainda)
+    }
     if (!scene.textures.exists(textureKey)) {
       console.warn(`[CraftingMap] textura de drop ausente: ${textureKey}`);
       return;
     }
-    for (let i = 0; i < RESOURCE_DROP.count; i++) {
-      const ang = Math.random() * Math.PI * 2;
-      const rad = RESOURCE_DROP.scatterRadius * (0.5 + 0.5 * Math.random());
-      const spr = scene.add.image(x, y - 8, textureKey);
+    const count = this.dropCountFor(node.key);
+    if (count <= 0) return;
+    const baseAng = Math.random() * Math.PI * 2;
+    const sector = (Math.PI * 2) / count;
+    // Mais itens → anel um pouco maior, para os setores não ficarem apertados.
+    const baseRadius = RESOURCE_DROP.scatterRadius * Math.max(1, Math.sqrt(count / 3));
+    for (let i = 0; i < count; i++) {
+      const ang = baseAng + i * sector + (Math.random() - 0.5) * sector * 0.5;
+      const rad = baseRadius * (0.8 + 0.2 * Math.random());
+      const spr =
+        frame !== undefined ? scene.add.image(x, y - 8, textureKey, frame) : scene.add.image(x, y - 8, textureKey);
       spr.setOrigin(0.5, 0.5);
       spr.setDepth(this.depthForY(y) + 1);
       spr.setScale(0);
-      const item: DropItem = { sprite: spr, state: 'pop' };
+      const item: DropItem = { sprite: spr, state: 'pop', itemKey: node.key };
       this.drops.push(item);
       scene.tweens.add({
         targets: spr,
         x: x + Math.cos(ang) * rad,
         y: y - 8 + Math.sin(ang) * rad * 0.6,
-        scaleX: 1,
-        scaleY: 1,
+        scaleX: scale,
+        scaleY: scale,
         duration: RESOURCE_DROP.popMs,
         ease: 'Back.easeOut',
         onComplete: () => {
@@ -566,6 +733,7 @@ export class CraftingMapRuntime {
       if (dist > RESOURCE_DROP.magnetRadius) continue;
       if (dist <= RESOURCE_DROP.collectRadius) {
         d.state = 'pop'; // trava o imã enquanto some
+        queueCollect(d.itemKey, 1); // inventário: otimista + lote pro servidor
         this.scene.tweens.add({
           targets: d.sprite,
           alpha: 0,

@@ -6,10 +6,54 @@
  *  - hurtboxes: caixa de acerto por TIPO de recurso, em px do frame fonte,
  *    ancorada no centro-base do sprite (origin 0.5,1 — o "pé").
  *
- * Cópia espelhada em artifacts/chessworld/src/shared/collection/ — manter idêntica.
+ * Cópia espelhada em server/src/shared/collection/ — manter idêntica.
  */
 
 export const COLLECTION_CONFIG_ID = 'main';
+
+/**
+ * Chaves canônicas de recurso do mapa (mesma formação usada pelo runtime e
+ * pela página admin). Espelham os ids do craftingMapConfig do cliente —
+ * ao adicionar um recurso novo lá, inclua a chave aqui.
+ */
+export const RESOURCE_KEYS: readonly string[] = [
+  'mineral:pedra',
+  'mineral:carvao',
+  'mineral:ferro',
+  'mineral:cobre',
+  'mineral:ouro',
+  'mineral:diamante',
+  'mineral:cristal_real',
+  'tree:pinheiro_peao',
+  'tree:carvalho_torre',
+  'tree:freixo_cavalo',
+  'tree:ebano_dama',
+  'tree:salgueiro_bispo',
+  'herb:heal_herb',
+  'herb:red_herb',
+  'herb:blue_herb',
+  'herb:queen_thorn',
+  'herb:horse_root',
+  'bush',
+  'hand_stone',
+  'animal:cow',
+  'animal:sheep',
+  'animal:chicken',
+];
+
+/** Itens que entram no inventário (tudo menos animais — morte ainda não definida). */
+export const COLLECTIBLE_ITEM_KEYS: readonly string[] = RESOURCE_KEYS.filter(
+  (k) => !k.startsWith('animal:'),
+);
+
+/** Opções do select "tempo de renascimento" (em segundos). */
+export const RESPAWN_OPTIONS_SECONDS: readonly number[] = [
+  30, 60, 120, 180, 240, 300, 360, 420, 480, 540, 600,
+  900, 1200, 1800, 2400, 3000, 21600, 43200, 86400,
+];
+
+export const DEFAULT_DROP_COUNT = 3;
+export const DEFAULT_RESPAWN_SECONDS = 60;
 
 export interface ResourceHurtbox {
   /** Deslocamento horizontal a partir do centro do pé do sprite (px; + = direita). */
@@ -26,6 +70,10 @@ export interface CollectionWorldConfig {
   mineralCounts: Record<string, number>;
   /** resourceKey → hurtbox. Chaves: mineral:<id>, tree:<tipo>, herb:<id>, bush, hand_stone, animal:<id>. */
   hurtboxes: Record<string, ResourceHurtbox>;
+  /** resourceKey → itens dropados ao quebrar (padrão 3). Opcional p/ configs antigas. */
+  dropCounts?: Record<string, number>;
+  /** resourceKey → segundos até renascer (padrão 60). Opcional p/ configs antigas. */
+  respawnSeconds?: Record<string, number>;
 }
 
 export interface ValidationResult {
@@ -75,6 +123,31 @@ export function validateCollectionWorldConfig(value: unknown): ValidationResult 
     for (const [k, v] of Object.entries(value.hurtboxes)) {
       if (!KEY_RE.test(k)) errors.push(`hurtboxes["${k}"]: chave inválida (slug minúsculo)`);
       validateResourceHurtbox(v, `hurtboxes["${k}"]`, errors);
+    }
+  }
+  // Campos novos — opcionais (configs salvas antes deles continuam válidas).
+  if (value.dropCounts !== undefined) {
+    if (!isRecord(value.dropCounts)) {
+      errors.push('dropCounts deve ser um objeto {resourceKey: quantidade}');
+    } else {
+      for (const [k, v] of Object.entries(value.dropCounts)) {
+        if (!KEY_RE.test(k)) errors.push(`dropCounts["${k}"]: chave inválida`);
+        if (typeof v !== 'number' || !Number.isInteger(v) || v < 0 || v > 20) {
+          errors.push(`dropCounts["${k}"]: inteiro entre 0 e 20`);
+        }
+      }
+    }
+  }
+  if (value.respawnSeconds !== undefined) {
+    if (!isRecord(value.respawnSeconds)) {
+      errors.push('respawnSeconds deve ser um objeto {resourceKey: segundos}');
+    } else {
+      for (const [k, v] of Object.entries(value.respawnSeconds)) {
+        if (!KEY_RE.test(k)) errors.push(`respawnSeconds["${k}"]: chave inválida`);
+        if (typeof v !== 'number' || !Number.isInteger(v) || v < 10 || v > 86400) {
+          errors.push(`respawnSeconds["${k}"]: inteiro entre 10 e 86400 segundos`);
+        }
+      }
     }
   }
   return { ok: errors.length === 0, errors };

@@ -1,8 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { ArrowLeft, Copy, Loader2, RefreshCw, Save, Sprout } from 'lucide-react';
+import { ArrowLeft, Copy, Loader2, Minus, Plus, RefreshCw, RotateCcw, Save, Sprout } from 'lucide-react';
 import {
+  COLLECTIBLE_ITEM_KEYS,
   COLLECTION_CONFIG_ID,
+  DEFAULT_DROP_COUNT,
+  DEFAULT_RESPAWN_SECONDS,
+  RESOURCE_KEYS,
+  RESPAWN_OPTIONS_SECONDS,
   type CollectionWorldConfig,
   type ResourceHurtbox,
   validateCollectionWorldConfig,
@@ -119,61 +124,205 @@ const fullFrame = (width: number, height: number): ResourceHurtbox => ({
   height,
 });
 
-function initialHurtboxes(): Record<string, ResourceHurtbox> {
-  return Object.fromEntries(
-    resources.map((resource) => [
-      resource.key,
-      fullFrame(resource.frameWidth, resource.frameHeight),
-    ]),
-  );
+function isFullFrame(hurtbox: ResourceHurtbox, width: number, height: number): boolean {
+  return hurtbox.offsetX === 0
+    && hurtbox.offsetY === 0
+    && hurtbox.width === width
+    && hurtbox.height === height;
 }
 
 function SpritePreview({
   resource,
   hurtbox,
+  custom,
+  disabled,
+  onChange,
   onNaturalSize,
 }: {
   resource: ResourceDefinition;
   hurtbox: ResourceHurtbox;
+  custom: boolean;
+  disabled: boolean;
+  onChange: (hurtbox: ResourceHurtbox) => void;
   onNaturalSize: (key: string, width: number, height: number) => void;
 }) {
-  const maxWidth = resource.group === 'Árvores' ? 240 : 150;
-  const maxHeight = resource.group === 'Árvores' ? 182 : 150;
-  const scale = Math.min(1, maxWidth / resource.frameWidth, maxHeight / resource.frameHeight);
+  const fitScale = Math.min(1, 280 / resource.frameWidth, 260 / resource.frameHeight);
+  const suggestedScale = resource.frameWidth <= 32
+    ? 4
+    : resource.frameWidth <= 64
+      ? 3
+      : fitScale;
+  const [scale, setScale] = useState(suggestedScale);
+  const [drag, setDrag] = useState<{
+    startX: number;
+    startY: number;
+    left: number;
+    top: number;
+    right: number;
+    bottom: number;
+  } | null>(null);
   const width = resource.frameWidth * scale;
   const height = resource.frameHeight * scale;
+
+  useEffect(() => {
+    setScale(resource.frameWidth <= 32 ? 4 : resource.frameWidth <= 64 ? 3 : Math.min(1, 280 / resource.frameWidth, 260 / resource.frameHeight));
+  }, [resource.frameWidth, resource.frameHeight]);
+
+  const pointInFrame = (event: React.PointerEvent<HTMLDivElement>) => {
+    const rect = event.currentTarget.getBoundingClientRect();
+    return {
+      x: Math.max(0, Math.min(resource.frameWidth, Math.round((event.clientX - rect.left) / scale))),
+      y: Math.max(0, Math.min(resource.frameHeight, Math.round((event.clientY - rect.top) / scale))),
+    };
+  };
+
+  const finishDrawing = (value: NonNullable<typeof drag>) => {
+    const left = Math.max(0, Math.min(resource.frameWidth - 1, value.left));
+    const top = Math.max(0, Math.min(resource.frameHeight - 1, value.top));
+    const right = Math.max(left + 1, Math.min(resource.frameWidth, value.right));
+    const bottom = Math.max(top + 1, Math.min(resource.frameHeight, value.bottom));
+    const boxWidth = right - left;
+    const boxHeight = bottom - top;
+    onChange({
+      offsetX: left + boxWidth / 2 - resource.frameWidth / 2,
+      offsetY: resource.frameHeight - bottom,
+      width: boxWidth,
+      height: boxHeight,
+    });
+  };
+
+  const boundsFromPoint = (
+    current: NonNullable<typeof drag>,
+    point: { x: number; y: number },
+  ) => ({
+    ...current,
+    left: Math.min(current.startX, point.x),
+    top: Math.min(current.startY, point.y),
+    right: point.x === current.startX
+      ? current.startX + 1
+      : Math.max(current.startX, point.x),
+    bottom: point.y === current.startY
+      ? current.startY + 1
+      : Math.max(current.startY, point.y),
+  });
+
+  const overlay = drag
+    ? {
+        left: drag.left,
+        top: drag.top,
+        width: Math.max(1, drag.right - drag.left),
+        height: Math.max(1, drag.bottom - drag.top),
+      }
+    : {
+        left: resource.frameWidth / 2 + hurtbox.offsetX - hurtbox.width / 2,
+        top: resource.frameHeight - hurtbox.offsetY - hurtbox.height,
+        width: hurtbox.width,
+        height: hurtbox.height,
+      };
+
   return (
-    <div
-      className="relative overflow-hidden bg-slate-950/80 border border-slate-700/60 rounded-lg shrink-0"
-      style={{ width, height }}
-    >
-      <img
-        src={encodeURI(resource.url)}
-        alt={`Prévia de ${resource.label}`}
-        draggable={false}
-        onLoad={(event) => {
-          if (resource.naturalImage) {
-            onNaturalSize(resource.key, event.currentTarget.naturalWidth, event.currentTarget.naturalHeight);
-          }
-        }}
-        className="absolute left-0 top-0 max-w-none select-none [image-rendering:pixelated]"
-        style={
-          resource.naturalImage
-            ? { width, height }
-            : { height, width: 'auto' }
-        }
-      />
+    <div className="shrink-0">
+      <div className="mb-1.5 flex items-center justify-between gap-2 text-[10px] text-slate-500">
+        <span>Arraste para desenhar</span>
+        <span className="flex items-center gap-1">
+          <button
+            type="button"
+            title="Diminuir zoom"
+            disabled={scale <= 0.25}
+            onClick={() => setScale((current) => Math.max(0.25, current <= 1 ? current - 0.25 : current - 1))}
+            className="rounded border border-slate-700 bg-slate-800 p-0.5 hover:bg-slate-700 disabled:opacity-30"
+          >
+            <Minus className="h-3 w-3" />
+          </button>
+          <span className="w-9 text-center font-mono">{scale.toFixed(scale % 1 ? 2 : 0)}x</span>
+          <button
+            type="button"
+            title="Aumentar zoom"
+            disabled={scale >= 8}
+            onClick={() => setScale((current) => Math.min(8, current < 1 ? current + 0.25 : current + 1))}
+            className="rounded border border-slate-700 bg-slate-800 p-0.5 hover:bg-slate-700 disabled:opacity-30"
+          >
+            <Plus className="h-3 w-3" />
+          </button>
+        </span>
+      </div>
+      <div className="max-h-[320px] max-w-[300px] overflow-auto rounded-lg">
+        <div
+          className={`relative overflow-hidden border bg-slate-950/80 touch-none select-none ${
+            disabled ? 'cursor-not-allowed border-slate-700/60 opacity-50' : 'cursor-crosshair border-cyan-500/30'
+          }`}
+          style={{ width, height }}
+          onPointerDown={(event) => {
+            if (disabled) return;
+            event.currentTarget.setPointerCapture(event.pointerId);
+            const point = pointInFrame(event);
+            const startX = Math.min(resource.frameWidth - 1, point.x);
+            const startY = Math.min(resource.frameHeight - 1, point.y);
+            setDrag({
+              startX,
+              startY,
+              left: startX,
+              top: startY,
+              right: startX + 1,
+              bottom: startY + 1,
+            });
+          }}
+          onPointerMove={(event) => {
+            if (!drag || disabled) return;
+            const point = pointInFrame(event);
+            setDrag(boundsFromPoint(drag, point));
+          }}
+          onPointerUp={(event) => {
+            if (!drag || disabled) return;
+            if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+              event.currentTarget.releasePointerCapture(event.pointerId);
+            }
+            const point = pointInFrame(event);
+            finishDrawing(boundsFromPoint(drag, point));
+            setDrag(null);
+          }}
+          onPointerCancel={() => setDrag(null)}
+        >
+          <img
+            src={encodeURI(resource.url)}
+            alt={`Prévia de ${resource.label}`}
+            draggable={false}
+            onLoad={(event) => {
+              if (resource.naturalImage) {
+                onNaturalSize(resource.key, event.currentTarget.naturalWidth, event.currentTarget.naturalHeight);
+              }
+            }}
+            className="pointer-events-none absolute left-0 top-0 max-w-none select-none [image-rendering:pixelated]"
+            style={resource.naturalImage ? { width, height } : { height, width: 'auto' }}
+          />
+          <div
+            className={`pointer-events-none absolute ${
+              custom || drag
+                ? 'border-2 border-cyan-300 bg-cyan-400/35 shadow-[0_0_10px_rgba(34,211,238,0.35)]'
+                : 'border-2 border-dashed border-amber-300/80 bg-amber-300/5'
+            }`}
+            style={{
+              left: overlay.left * scale,
+              top: overlay.top * scale,
+              width: overlay.width * scale,
+              height: overlay.height * scale,
+            }}
+          />
+        </div>
+      </div>
       <div
-        className="absolute border-2 border-rose-400 bg-rose-400/15 pointer-events-none"
-        style={{
-          left: (resource.frameWidth / 2 + hurtbox.offsetX - hurtbox.width / 2) * scale,
-          top: (resource.frameHeight - hurtbox.offsetY - hurtbox.height) * scale,
-          width: hurtbox.width * scale,
-          height: hurtbox.height * scale,
-        }}
-      />
+        className="mt-1 font-mono text-[9px] text-slate-600"
+      >
+        frame {resource.frameWidth}×{resource.frameHeight}px
+      </div>
     </div>
   );
+}
+
+function respawnLabel(seconds: number): string {
+  if (seconds < 60) return `${seconds}s`;
+  if (seconds < 3600) return `${seconds / 60} min`;
+  return `${seconds / 3600} h`;
 }
 
 function countMineralPoints(data: unknown): number {
@@ -203,7 +352,14 @@ export function CollectionAdminPage() {
   const [mineralCounts, setMineralCounts] = useState<Record<string, number>>(
     Object.fromEntries(MINERALS.map((mineral) => [mineral.id, mineral.defaultCount])),
   );
-  const [hurtboxes, setHurtboxes] = useState<Record<string, ResourceHurtbox>>(initialHurtboxes);
+  /** Apenas overrides customizados; chave ausente significa frame inteiro. */
+  const [hurtboxes, setHurtboxes] = useState<Record<string, ResourceHurtbox>>({});
+  const [dropCounts, setDropCounts] = useState<Record<string, number>>(
+    Object.fromEntries(COLLECTIBLE_ITEM_KEYS.map((key) => [key, DEFAULT_DROP_COUNT])),
+  );
+  const [respawnSeconds, setRespawnSeconds] = useState<Record<string, number>>(
+    Object.fromEntries(RESOURCE_KEYS.map((key) => [key, DEFAULT_RESPAWN_SECONDS])),
+  );
   const [availablePoints, setAvailablePoints] = useState<number | null>(null);
   const [mapError, setMapError] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -211,8 +367,8 @@ export function CollectionAdminPage() {
   const [busy, setBusy] = useState(false);
   const [tableMissing, setTableMissing] = useState(false);
   const [tableSql, setTableSql] = useState<string | null>(null);
-  const persistedKeys = useRef(new Set<string>());
   const naturalSizes = useRef(new Map<string, { width: number; height: number }>());
+  const [, refreshResourceDimensions] = useState(0);
 
   useEffect(() => {
     const elements = [document.documentElement, document.body, document.getElementById('root')].filter(
@@ -271,24 +427,37 @@ export function CollectionAdminPage() {
       setTableSql(response.tableSql ?? null);
       const config = response.config;
       if (config) {
-        persistedKeys.current = new Set(Object.keys(config.hurtboxes));
         setMineralCounts(Object.fromEntries(
           MINERALS.map((mineral) => [
             mineral.id,
             config.mineralCounts[mineral.id] ?? mineral.defaultCount,
           ]),
         ));
-        setHurtboxes(Object.fromEntries(resources.map((resource) => {
-          const natural = naturalSizes.current.get(resource.key);
-          return [
-            resource.key,
-            config.hurtboxes[resource.key]
-              ?? fullFrame(
-                natural?.width ?? resource.frameWidth,
-                natural?.height ?? resource.frameHeight,
-              ),
-          ];
+        setHurtboxes(Object.fromEntries(resources.flatMap((resource) => {
+          const saved = config.hurtboxes[resource.key];
+          if (!saved || isFullFrame(saved, resource.frameWidth, resource.frameHeight)) return [];
+          return [[resource.key, saved]];
         })));
+        setDropCounts(Object.fromEntries(
+          COLLECTIBLE_ITEM_KEYS.map((key) => [
+            key,
+            config.dropCounts?.[key] ?? DEFAULT_DROP_COUNT,
+          ]),
+        ));
+        setRespawnSeconds(Object.fromEntries(
+          RESOURCE_KEYS.map((key) => [
+            key,
+            config.respawnSeconds?.[key] ?? DEFAULT_RESPAWN_SECONDS,
+          ]),
+        ));
+      } else {
+        setHurtboxes({});
+        setDropCounts(Object.fromEntries(
+          COLLECTIBLE_ITEM_KEYS.map((key) => [key, DEFAULT_DROP_COUNT]),
+        ));
+        setRespawnSeconds(Object.fromEntries(
+          RESOURCE_KEYS.map((key) => [key, DEFAULT_RESPAWN_SECONDS]),
+        ));
       }
     } catch (cause) {
       applyError(cause);
@@ -310,9 +479,14 @@ export function CollectionAdminPage() {
       resource.frameWidth = width;
       resource.frameHeight = height;
     }
-    if (!persistedKeys.current.has(key)) {
-      setHurtboxes((current) => ({ ...current, [key]: fullFrame(width, height) }));
-    }
+    setHurtboxes((current) => {
+      const saved = current[key];
+      if (!saved || !isFullFrame(saved, width, height)) return { ...current };
+      const next = { ...current };
+      delete next[key];
+      return next;
+    });
+    refreshResourceDimensions((current) => current + 1);
   }, []);
 
   const totalMinerals = useMemo(
@@ -324,9 +498,13 @@ export function CollectionAdminPage() {
   const changeHurtbox = (key: string, field: keyof ResourceHurtbox, raw: string) => {
     const value = Number(raw);
     if (!Number.isFinite(value)) return;
+    const resource = resources.find((entry) => entry.key === key);
     setHurtboxes((current) => ({
       ...current,
-      [key]: { ...current[key], [field]: value },
+      [key]: {
+        ...(current[key] ?? fullFrame(resource?.frameWidth ?? 1, resource?.frameHeight ?? 1)),
+        [field]: value,
+      },
     }));
   };
 
@@ -337,10 +515,16 @@ export function CollectionAdminPage() {
         MINERALS.map((mineral) => [mineral.id, mineralCounts[mineral.id] ?? 0]),
       ),
       hurtboxes: Object.fromEntries(
-        resources.map((resource) => [
-          resource.key,
-          hurtboxes[resource.key] ?? fullFrame(resource.frameWidth, resource.frameHeight),
-        ]),
+        resources.flatMap((resource) => {
+          const hurtbox = hurtboxes[resource.key];
+          return hurtbox ? [[resource.key, hurtbox]] : [];
+        }),
+      ),
+      dropCounts: Object.fromEntries(
+        COLLECTIBLE_ITEM_KEYS.map((key) => [key, dropCounts[key] ?? DEFAULT_DROP_COUNT]),
+      ),
+      respawnSeconds: Object.fromEntries(
+        RESOURCE_KEYS.map((key) => [key, respawnSeconds[key] ?? DEFAULT_RESPAWN_SECONDS]),
       ),
     };
     const validation = validateCollectionWorldConfig(config);
@@ -355,7 +539,18 @@ export function CollectionAdminPage() {
       const response = await collectionApi.save(config);
       setMineralCounts(response.config.mineralCounts);
       setHurtboxes(response.config.hurtboxes);
-      persistedKeys.current = new Set(Object.keys(response.config.hurtboxes));
+      setDropCounts(Object.fromEntries(
+        COLLECTIBLE_ITEM_KEYS.map((key) => [
+          key,
+          response.config.dropCounts?.[key] ?? DEFAULT_DROP_COUNT,
+        ]),
+      ));
+      setRespawnSeconds(Object.fromEntries(
+        RESOURCE_KEYS.map((key) => [
+          key,
+          response.config.respawnSeconds?.[key] ?? DEFAULT_RESPAWN_SECONDS,
+        ]),
+      ));
       setSuccess('Configuração salva com sucesso.');
     } catch (cause) {
       applyError(cause);
@@ -491,20 +686,44 @@ export function CollectionAdminPage() {
         <section className="rounded-xl border border-slate-700/60 bg-slate-900/70 p-4">
           <h2 className="text-sm font-semibold text-slate-100">Caixas de acerto (hurtboxes)</h2>
           <p className="mb-5 mt-1 text-xs text-slate-500">
-            Valores em pixels do frame fonte. O deslocamento X parte do centro do pé; Y sobe a partir do pé.
+            Clique e arraste sobre cada imagem para desenhar a área atingível. Use o zoom para ganhar precisão.
           </p>
           {(['Minerais', 'Árvores', 'Ervas', 'Outros', 'Animais'] as const).map((group) => (
             <div key={group} className="mb-6 last:mb-0">
               <h3 className="mb-2 font-mono text-[11px] uppercase tracking-widest text-slate-400">{group}</h3>
               <div className="grid grid-cols-1 gap-3 xl:grid-cols-2">
                 {resources.filter((resource) => resource.group === group).map((resource) => {
-                  const hurtbox = hurtboxes[resource.key] ?? fullFrame(resource.frameWidth, resource.frameHeight);
+                  const customHurtbox = hurtboxes[resource.key];
+                  const hurtbox = customHurtbox ?? fullFrame(resource.frameWidth, resource.frameHeight);
                   return (
                     <div key={resource.key} className="flex flex-col gap-3 rounded-lg border border-slate-700/50 bg-slate-950/40 p-3 sm:flex-row">
-                      <SpritePreview resource={resource} hurtbox={hurtbox} onNaturalSize={handleNaturalSize} />
+                      <SpritePreview
+                        resource={resource}
+                        hurtbox={hurtbox}
+                        custom={customHurtbox !== undefined}
+                        disabled={busy || tableMissing}
+                        onChange={(next) => setHurtboxes((current) => ({ ...current, [resource.key]: next }))}
+                        onNaturalSize={handleNaturalSize}
+                      />
                       <div className="min-w-0 flex-1">
-                        <p className="text-xs font-medium text-slate-200">{resource.label}</p>
-                        <p className="mb-2 truncate font-mono text-[9px] text-slate-600">{resource.key}</p>
+                        <div className="flex items-start justify-between gap-2">
+                          <span>
+                            <span className="block text-xs font-medium text-slate-200">{resource.label}</span>
+                            <span className="mb-2 block truncate font-mono text-[9px] text-slate-600">{resource.key}</span>
+                          </span>
+                          <button
+                            type="button"
+                            disabled={busy || tableMissing || !customHurtbox}
+                            onClick={() => setHurtboxes((current) => {
+                              const next = { ...current };
+                              delete next[resource.key];
+                              return next;
+                            })}
+                            className="inline-flex items-center gap-1 rounded border border-slate-700 bg-slate-800/80 px-1.5 py-1 text-[10px] text-slate-400 hover:text-amber-200 disabled:opacity-30"
+                          >
+                            <RotateCcw className="h-3 w-3" /> Limpar
+                          </button>
+                        </div>
                         <div className="grid grid-cols-2 gap-2">
                           {([
                             ['offsetX', 'Deslocamento X'],
@@ -516,14 +735,60 @@ export function CollectionAdminPage() {
                               {label}
                               <input
                                 type="number"
-                                step={1}
+                                step={field === 'offsetX' ? 0.5 : 1}
                                 disabled={busy || tableMissing}
                                 value={hurtbox[field]}
-                                onChange={(event) => changeHurtbox(resource.key, field, event.target.value)}
+                                onChange={(event) => {
+                                  if (!customHurtbox) {
+                                    setHurtboxes((current) => ({ ...current, [resource.key]: hurtbox }));
+                                  }
+                                  changeHurtbox(resource.key, field, event.target.value);
+                                }}
                                 className={`${inputClass} mt-0.5`}
                               />
                             </label>
                           ))}
+                        </div>
+                        <div className="mt-3 grid grid-cols-2 gap-2 border-t border-slate-800 pt-3">
+                          {!resource.key.startsWith('animal:') && (
+                            <label className="text-[10px] text-slate-500">
+                              Itens por quebra
+                              <input
+                                type="number"
+                                min={0}
+                                max={20}
+                                step={1}
+                                disabled={busy || tableMissing}
+                                value={dropCounts[resource.key] ?? DEFAULT_DROP_COUNT}
+                                onChange={(event) => {
+                                  const value = Number(event.target.value);
+                                  if (Number.isInteger(value)) {
+                                    setDropCounts((current) => ({
+                                      ...current,
+                                      [resource.key]: Math.max(0, Math.min(20, value)),
+                                    }));
+                                  }
+                                }}
+                                className={`${inputClass} mt-0.5`}
+                              />
+                            </label>
+                          )}
+                          <label className={`text-[10px] text-slate-500 ${resource.key.startsWith('animal:') ? 'col-span-2' : ''}`}>
+                            Renascer após
+                            <select
+                              disabled={busy || tableMissing}
+                              value={respawnSeconds[resource.key] ?? DEFAULT_RESPAWN_SECONDS}
+                              onChange={(event) => setRespawnSeconds((current) => ({
+                                ...current,
+                                [resource.key]: Number(event.target.value),
+                              }))}
+                              className={`${inputClass} mt-0.5`}
+                            >
+                              {RESPAWN_OPTIONS_SECONDS.map((seconds) => (
+                                <option key={seconds} value={seconds}>{respawnLabel(seconds)}</option>
+                              ))}
+                            </select>
+                          </label>
                         </div>
                       </div>
                     </div>

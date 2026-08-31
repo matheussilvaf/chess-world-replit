@@ -130,6 +130,15 @@ export const ANIMALS: AnimalDef[] = [
 /** Passeio: raio máximo em torno do ponto de spawn e duração das pausas comendo. */
 export const ANIMAL_WANDER = { radius: 72, eatMinMs: 2500, eatMaxMs: 7000 } as const;
 
+/**
+ * Fuga (vaca/ovelha; galinha ignora): raio limitado a partir do ponto onde o
+ * animal levou o 1º golpe, velocidade moderada e duração após o último golpe.
+ */
+export const ANIMAL_FLEE = { radius: 110, durationMs: 5000, speedMultiplier: 2.2 } as const;
+
+/** Escala dos mini-drops que reusam a própria textura do recurso. */
+export const SELF_DROP_SCALE = { herb: 0.45, bush: 0.45, hand_stone: 0.6 } as const;
+
 export const animalTextureKey = (id: string) => `craft-animal-${id}`;
 export const animalWalkTextureKey = (id: string) => `craft-animal-walk-${id}`;
 export const animalAnimKey = (id: string, action: 'eat' | 'walk', dir: AnimalDirection) =>

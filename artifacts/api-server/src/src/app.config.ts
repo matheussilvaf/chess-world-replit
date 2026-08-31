@@ -26,6 +26,7 @@ import {
   collectionAdminRouter,
   publicCollectionConfigHandler,
 } from "./collection/collectionRoutes.js";
+import { collectionInventoryRouter } from "./collection/inventoryRoutes.js";
 import {
   assetCategoriesAdminRouter,
   publicAssetCategoryDataHandler,
@@ -178,6 +179,8 @@ const config: ConfigOptions = {
     // Mundo de Coleta: config única (quantidades de minérios + hurtboxes).
     // GET público cacheado — o runtime do mapa lê ao entrar no mundo.
     app.get("/api/collection-world-config", publicCollectionConfigHandler);
+    // Inventário de coleta (jogador autenticado, não-admin).
+    app.use("/api/collection", collectionInventoryRouter);
     app.use("/api/admin/collection-world-config", collectionAdminRouter);
 
     // Assets Controller (spec: /admin/assets-controller): categorias de

@@ -63,6 +63,21 @@ collectionAdminRouter.put('/', async (req: Request, res: Response) => {
         } satisfies ResourceHurtbox,
       ]),
     ),
+    // Campos opcionais novos (itens por quebra + cooldown de respawn).
+    ...(body.dropCounts
+      ? {
+          dropCounts: Object.fromEntries(
+            Object.entries(body.dropCounts).map(([k, v]) => [k, Math.round(v)]),
+          ),
+        }
+      : {}),
+    ...(body.respawnSeconds
+      ? {
+          respawnSeconds: Object.fromEntries(
+            Object.entries(body.respawnSeconds).map(([k, v]) => [k, Math.round(v)]),
+          ),
+        }
+      : {}),
   };
   const result = await saveCollectionConfig(config);
   if (!result.ok) {

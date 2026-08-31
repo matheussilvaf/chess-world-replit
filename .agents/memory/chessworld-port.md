@@ -206,3 +206,6 @@ Rotas Express custom do servidor devem ser registradas COM o prefixo `/api` (ex.
 - Phaser 4: `setTintFill()` não aceita cor (assinatura vazia). Flash de dano = `setTint(cor)` + `setTintMode(Phaser.TintModes.FILL)`, e ao limpar: `clearTint()` + `setTintMode(MULTIPLY)`.
 - Rotas admin HTTP novas devem usar `requireSupabaseAdmin` (auth/supabaseAuth.ts): allowlist `ADMIN_EMAILS` (vírgulas); sem a var só libera em NODE_ENV=development, senão 403 fail-closed. Colyseus Cloud precisa da var definida. Rotas admin antigas (rig/craft/assets) ainda são só-auth — pendência conhecida.
 - Callbacks atrasados que mexem no mapa de coleta (ex.: golpe no meio do swing) capturam `craftingRuntime.generation` (incrementado no teardown) para não acertar recursos de uma sessão nova do mapa.
+
+- Config do Mundo de Coleta: a rota PUT admin monta uma cópia normalizada com whitelist explícita de campos — todo campo novo no CollectionWorldConfig precisa ser copiado ali também, senão é dropado em silêncio ao salvar.
+- Inventário de coleta (fase de teste): POST /api/collection/collect confia no cliente (qualquer usuário autenticado pode "mintar" itens); aceito até a fase server-authoritative. Fila client-side: single-flight + backoff + presa ao user id do authStore.
