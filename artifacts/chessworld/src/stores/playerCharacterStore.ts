@@ -28,7 +28,8 @@ interface PlayerCharacterStore {
   liveWeapon: string;
   worldReady: boolean;
   panelOpen: boolean;
-  equipSender: ((equip: boolean) => void) | null;
+  /** Envia equipar/desequipar; `ref` opcional escolhe a ARMA (itens de teste). */
+  equipSender: ((equip: boolean, ref?: string) => void) | null;
   characterReadySender: (() => void) | null;
 
   load: () => Promise<void>;
@@ -36,7 +37,7 @@ interface PlayerCharacterStore {
   setLive: (appearance: string, weapon: string) => void;
   setWorldReady: (ready: boolean) => void;
   setPanelOpen: (open: boolean) => void;
-  setSenders: (equip: ((equip: boolean) => void) | null, ready: (() => void) | null) => void;
+  setSenders: (equip: ((equip: boolean, ref?: string) => void) | null, ready: (() => void) | null) => void;
   reset: () => void;
 }
 
@@ -51,7 +52,7 @@ const initial = {
   liveWeapon: '',
   worldReady: false,
   panelOpen: false,
-  equipSender: null as ((equip: boolean) => void) | null,
+  equipSender: null as ((equip: boolean, ref?: string) => void) | null,
   characterReadySender: null as (() => void) | null,
 };
 

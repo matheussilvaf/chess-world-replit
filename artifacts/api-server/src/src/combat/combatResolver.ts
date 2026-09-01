@@ -33,7 +33,7 @@ import { getCharacterConfig } from './characterConfigService.js';
 import { COMPOSED_SHEET } from '../shared/characters/PlayerCharacterShapes.js';
 
 const FPS = 12;
-const ATTACK_MOVEMENTS = new Set(['attack', 'walk-attack', 'run-attack']);
+const ATTACK_MOVEMENTS = new Set(['attack', 'walk-attack', 'run-attack', 'shoot']);
 const DIRECTIONS = new Set<string>(DIRECTION_ROWS_8);
 const CHARACTER_ID_RE = /^character\d{2,4}$/;
 
@@ -84,7 +84,9 @@ export class CombatResolver {
       // com cooldown pelo tamanho do ataque do pack — SEM dano nesta fase
       // (dano continua exclusivo dos rigs legados, spec do round).
       if (!attacker.appearance) return; // sem personagem criado → nada a animar
-      const durationMs = (COMPOSED_SHEET.attackFrames.length / FPS) * 1000;
+      // 'shoot' (arco, knock-and-bow) tem a própria duração; demais usam o ataque.
+      const frames = movement === 'shoot' ? COMPOSED_SHEET.shootFrames : COMPOSED_SHEET.attackFrames;
+      const durationMs = (frames.length / FPS) * 1000;
       this.cooldownUntil.set(client.sessionId, now + durationMs + COOLDOWN_PAD_MS);
       this.room.broadcast('player_attack', {
         sessionId: client.sessionId,

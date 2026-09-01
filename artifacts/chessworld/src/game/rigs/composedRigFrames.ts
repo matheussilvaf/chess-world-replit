@@ -54,6 +54,7 @@ export const COMPOSED_MOVEMENT_TO_RIG_ANIMATION: Record<string, string> = {
   walk: 'walk',
   idle: 'stand',
   attack: 'attack-full',
+  shoot: 'knock-and-bow',
   death: 'dead',
 };
 

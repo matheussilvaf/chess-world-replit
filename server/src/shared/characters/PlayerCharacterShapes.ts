@@ -305,6 +305,8 @@ export const COMPOSED_SHEET = {
   standFrame: 1,
   /** Colunas do ataque completo (wind-up → golpe). */
   attackFrames: [10, 11, 12, 13, 14],
+  /** Colunas do disparo de arco (knock-and-bow: puxar → soltar). */
+  shootFrames: [15, 16, 17, 18],
   /** Coluna do caído/KO. */
   deadFrame: 22,
 } as const;

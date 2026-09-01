@@ -24,18 +24,24 @@ import {
   Trash2,
   TriangleAlert,
 } from 'lucide-react';
-import type { RigConfig } from '../../../shared/combat/RigShapes';
+import type { LocalRectangle, RigConfig, RigDirection } from '../../../shared/combat/RigShapes';
 import {
+  DEFAULT_ARROW_RANGE_PX,
   DEFAULT_WEAPON_DAMAGE,
   DEFAULT_WEAPON_SPEED,
+  MAX_ARROW_RANGE_PX,
+  MIN_ARROW_RANGE_PX,
   WEAPON_PROFILE_ID_RE,
   countWeaponProfileRects,
   getWeaponVariantLevels,
+  getWeaponVariantProjectile,
+  rotateRectClockwise,
   weaponFamiliesUsingProfile,
   type WeaponFamilyConfig,
   type WeaponFamilyManifestEntry,
   type WeaponHitboxProfile,
   type WeaponLevelStats,
+  type WeaponProjectileConfig,
 } from '../../../shared/combat/WeaponShapes';
 
 export interface PreviewWeapon {
@@ -72,6 +78,16 @@ interface WeaponProfilePanelProps {
     variantId: string,
     levels: WeaponLevelStats[],
   ) => Promise<boolean>;
+  /** Arma de DISPARO no preview (arco)? Esconde o perfil melee e edita a flecha. */
+  isShooter: boolean;
+  /** Família do projétil pareado (ex.: "arrow") quando isShooter. */
+  projectileFamilyId: string | null;
+  /** Salva alcance/hitbox do projétil da variação da flecha; true quando persistiu. */
+  onSaveVariantProjectile: (
+    familyId: string,
+    variantId: string,
+    projectile: WeaponProjectileConfig,
+  ) => Promise<boolean>;
   /** Incrementado a cada recarga dos dados de arma — descarta rascunhos obsoletos. */
   weaponDataEpoch: number;
   onSetRigDefaultProfile: (profileId: string | null) => void;
@@ -85,6 +101,66 @@ const btnCls =
 const neutralBtn = `${btnCls} border-slate-700 bg-slate-800 text-slate-300 hover:bg-slate-700 hover:text-white`;
 const fieldCls =
   'bg-slate-800 border border-slate-700 rounded px-2 py-1 text-xs text-white font-mono';
+
+/** Direções (linhas) das folhas de 4 direções — ordem de exibição no editor. */
+const ARROW_DIRS: readonly RigDirection[] = ['south', 'west', 'east', 'north'];
+const ARROW_DIR_LABELS: Record<RigDirection, string> = {
+  south: 'Baixo (sul)',
+  west: 'Esquerda (oeste)',
+  east: 'Direita (leste)',
+  north: 'Cima (norte)',
+};
+
+/** Hitbox padrão da flecha: fina no eixo do voo (mesma usada no runtime). */
+function defaultArrowRect(dir: RigDirection): LocalRectangle {
+  return dir === 'west' || dir === 'east'
+    ? { id: 'arrow', x: -12, y: -4, width: 24, height: 8 }
+    : { id: 'arrow', x: -4, y: -12, width: 8, height: 24 };
+}
+
+/** Config editável do projétil: preenche defaults (alcance + 4 direções). */
+function normalizeProjectile(saved: WeaponProjectileConfig | null): WeaponProjectileConfig {
+  const hitbox: Partial<Record<RigDirection, LocalRectangle>> = {};
+  for (const dir of ARROW_DIRS) hitbox[dir] = saved?.hitbox?.[dir] ?? defaultArrowRect(dir);
+  return { rangePx: saved?.rangePx ?? DEFAULT_ARROW_RANGE_PX, hitbox };
+}
+
+/** Input numérico que só commita valores válidos (permite digitação parcial). */
+function NumField(props: {
+  value: number;
+  min: number;
+  max: number;
+  step?: number;
+  integer?: boolean;
+  disabled?: boolean;
+  className?: string;
+  title?: string;
+  onCommit: (v: number) => void;
+}) {
+  const [raw, setRaw] = useState<string | null>(null);
+  return (
+    <input
+      type="number"
+      min={props.min}
+      max={props.max}
+      step={props.step ?? 1}
+      value={raw ?? String(props.value)}
+      disabled={props.disabled}
+      title={props.title}
+      onChange={(e) => {
+        const text = e.target.value;
+        setRaw(text);
+        if (text.trim() === '') return;
+        const v = Number(text);
+        if (!Number.isFinite(v)) return;
+        if (props.integer && !Number.isInteger(v)) return;
+        props.onCommit(Math.max(props.min, Math.min(props.max, v)));
+      }}
+      onBlur={() => setRaw(null)}
+      className={props.className}
+    />
+  );
+}
 
 export function WeaponProfilePanel(props: WeaponProfilePanelProps) {
   const {
@@ -109,16 +185,20 @@ export function WeaponProfilePanel(props: WeaponProfilePanelProps) {
   const [levelDrafts, setLevelDrafts] = useState<Record<string, WeaponLevelStats[]>>({});
   /** Texto cru dos inputs numéricos (permite digitar/apagar sem o valor "pular"). */
   const [rawLevelInputs, setRawLevelInputs] = useState<Record<string, string>>({});
+  /** Rascunhos do PROJÉTIL (flecha) por item do preview — idem, até "Salvar". */
+  const [projDrafts, setProjDrafts] = useState<Record<string, WeaponProjectileConfig>>({});
 
   // Recarga dos dados de arma (Recarregar/migração/reabertura): rascunhos
   // antigos são descartados para não sobrescrever mudanças vindas do servidor.
   useEffect(() => {
     setLevelDrafts({});
     setRawLevelInputs({});
+    setProjDrafts({});
   }, [props.weaponDataEpoch]);
 
   const animNames = useMemo(() => Object.keys(rig.animations), [rig]);
 
+  const { isShooter, projectileFamilyId } = props;
   const previewFamilyConfig = previewWeapon ? (families[previewWeapon.familyId] ?? null) : null;
   const familyProfileId = previewFamilyConfig?.weaponHitboxProfileId ?? null;
   const rigDefaultId = rig.defaultWeaponHitboxProfileId ?? null;
@@ -135,14 +215,27 @@ export function WeaponProfilePanel(props: WeaponProfilePanelProps) {
   const rectCount = workingProfile ? countWeaponProfileRects(workingProfile) : 0;
 
   // ---- Levels do item selecionado (dano/velocidade POR ITEM da família) ----
+  /**
+   * ALVO das estatísticas: numa arma de disparo, dano/alcance/hitbox moram na
+   * FLECHA pareada (mesma variação/material do arco); senão, no próprio item.
+   * Rascunhos continuam chaveados pelo assetId do PREVIEW (único por item).
+   */
+  const statsTarget = previewWeapon
+    ? isShooter && projectileFamilyId
+      ? { familyId: projectileFamilyId, variantId: previewWeapon.variantId }
+      : { familyId: previewWeapon.familyId, variantId: previewWeapon.variantId }
+    : null;
+  const statsFamilyConfig = statsTarget ? (families[statsTarget.familyId] ?? null) : null;
   const resolvedProfileForSeed = (() => {
     const id = familyProfileId ?? rigDefaultId;
     return id ? (profiles.find((p) => p.id === id) ?? null) : null;
   })();
-  /** Dano-semente de item sem levels salvos: o do perfil resolvido, senão 10. */
-  const seedDamage = resolvedProfileForSeed?.combat.damagePerHit ?? DEFAULT_WEAPON_DAMAGE;
-  const baselineLevels: WeaponLevelStats[] = previewWeapon
-    ? getWeaponVariantLevels(previewFamilyConfig, previewWeapon.variantId, seedDamage)
+  /** Dano-semente de item sem levels salvos: perfil resolvido (melee), senão 10. */
+  const seedDamage = isShooter
+    ? DEFAULT_WEAPON_DAMAGE
+    : (resolvedProfileForSeed?.combat.damagePerHit ?? DEFAULT_WEAPON_DAMAGE);
+  const baselineLevels: WeaponLevelStats[] = statsTarget
+    ? getWeaponVariantLevels(statsFamilyConfig, statsTarget.variantId, seedDamage)
     : [];
   const draftLevels: WeaponLevelStats[] = previewWeapon
     ? (levelDrafts[previewWeapon.assetId] ?? baselineLevels)
@@ -191,13 +284,51 @@ export function WeaponProfilePanel(props: WeaponProfilePanelProps) {
   };
 
   const handleSaveLevels = async () => {
-    if (!previewWeapon) return;
+    if (!previewWeapon || !statsTarget) return;
     const ok = await props.onSaveVariantLevels(
-      previewWeapon.familyId,
-      previewWeapon.variantId,
+      statsTarget.familyId,
+      statsTarget.variantId,
       draftLevels,
     );
     if (ok) clearLevelDraft(previewWeapon.assetId);
+  };
+
+  // ---- Projétil (flecha) do item de disparo: alcance + hitbox por direção ----
+  const savedProjectile =
+    isShooter && statsTarget ? getWeaponVariantProjectile(statsFamilyConfig, statsTarget.variantId) : null;
+  const baselineProj = normalizeProjectile(savedProjectile);
+  const draftProj = previewWeapon ? (projDrafts[previewWeapon.assetId] ?? baselineProj) : baselineProj;
+  const projDirty =
+    isShooter && previewWeapon !== null && JSON.stringify(draftProj) !== JSON.stringify(baselineProj);
+
+  const setProjDraft = (cfg: WeaponProjectileConfig) => {
+    if (!previewWeapon) return;
+    setProjDrafts((prev) => ({ ...prev, [previewWeapon.assetId]: cfg }));
+  };
+  const clearProjDraft = () => {
+    if (!previewWeapon) return;
+    setProjDrafts((prev) => {
+      const next = { ...prev };
+      delete next[previewWeapon.assetId];
+      return next;
+    });
+  };
+  const mutateProjRect = (dir: RigDirection, patch: Partial<LocalRectangle>) => {
+    const rect = { ...(draftProj.hitbox?.[dir] ?? defaultArrowRect(dir)), ...patch };
+    setProjDraft({ ...draftProj, hitbox: { ...draftProj.hitbox, [dir]: rect } });
+  };
+  /** Copia a hitbox do SUL girando 90°: oeste=rot(sul), norte=rot(oeste), leste=rot(norte). */
+  const rotateFromSouth = () => {
+    const south = draftProj.hitbox?.south ?? defaultArrowRect('south');
+    const west = rotateRectClockwise(south);
+    const north = rotateRectClockwise(west);
+    const east = rotateRectClockwise(north);
+    setProjDraft({ ...draftProj, hitbox: { south, west, north, east } });
+  };
+  const handleSaveProjectile = async () => {
+    if (!previewWeapon || !statsTarget) return;
+    const ok = await props.onSaveVariantProjectile(statsTarget.familyId, statsTarget.variantId, draftProj);
+    if (ok) clearProjDraft();
   };
 
   const openCreate = (duplicate: boolean) => {
@@ -273,7 +404,13 @@ export function WeaponProfilePanel(props: WeaponProfilePanelProps) {
             <span className="text-slate-500">nenhum (categorias weapon/crafttools ocultas)</span>
           )}
         </div>
-        {previewWeapon && (
+        {previewWeapon && isShooter && (
+          <div className="text-emerald-300/90">
+            Arma de disparo: sem perfil melee — dano, alcance e hitbox vêm da FLECHA pareada (
+            <span className="font-mono">{projectileFamilyId ?? 'flecha'}</span>), editados abaixo.
+          </div>
+        )}
+        {previewWeapon && !isShooter && (
           <div className="text-slate-400">
             Perfil resolvido:{' '}
             {resolvedSource === 'family' && (
@@ -291,7 +428,7 @@ export function WeaponProfilePanel(props: WeaponProfilePanelProps) {
             )}
           </div>
         )}
-        {previewWeapon && (
+        {previewWeapon && !isShooter && (
           <div className="flex flex-wrap gap-1.5 pt-1">
             <button
               type="button"
@@ -319,8 +456,10 @@ export function WeaponProfilePanel(props: WeaponProfilePanelProps) {
       {previewWeapon && (
         <div className="mt-2.5 border border-sky-900/50 rounded p-2 bg-sky-950/10 space-y-1.5">
           <div className="flex items-center gap-2">
-            <span className={titleCls}>Níveis do item</span>
-            <span className="text-[10px] font-mono text-sky-300">{previewWeapon.assetId}</span>
+            <span className={titleCls}>{isShooter ? 'Níveis da flecha' : 'Níveis do item'}</span>
+            <span className="text-[10px] font-mono text-sky-300">
+              {statsTarget ? `${statsTarget.familyId}/${statsTarget.variantId}` : previewWeapon.assetId}
+            </span>
             {levelsDirty && (
               <span className="text-[10px] px-1.5 py-0.5 rounded bg-amber-900/50 border border-amber-700 text-amber-300">
                 não salvo
@@ -437,6 +576,121 @@ export function WeaponProfilePanel(props: WeaponProfilePanelProps) {
             O dano do level substitui o damagePerHit do perfil para ESTE item; a velocidade multiplica
             a animação de ataque quando o item estiver equipado. Salvo por item, junto da família.
           </p>
+        </div>
+      )}
+
+      {/* Projétil (flecha): alcance + hitbox por direção — POR VARIAÇÃO */}
+      {isShooter && previewWeapon && statsTarget && (
+        <div className="mt-2.5 border border-emerald-900/50 rounded p-2 bg-emerald-950/10 space-y-1.5">
+          <div className="flex items-center gap-2">
+            <span className={titleCls}>Projétil (flecha)</span>
+            <span className="text-[10px] font-mono text-emerald-300">
+              {statsTarget.familyId}/{statsTarget.variantId}
+            </span>
+            {projDirty && (
+              <span className="text-[10px] px-1.5 py-0.5 rounded bg-amber-900/50 border border-amber-700 text-amber-300">
+                não salvo
+              </span>
+            )}
+          </div>
+          <p className="text-[10px] text-slate-500">
+            A flecha voa em linha reta e cai ao esgotar a distância. A hitbox é local ao sprite da
+            flecha (origem no centro), por direção de voo.
+          </p>
+          <label className="block">
+            <span className="text-[10px] text-slate-500">
+              Distância do tiro (px) — {MIN_ARROW_RANGE_PX} a {MAX_ARROW_RANGE_PX}
+            </span>
+            <NumField
+              key={`${previewWeapon.assetId}:range`}
+              value={draftProj.rangePx}
+              min={MIN_ARROW_RANGE_PX}
+              max={MAX_ARROW_RANGE_PX}
+              integer
+              disabled={busy}
+              className={`${fieldCls} block w-full`}
+              onCommit={(v) => setProjDraft({ ...draftProj, rangePx: v })}
+            />
+          </label>
+          <div className="grid grid-cols-[5.5rem_1fr_1fr_1fr_1fr] gap-1 items-center text-[10px] text-slate-500">
+            <span />
+            <span>x</span>
+            <span>y</span>
+            <span>larg.</span>
+            <span>alt.</span>
+          </div>
+          {ARROW_DIRS.map((dir) => {
+            const rect = draftProj.hitbox?.[dir] ?? defaultArrowRect(dir);
+            return (
+              <div key={dir} className="grid grid-cols-[5.5rem_1fr_1fr_1fr_1fr] gap-1 items-center">
+                <span className="text-[10px] text-slate-400">{ARROW_DIR_LABELS[dir]}</span>
+                <NumField
+                  key={`${previewWeapon.assetId}:${dir}:x`}
+                  value={rect.x}
+                  min={-192}
+                  max={192}
+                  integer
+                  disabled={busy}
+                  className={`${fieldCls} w-full`}
+                  onCommit={(v) => mutateProjRect(dir, { x: v })}
+                />
+                <NumField
+                  key={`${previewWeapon.assetId}:${dir}:y`}
+                  value={rect.y}
+                  min={-192}
+                  max={192}
+                  integer
+                  disabled={busy}
+                  className={`${fieldCls} w-full`}
+                  onCommit={(v) => mutateProjRect(dir, { y: v })}
+                />
+                <NumField
+                  key={`${previewWeapon.assetId}:${dir}:w`}
+                  value={rect.width}
+                  min={1}
+                  max={192}
+                  integer
+                  disabled={busy}
+                  className={`${fieldCls} w-full`}
+                  onCommit={(v) => mutateProjRect(dir, { width: v })}
+                />
+                <NumField
+                  key={`${previewWeapon.assetId}:${dir}:h`}
+                  value={rect.height}
+                  min={1}
+                  max={192}
+                  integer
+                  disabled={busy}
+                  className={`${fieldCls} w-full`}
+                  onCommit={(v) => mutateProjRect(dir, { height: v })}
+                />
+              </div>
+            );
+          })}
+          <div className="flex flex-wrap gap-1.5 pt-1">
+            <button
+              type="button"
+              className={neutralBtn}
+              disabled={busy}
+              onClick={rotateFromSouth}
+              title="Copia a hitbox do Sul para as outras direções girando 90° por vez"
+            >
+              <Copy size={12} /> Copiar girando (a partir do Sul)
+            </button>
+            <button
+              type="button"
+              className={`${btnCls} border-emerald-800 bg-emerald-950/50 text-emerald-300 hover:bg-emerald-900/50`}
+              disabled={busy || !projDirty || props.weaponTablesMissing}
+              onClick={() => void handleSaveProjectile()}
+            >
+              <Save size={12} /> Salvar projétil
+            </button>
+            {projDirty && (
+              <button type="button" className={neutralBtn} disabled={busy} onClick={clearProjDraft}>
+                Descartar
+              </button>
+            )}
+          </div>
         </div>
       )}
 

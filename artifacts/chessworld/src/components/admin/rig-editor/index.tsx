@@ -54,7 +54,7 @@ import { AppearancePanel } from './AppearancePanel';
 import type { BoxKind, BoxSelection, EditorTool } from './types';
 import { weaponApi } from './weaponApi';
 import { WeaponProfilePanel, type PreviewWeapon } from './WeaponProfilePanel';
-import { buildWeaponFamilyCatalog } from '../../../lib/character-generator/weaponCatalog';
+import { buildWeaponFamilyCatalog, projectilePairedFamily } from '../../../lib/character-generator/weaponCatalog';
 import { fetchGeneratorManifest } from '../../../lib/character-generator/manifest';
 import type { GeneratorManifest } from '../../../lib/character-generator/types';
 import {
@@ -72,6 +72,7 @@ import {
   type WeaponHitboxFrameConfig,
   type WeaponHitboxProfile,
   type WeaponLevelStats,
+  type WeaponProjectileConfig,
 } from '../../../shared/combat/WeaponShapes';
 
 /**
@@ -316,6 +317,15 @@ export function RigControllerPage() {
   const weaponCatalog = useMemo(
     () => buildWeaponFamilyCatalog(generatorManifest, families),
     [generatorManifest, families],
+  );
+
+  /** Família de projétil pareada à arma do preview (arco→flecha); null p/ melee. */
+  const previewProjectileFamilyId = useMemo(
+    () =>
+      previewWeapon
+        ? (projectilePairedFamily(generatorManifest, previewWeapon.familyId)?.id ?? null)
+        : null,
+    [generatorManifest, previewWeapon],
   );
 
   const selectProfile = useCallback((profileId: string | null, opts: { confirmDiscard?: boolean } = {}) => {
@@ -1101,7 +1111,41 @@ export function RigControllerPage() {
           familyId,
           ...(existing?.displayName ? { displayName: existing.displayName } : {}),
           weaponHitboxProfileId: existing?.weaponHitboxProfileId ?? null,
-          variants: { ...(existing?.variants ?? {}), [variantId]: { levels } },
+          // Merge por variação: preserva a config de projétil já salva.
+          variants: {
+            ...(existing?.variants ?? {}),
+            [variantId]: { ...(existing?.variants?.[variantId] ?? {}), levels },
+          },
+        };
+        const res = await weaponApi.families.save(config);
+        setFamilies((prev) => ({ ...prev, [familyId]: res.family ?? config }));
+        return true;
+      } catch (e) {
+        applyWeaponApiError(e);
+        return false;
+      } finally {
+        setWeaponBusy(false);
+      }
+    },
+    [applyWeaponApiError],
+  );
+
+  /** Salva a config do PROJÉTIL (alcance/hitbox da flecha) de uma variação. */
+  const handleSaveVariantProjectile = useCallback(
+    async (familyId: string, variantId: string, projectile: WeaponProjectileConfig) => {
+      setWeaponBusy(true);
+      setWeaponError(null);
+      try {
+        const existing = familiesRef.current[familyId];
+        const config: WeaponFamilyConfig = {
+          familyId,
+          ...(existing?.displayName ? { displayName: existing.displayName } : {}),
+          weaponHitboxProfileId: existing?.weaponHitboxProfileId ?? null,
+          // Merge por variação: preserva os levels já salvos da flecha.
+          variants: {
+            ...(existing?.variants ?? {}),
+            [variantId]: { ...(existing?.variants?.[variantId] ?? {}), projectile },
+          },
         };
         const res = await weaponApi.families.save(config);
         setFamilies((prev) => ({ ...prev, [familyId]: res.family ?? config }));
@@ -1766,6 +1810,9 @@ export function RigControllerPage() {
                 onChangeProfileAnimation={handleChangeProfileAnimation}
                 onAssociateFamily={handleAssociateFamily}
                 onSaveVariantLevels={handleSaveVariantLevels}
+                isShooter={previewProjectileFamilyId !== null}
+                projectileFamilyId={previewProjectileFamilyId}
+                onSaveVariantProjectile={handleSaveVariantProjectile}
                 weaponDataEpoch={weaponDataEpoch}
                 onSetRigDefaultProfile={handleSetRigDefaultProfile}
                 onGoToProfileAnimation={handleGoToProfileAnimation}

@@ -1,11 +1,11 @@
 /**
  * Painel de EQUIPAMENTO (estilo RPG pixelado, como a referência do usuário).
  *
- * Grade 4×4 de slots; hoje só o slot da arma da classe é funcional — as
- * demais casas ficam vazias para o futuro. Clicar no slot (ou no botão)
- * equipa/desequipa EM TEMPO REAL via `equip_weapon` (o servidor decide a
- * arma pela classe e publica no estado; a textura troca quando o estado
- * volta). Desktop: cartão à direita. Mobile: folha inferior.
+ * FASE DE TESTE DAS ARMAS NOVAS: os 4 primeiros slots da grade são itens
+ * fixos de madeira — arco (primeiro), espada, cajado e lança. Clicar num
+ * item equipa AQUELA arma em tempo real via `equip_weapon {equip, ref}`;
+ * clicar no item já equipado desequipa. Nada é auto-equipado: o padrão é
+ * mão limpa. Desktop: cartão à direita. Mobile: folha inferior.
  */
 import { useEffect, useMemo, useState } from 'react';
 import { AnimatedPreview } from '../admin/character-generator/AnimatedPreview';
@@ -14,22 +14,26 @@ import { loadLayerCanvases, type LayerSpec, type LoadedLayer } from '../../lib/c
 import { getSkinTone } from '../../lib/character-generator/skinTones';
 import type { GeneratorManifest } from '../../lib/character-generator/types';
 import { getGeneratorManifest } from '../../game/characters/appearanceRuntime';
-import { fetchPublicAssetCategories } from '../../lib/playerCharacterApi';
-import {
-  PLAYER_CLASS_LABELS,
-  WEAPON_REF_RE,
-  findClassWeaponRef,
-} from '../../shared/characters/PlayerCharacterShapes';
+import { PLAYER_CLASS_LABELS } from '../../shared/characters/PlayerCharacterShapes';
 import { usePlayerCharacterStore } from '../../stores/playerCharacterStore';
 import { useAuthStore } from '../../stores/authStore';
 
-/** Nome amigável da arma padrão de cada classe. */
-const WEAPON_NAMES: Record<string, string> = {
-  guerreiro: 'Lança',
-  assassino: 'Espada',
-  arqueiro: 'Arco',
-  mago: 'Cajado',
-};
+/**
+ * Itens de teste (armas finais, variação madeira). O arco usa a coluna 16
+ * como miniatura: as folhas bowandarrow_* só têm arte nas colunas 15–18.
+ */
+const TEST_ITEMS: ReadonlyArray<{
+  ref: string;
+  familyId: string;
+  variantId: string;
+  name: string;
+  thumbCol: number;
+}> = [
+  { ref: 'gen:weapon/bowandarrow/wood', familyId: 'bowandarrow', variantId: 'wood', name: 'Arco (madeira)', thumbCol: 16 },
+  { ref: 'gen:weapon/sword/wood', familyId: 'sword', variantId: 'wood', name: 'Espada (madeira)', thumbCol: 1 },
+  { ref: 'gen:weapon/wand/wood', familyId: 'wand', variantId: 'wood', name: 'Cajado (madeira)', thumbCol: 1 },
+  { ref: 'gen:weapon/spear/wood', familyId: 'spear', variantId: 'wood', name: 'Lança (madeira)', thumbCol: 1 },
+];
 
 const SLOT_COUNT = 16;
 
@@ -59,20 +63,17 @@ export function EquipmentPanel() {
   const profile = useAuthStore((s) => s.profile);
 
   const [manifest, setManifest] = useState<GeneratorManifest | null>(null);
-  const [classWeaponRef, setClassWeaponRef] = useState<string | null>(null);
   const [loadErr, setLoadErr] = useState<string | null>(null);
   const [layers, setLayers] = useState<LoadedLayer[]>([]);
 
-  // Catálogos ao abrir (cacheados por módulo — só a 1ª abertura custa rede).
+  // Manifest ao abrir (cacheado por módulo — só a 1ª abertura custa rede).
   useEffect(() => {
     if (!panelOpen || !character) return;
     let cancelled = false;
     setLoadErr(null);
-    Promise.all([getGeneratorManifest(), fetchPublicAssetCategories()])
-      .then(([mf, categories]) => {
-        if (cancelled) return;
-        setManifest(mf);
-        setClassWeaponRef(findClassWeaponRef(categories, character.classId));
+    getGeneratorManifest()
+      .then((mf) => {
+        if (!cancelled) setManifest(mf);
       })
       .catch((e) => {
         if (!cancelled) setLoadErr(e instanceof Error ? e.message : String(e));
@@ -115,27 +116,26 @@ export function EquipmentPanel() {
     };
   }, [previewSpecs, character]);
 
-  /** URL da folha da arma da classe (para a miniatura do slot). */
-  const weaponSheetUrl = useMemo(() => {
-    if (!manifest || !classWeaponRef) return null;
-    const m = WEAPON_REF_RE.exec(classWeaponRef);
-    if (!m) return null;
-    const [, familyId, variantId] = m;
-    const fam = manifest.categories['weapon']?.find((f) => f.id === familyId);
-    if (!fam) return null;
-    const v = fam.variants.find((x) => x.id === variantId) ?? fam.default;
-    return `${import.meta.env.BASE_URL}${v.url}`;
-  }, [manifest, classWeaponRef]);
+  /** URLs das folhas dos itens de teste (miniaturas), resolvidas do manifest. */
+  const sheetUrls = useMemo<Record<string, string | null>>(() => {
+    const out: Record<string, string | null> = {};
+    if (!manifest) return out;
+    for (const item of TEST_ITEMS) {
+      const fam = manifest.categories['weapon']?.find((f) => f.id === item.familyId);
+      const v = fam ? (fam.variants.find((x) => x.id === item.variantId) ?? fam.default) : null;
+      out[item.ref] = v ? `${import.meta.env.BASE_URL}${v.url}` : null;
+    }
+    return out;
+  }, [manifest]);
 
   if (!character || !panelOpen) return null;
 
-  const equipped = liveWeapon !== '';
-  const weaponName = WEAPON_NAMES[character.classId] ?? 'Arma';
-  const canEquip = !!equipSender && !!classWeaponRef;
+  const equippedItem = TEST_ITEMS.find((i) => i.ref === liveWeapon) ?? null;
 
-  const toggleEquip = () => {
-    if (!canEquip) return;
-    equipSender!(!equipped);
+  const toggleItem = (ref: string) => {
+    if (!equipSender) return;
+    if (liveWeapon === ref) equipSender(false);
+    else equipSender(true, ref);
   };
 
   return (
@@ -177,24 +177,27 @@ export function EquipmentPanel() {
           )}
           <div className="grid grid-cols-4 gap-1.5">
             {Array.from({ length: SLOT_COUNT }, (_, i) => {
-              if (i === 0) {
+              const item = TEST_ITEMS[i];
+              if (item) {
+                const isEquipped = liveWeapon === item.ref;
+                const url = sheetUrls[item.ref] ?? null;
                 return (
                   <button
-                    key={i}
+                    key={item.ref}
                     type="button"
-                    disabled={!canEquip}
-                    onClick={toggleEquip}
-                    title={`${weaponName} — clique para ${equipped ? 'remover' : 'equipar'}`}
+                    disabled={!equipSender}
+                    onClick={() => toggleItem(item.ref)}
+                    title={`${item.name} — clique para ${isEquipped ? 'remover' : 'equipar'}`}
                     className={`relative aspect-square overflow-hidden rounded border-2 bg-black/40 transition-colors ${
-                      equipped ? 'border-emerald-500' : 'border-[#6b4a26] hover:border-amber-500'
+                      isEquipped ? 'border-emerald-500' : 'border-[#6b4a26] hover:border-amber-500'
                     } disabled:cursor-not-allowed disabled:opacity-60`}
                   >
-                    {weaponSheetUrl ? (
-                      <SpriteFrameThumb url={weaponSheetUrl} size={64} className="h-full w-full" />
+                    {url ? (
+                      <SpriteFrameThumb url={url} col={item.thumbCol} size={64} className="h-full w-full" />
                     ) : (
                       <span className="text-lg">⚔️</span>
                     )}
-                    {equipped && (
+                    {isEquipped && (
                       <span className="absolute left-0 right-0 top-0 bg-emerald-600/95 py-[1px] text-center text-[8px] font-bold uppercase tracking-wider text-white">
                         Equipado
                       </span>
@@ -215,20 +218,18 @@ export function EquipmentPanel() {
 
           <div className="mt-3 flex items-center justify-between gap-2">
             <p className="min-w-0 truncate text-xs text-amber-100/80">
-              {weaponName} da classe {equipped ? '— em uso' : '— guardada'}
+              {equippedItem ? `${equippedItem.name} — em uso` : 'Nenhuma arma equipada'}
             </p>
-            <button
-              type="button"
-              disabled={!canEquip}
-              onClick={toggleEquip}
-              className={`shrink-0 rounded-md border-2 px-3 py-1.5 text-xs font-bold uppercase tracking-wider transition-colors disabled:cursor-not-allowed disabled:opacity-60 ${
-                equipped
-                  ? 'border-red-700 bg-red-900/50 text-red-100 hover:bg-red-900/80'
-                  : 'border-amber-500 bg-amber-600 text-black hover:bg-amber-500'
-              }`}
-            >
-              {equipped ? 'Remover' : 'Equipar'}
-            </button>
+            {equippedItem && (
+              <button
+                type="button"
+                disabled={!equipSender}
+                onClick={() => equipSender?.(false)}
+                className="shrink-0 rounded-md border-2 border-red-700 bg-red-900/50 px-3 py-1.5 text-xs font-bold uppercase tracking-wider text-red-100 transition-colors hover:bg-red-900/80 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                Remover
+              </button>
+            )}
           </div>
         </div>
       </div>

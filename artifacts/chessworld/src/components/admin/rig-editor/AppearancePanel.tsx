@@ -19,6 +19,7 @@ import {
 } from '../../../lib/character-generator/constants';
 import { SKIN_TONES, getSkinTone } from '../../../lib/character-generator/skinTones';
 import { fetchGeneratorManifest } from '../../../lib/character-generator/manifest';
+import { manifestWithoutProjectiles } from '../../../lib/character-generator/weaponCatalog';
 import {
   composeSheet,
   loadLayerCanvases,
@@ -112,7 +113,9 @@ export function AppearancePanel({ recipe, rigId, onSaveRecipe, onSheetChange, on
     fetchGeneratorManifest()
       .then((m) => {
         if (cancelled) return;
-        setManifest(m);
+        // Flecha (projétil) não é arma equipável — fora do seletor e da
+        // seleção inicial (senão "arrow" viraria a arma default por ordem).
+        setManifest(manifestWithoutProjectiles(m));
       })
       .catch((e) => {
         if (!cancelled) setManifestError(e instanceof Error ? e.message : String(e));

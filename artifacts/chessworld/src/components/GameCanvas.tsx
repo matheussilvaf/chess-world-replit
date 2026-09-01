@@ -514,7 +514,7 @@ export function GameCanvas() {
     // Personagem do jogador: equipar/desequipar arma + aviso de "receita
     // salva" (depois da criação, o servidor recarrega do banco e publica).
     usePlayerCharacterStore.getState().setSenders(
-      (equip) => room.send('equip_weapon', { equip }),
+      (equip, ref) => room.send('equip_weapon', ref === undefined ? { equip } : { equip, ref }),
       () => room.send('character_ready'),
     );
 

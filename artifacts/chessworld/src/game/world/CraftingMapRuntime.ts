@@ -639,19 +639,37 @@ export class CraftingMapRuntime {
    * ferramenta→elemento, ex. minério exige picareta, vem depois.)
    */
   private swingTargetFor(state: PlayerSwingState): ResourceNode | null {
+    return this.nearestNodeHitBy(state.rects, state.playerX, state.playerY);
+  }
+
+  /** Nó não quebrado cuja hurtbox toca algum retângulo, mais próximo de (x,y). */
+  private nearestNodeHitBy(rects: Phaser.Geom.Rectangle[], x: number, y: number): ResourceNode | null {
     let best: ResourceNode | null = null;
     let bestDist = Infinity;
     for (const node of this.nodes) {
       if (node.broken || !node.sprite.active) continue;
       const hurt = this.nodeHurtboxRect(node);
-      if (!state.rects.some((r) => Phaser.Geom.Rectangle.Overlaps(r, hurt))) continue;
-      const d = Phaser.Math.Distance.Between(state.playerX, state.playerY, node.sprite.x, node.sprite.y);
+      if (!rects.some((r) => Phaser.Geom.Rectangle.Overlaps(r, hurt))) continue;
+      const d = Phaser.Math.Distance.Between(x, y, node.sprite.x, node.sprite.y);
       if (d < bestDist) {
         bestDist = d;
         best = node;
       }
     }
     return best;
+  }
+
+  /**
+   * Acerto de PROJÉTIL (flecha do arco): testa a hitbox de mundo da flecha
+   * contra as hurtboxes dos nós — mesmo dano de golpe (1 hit). O chamador
+   * garante 1 acerto por flecha (a flecha "morre" quando conecta).
+   */
+  tryProjectileHit(rects: Phaser.Geom.Rectangle[], x: number, y: number): boolean {
+    if (!this.nodes.length || rects.length === 0) return false;
+    const best = this.nearestNodeHitBy(rects, x, y);
+    if (!best) return false;
+    this.applyHit(best);
+    return true;
   }
 
   /**

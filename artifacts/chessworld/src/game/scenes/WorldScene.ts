@@ -18,10 +18,12 @@ import {
   type WorldCharacterDef,
   type Direction8,
 } from '../characters/characterCatalog';
-import { composedDefIdFor, ensureAppearanceDef, pruneComposedAppearances } from '../characters/appearanceRuntime';
-import { COMPOSED_SHEET } from '../../shared/characters/PlayerCharacterShapes';
+import { composedDefIdFor, ensureAppearanceDef, getGeneratorManifest, pruneComposedAppearances } from '../characters/appearanceRuntime';
+import { COMPOSED_SHEET, WEAPON_REF_RE } from '../../shared/characters/PlayerCharacterShapes';
 import { loadRigConfig } from '../rigs/rigLoader';
-import { resolveWeaponProfileForFamily } from '../rigs/weaponLoader';
+import { resolveWeaponProfileForFamily, resolveWeaponShootStats } from '../rigs/weaponLoader';
+import { projectilePairedFamily } from '../../lib/character-generator/weaponCatalog';
+import { ArrowProjectiles } from '../world/ArrowProjectiles';
 import {
   RIG_DIRECTION_BY_ROW,
   composedFrameColumn,
@@ -29,7 +31,7 @@ import {
   weaponFamilyFromRef,
   weaponHitboxRectsFor,
 } from '../rigs/composedRigFrames';
-import { localRectToWorldRect, type RigConfig } from '../../shared/combat/RigShapes';
+import { localRectToWorldRect, type LocalRectangle, type RigConfig, type RigDirection } from '../../shared/combat/RigShapes';
 import type { WeaponHitboxProfile } from '../../shared/combat/WeaponShapes';
 import {
   ATTACK_COOLDOWN_CLIENT_MARGIN_MS,
@@ -75,6 +77,23 @@ const HOLD_MOVE_ACTIVATE_MS = 150;
 const HOLD_MOVE_REPATH_MS = 150;
 /** Pointer must move at least this many world px to trigger a new re-path. */
 const HOLD_MOVE_MIN_DELTA_PX = 6;
+
+/** Dados de disparo resolvidos p/ uma arma de arco (flecha pareada + config do admin). */
+interface ArrowShootData {
+  arrowSheetUrl: string;
+  rangePx: number;
+  /** Dano da flecha (levels da variação no admin) — ainda NÃO aplicado aos nós (contam golpes). */
+  damage: number;
+  hitbox: Partial<Record<RigDirection, LocalRectangle>>;
+}
+
+/** Nascimento da flecha em relação à origem do sprite (centro do frame 96×96). */
+const ARROW_SPAWN_OFFSET: Record<string, { x: number; y: number }> = {
+  down: { x: 0, y: 10 },
+  up: { x: 0, y: -16 },
+  left: { x: -16, y: -6 },
+  right: { x: 16, y: -6 },
+};
 
 interface RemotePlayer {
   container: Phaser.GameObjects.Container;
@@ -185,6 +204,11 @@ export class WorldScene extends Phaser.Scene {
   private weaponProfilesByRef = new Map<string, WeaponHitboxProfile | null>();
   /** Identidade do golpe local — o mundo de coleta consome cada golpe uma vez. */
   private swingSeq = 0;
+  /** Dados de disparo por ref de arma (null = arma comum, não atira). */
+  private shootDataByRef = new Map<string, ArrowShootData | null>();
+  private shootDataInflight = new Map<string, Promise<ArrowShootData | null>>();
+  /** Flechas em voo (local + cosméticas dos remotos). */
+  private arrowProjectiles: ArrowProjectiles | null = null;
   private currentDirection: Direction8 = 'down';
   private playerSpeed = MAP_CONFIG.playerSpeed;
   private showDebugVisuals = false;
@@ -436,6 +460,8 @@ export class WorldScene extends Phaser.Scene {
 
     this.events.once('shutdown', () => {
       this.interactionSystem?.destroy();
+      this.arrowProjectiles?.destroy();
+      this.arrowProjectiles = null;
     });
 
     // Setup zoom controls
@@ -1225,6 +1251,14 @@ export class WorldScene extends Phaser.Scene {
       this.otherPlayers.forEach((remote) => {
         remote.container.setDepth(this.craftingRuntime.depthForY(remote.container.y));
       });
+    }
+
+    // Flechas em voo: movem e (no mundo de coleta) testam contra os nós.
+    if (this.arrowProjectiles) {
+      const tester = this.craftingRuntime.active
+        ? (rects: Phaser.Geom.Rectangle[], x: number, y: number) => this.craftingRuntime.tryProjectileHit(rects, x, y)
+        : null;
+      this.arrowProjectiles.update(delta, tester);
     }
 
     // Smooth zoom interpolation — snap to target once close enough
@@ -3152,6 +3186,7 @@ export class WorldScene extends Phaser.Scene {
     // coleta + debug). Carrega em paralelo com a composição da textura.
     this.localWeaponRef = weaponRef ?? '';
     this.ensureRigWeaponData(weaponRef ?? '');
+    void this.ensureShootData(weaponRef ?? '');
     // Marca o alvo ANTES do await: um prune disparado no meio (saída de
     // remote etc.) não pode coletar o def que estamos construindo.
     this.localAppearanceTargetId = composedDefIdFor(appearanceRaw, weaponRef);
@@ -3231,6 +3266,10 @@ export class WorldScene extends Phaser.Scene {
     // margin: anything sent earlier is silently dropped by the server, which
     // would show a local-only "ghost swing" that deals no damage.
     if (Date.now() < this.attackCooldownUntil) return false;
+    // Arco equipado → DISPARO (knock-and-bow) em vez de golpe de mão.
+    const shootData = this.localWeaponRef ? this.shootDataByRef.get(this.localWeaponRef) : undefined;
+    if (shootData === undefined && this.localWeaponRef) void this.ensureShootData(this.localWeaponRef);
+    if (shootData && def.movements.get('shoot')) return this.tryShoot(def, shootData);
     // Moving with a walk-attack sheet available → attack WHILE walking
     // (animation + server damage timeline use the walk-attack asset).
     const moving = !!this.target;
@@ -3270,6 +3309,107 @@ export class WorldScene extends Phaser.Scene {
     return true;
   }
 
+  /**
+   * Disparo de arco: para, toca knock-and-bow e agenda a flecha para o FIM
+   * da animação (soltar a corda). O servidor recebe o intent 'shoot' só para
+   * cronometrar cooldown e avisar os outros clientes (flecha cosmética).
+   */
+  private tryShoot(def: WorldCharacterDef, data: ArrowShootData): boolean {
+    const mv = def.movements.get('shoot');
+    if (!mv || !this.player || !this.playerBody) return false;
+    // Atirar é sempre parado (knock-and-bow não tem variante andando).
+    this.attackLocksMovement = true;
+    this.target = null;
+    this.pathWaypoints = [];
+    this.currentWaypointIndex = 0;
+    this.finalDestination = null;
+    this.matter.body.setVelocity(this.playerBody, { x: 0, y: 0 });
+
+    const dir = this.dirForDef(def, this.currentDirection);
+    const durationMs = (mv.columns / 12) * 1000;
+    this.attackingUntil = Date.now() + durationMs;
+    this.attackCooldownUntil =
+      this.attackingUntil + ATTACK_COOLDOWN_PAD_MS + ATTACK_COOLDOWN_CLIENT_MARGIN_MS;
+    this.player.anims.timeScale = 1;
+    this.player.anims.play(animKeyFor(def.id, mv.movement, dir));
+    this.emitMovement(false, dir);
+    this.attackSender?.({ type: 'attack', movement: 'shoot', direction: dir, characterId: def.id });
+    const refAtShot = this.localWeaponRef;
+    this.time.delayedCall(durationMs, () => {
+      if (!this.player || !this.player.scene) return;
+      if (Date.now() < this.deadUntil) return; // morreu no meio do gesto
+      if (this.localWeaponRef !== refAtShot) return; // trocou/desequipou no meio
+      this.spawnArrow(dir, data, false, this.player.x, this.player.y);
+    });
+    return true;
+  }
+
+  /** Cria a flecha no mundo (local = testa nós; cosmetic = só visual). */
+  private spawnArrow(direction: string, data: ArrowShootData, cosmetic: boolean, px: number, py: number): void {
+    if (!this.arrowProjectiles) this.arrowProjectiles = new ArrowProjectiles(this);
+    const off = ARROW_SPAWN_OFFSET[direction] ?? ARROW_SPAWN_OFFSET.down;
+    void this.arrowProjectiles.fire({
+      sheetUrl: data.arrowSheetUrl,
+      direction,
+      startX: px + off.x,
+      startY: py + off.y,
+      rangePx: data.rangePx,
+      hitbox: data.hitbox,
+      cosmetic,
+    });
+  }
+
+  /**
+   * Resolve (uma vez por ref) os dados de DISPARO de uma arma: pareamento
+   * arco↔flecha pelo group do manifest + config da variação no catálogo
+   * público (dano/alcance/hitbox). null = arma comum (segue golpe melee).
+   */
+  private ensureShootData(ref: string): Promise<ArrowShootData | null> {
+    if (!ref) return Promise.resolve(null);
+    const cached = this.shootDataByRef.get(ref);
+    if (cached !== undefined) return Promise.resolve(cached);
+    const inflight = this.shootDataInflight.get(ref);
+    if (inflight) return inflight;
+    const p = (async (): Promise<ArrowShootData | null> => {
+      try {
+        const m = WEAPON_REF_RE.exec(ref);
+        if (!m) {
+          this.shootDataByRef.set(ref, null);
+          return null;
+        }
+        const familyId = m[1];
+        const variantId = m[2] ?? 'default';
+        const manifest = await getGeneratorManifest();
+        const arrowFam = projectilePairedFamily(manifest, familyId);
+        if (!arrowFam) {
+          this.shootDataByRef.set(ref, null); // arma comum
+          return null;
+        }
+        // Flecha do MESMO material; sem variação correspondente, a default.
+        const arrowVariant = arrowFam.variants.find((v) => v.id === variantId) ?? null;
+        // Dano/alcance/hitbox são autorados na FAMÍLIA DA FLECHA (o admin
+        // salva lá, chaveado pelo material do arco) — nunca na do arco.
+        const stats = await resolveWeaponShootStats(arrowFam.id, variantId);
+        const data: ArrowShootData = {
+          arrowSheetUrl: `${import.meta.env.BASE_URL}${(arrowVariant ?? arrowFam.default).url}`,
+          rangePx: stats.rangePx,
+          damage: stats.damage,
+          hitbox: stats.hitbox,
+        };
+        this.shootDataByRef.set(ref, data);
+        return data;
+      } catch (e) {
+        // Erro de rede: não cacheia — o próximo equipar/tiro tenta de novo.
+        console.warn('[WorldScene] dados de disparo indisponíveis:', e instanceof Error ? e.message : e);
+        return null;
+      } finally {
+        this.shootDataInflight.delete(ref);
+      }
+    })();
+    this.shootDataInflight.set(ref, p);
+    return p;
+  }
+
   /** Plays another player's attack animation (server broadcast). */
   public playRemoteAttack(sessionId: string, movement: string, direction: string) {
     const remote = this.otherPlayers.get(sessionId);
@@ -3287,6 +3427,23 @@ export class WorldScene extends Phaser.Scene {
     remote.attackingUntil = Date.now() + (mv.columns / 12) * 1000;
     remote.sprite.anims.timeScale = 1;
     remote.sprite.anims.play(key);
+
+    // Disparo remoto: flecha cosmética ao fim da animação (nunca acerta nós).
+    // O 1º tiro pode ainda estar resolvendo os dados — espera a promise em
+    // vez de descartar o broadcast (a flecha nasce um instante depois).
+    if (movement === 'shoot') {
+      const ref = remote.equippedWeaponRef || '';
+      if (!ref) return;
+      this.time.delayedCall((mv.columns / 12) * 1000, () => {
+        void this.ensureShootData(ref).then((data) => {
+          if (!data) return; // arma comum ou dados indisponíveis
+          const r = this.otherPlayers.get(sessionId);
+          if (!r || !r.sprite.scene || r.seated) return;
+          if ((r.equippedWeaponRef || '') !== ref) return; // trocou de arma
+          this.spawnArrow(dir, data, true, r.container.x, r.container.y);
+        });
+      });
+    }
   }
 
   /** Brief red flash on a hit player (sessionId null = local player). */
@@ -3574,7 +3731,13 @@ export class WorldScene extends Phaser.Scene {
           // Ref persistida (gen:weapon/...) → família → perfil. Sem família
           // (mão limpa/ref inválida) fica null: sem perfil, sem golpe.
           const family = weaponFamilyFromRef(ref);
-          const profile = family ? await resolveWeaponProfileForFamily(family, rig) : null;
+          let profile: WeaponHitboxProfile | null = null;
+          if (family) {
+            // Arma de DISPARO (arco): o dano vem da flecha — sem perfil de
+            // golpe, nem fallback do rig (evita debug/golpe melee enganoso).
+            const shooter = projectilePairedFamily(await getGeneratorManifest(), family) !== null;
+            profile = shooter ? null : await resolveWeaponProfileForFamily(family, rig);
+          }
           this.weaponProfilesByRef.set(ref, profile);
         }
       } catch (e) {
@@ -3741,6 +3904,9 @@ export class WorldScene extends Phaser.Scene {
         remote.equippedWeaponRef ?? null,
       );
     });
+
+    // Hitboxes das flechas em voo (ciano).
+    this.arrowProjectiles?.drawDebug(this.debugGfx);
 
     if (labelText) {
       if (!this.combatDebugLabel) {

@@ -12,6 +12,7 @@ import { CombatResolver } from '../combat/combatResolver.js';
 import { getPlayerCharacter, savePlayerEquippedWeapon } from '../characters/playerCharacterRepository.js';
 import { getAssetCategoriesCached } from '../assets/assetCategoryRepository.js';
 import {
+  WEAPON_REF_RE,
   canonicalAppearanceString,
   findClassWeaponRef,
   type PlayerCharacterConfigV1,
@@ -52,6 +53,8 @@ export class WorldRoom extends Room<WorldState> {
   private characterLoadSeq = new Map<string, number>();
   /** Last-request-wins para equipar/desequipar (tem awaits no meio). */
   private equipSeq = new Map<string, number>();
+  /** Fila de persistência da arma POR JOGADOR: garante a ordem dos writes no DB. */
+  private persistQueue = new Map<string, Promise<void>>();
 
   onCreate(options: any) {
     this.setState(new WorldState());
@@ -600,9 +603,18 @@ export class WorldRoom extends Room<WorldState> {
         void this.persistEquippedWeapon(player.id, null);
         return;
       }
-      const categories = await getAssetCategoriesCached();
-      if (this.equipSeq.get(client.sessionId) !== seq) return; // pedido mais novo venceu
-      const ref = findClassWeaponRef(categories, config.classId);
+      // FASE DE TESTE das armas novas: o cliente pode pedir uma arma
+      // específica (`ref`), validada pelo FORMATO (gen:weapon/...). A
+      // existência da folha vem do manifest do cliente nesta fase. Sem ref,
+      // comportamento antigo: a arma padrão da classe.
+      const requested =
+        typeof data?.ref === 'string' && WEAPON_REF_RE.test(data.ref) ? (data.ref as string) : null;
+      let ref = requested;
+      if (!ref) {
+        const categories = await getAssetCategoriesCached();
+        if (this.equipSeq.get(client.sessionId) !== seq) return; // pedido mais novo venceu
+        ref = findClassWeaponRef(categories, config.classId);
+      }
       if (!ref) return; // classe sem arma liberada no assets-controller
       const player = this.state.players.get(client.sessionId);
       if (!player) return; // saiu durante o await
@@ -635,11 +647,27 @@ export class WorldRoom extends Room<WorldState> {
     }
   }
 
-  /** Persistência fire-and-forget da arma (o estado já foi atualizado). */
+  /**
+   * Persistência da arma equipada (o estado em memória já foi atualizado).
+   * Serializada POR JOGADOR: dois toggles rápidos geravam writes concorrentes
+   * que podiam terminar fora de ordem e ressuscitar um estado velho no reload.
+   */
   private persistEquippedWeapon(playerId: string, ref: string | null): Promise<void> {
-    return savePlayerEquippedWeapon(playerId, ref).then((r) => {
-      if (!r.ok && r.error) console.warn(`[WorldRoom] persistir arma falhou: ${r.error}`);
+    const prev = this.persistQueue.get(playerId) ?? Promise.resolve();
+    const next = prev.then(() =>
+      savePlayerEquippedWeapon(playerId, ref).then(
+        (r) => {
+          if (!r.ok && r.error) console.warn(`[WorldRoom] persistir arma falhou: ${r.error}`);
+        },
+        (e) =>
+          console.warn(`[WorldRoom] persistir arma falhou: ${e instanceof Error ? e.message : String(e)}`),
+      ),
+    );
+    this.persistQueue.set(playerId, next);
+    void next.finally(() => {
+      if (this.persistQueue.get(playerId) === next) this.persistQueue.delete(playerId);
     });
+    return next;
   }
 
   async onJoin(client: Client, options: JoinOptions) {

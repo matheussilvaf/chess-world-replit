@@ -119,4 +119,80 @@ describe('scanGeneratorAssets', () => {
     expect(m.categories).toEqual({});
     expect(m.warnings).toHaveLength(1);
   });
+
+  // ---- subpastas + materiais (armas finais: weapons/<família>/<família>_<material>.png) ----
+
+  it('groups material variants in subfolders into one family (group = subfolder, no warning)', () => {
+    const swordDir = path.join(tmp, 'character-generator', 'assets', 'weapons', 'sword');
+    fs.mkdirSync(swordDir, { recursive: true });
+    fs.writeFileSync(path.join(swordDir, 'sword_iron.png'), fakePng());
+    fs.writeFileSync(path.join(swordDir, 'sword_wood.png'), fakePng());
+    fs.writeFileSync(path.join(swordDir, 'sword_stone.png'), fakePng());
+    const m = scanGeneratorAssets(tmp);
+    const sword = m.categories.weapon.find((f) => f.id === 'sword');
+    expect(sword).toBeDefined();
+    expect(sword!.group).toBe('sword');
+    // wood é o primeiro material canônico → vira default SEM warning (by design)
+    expect(sword!.default.id).toBe('wood');
+    expect(sword!.variants.map((v) => v.id)).toEqual(['wood', 'stone', 'iron']);
+    // URL preserva o caminho FÍSICO (pasta plural "weapons")
+    expect(sword!.default.url).toBe('character-generator/assets/weapons/sword/sword_wood.png');
+    expect(m.warnings).toEqual([]);
+  });
+
+  it('publishes the physical "weapons" folder as the canonical "weapon" category', () => {
+    const wandDir = path.join(tmp, 'character-generator', 'assets', 'weapons', 'wand');
+    fs.mkdirSync(wandDir, { recursive: true });
+    fs.writeFileSync(path.join(wandDir, 'wand_wood.png'), fakePng());
+    const m = scanGeneratorAssets(tmp);
+    expect(m.categories.weapons).toBeUndefined();
+    expect(m.categories.weapon.map((f) => f.id)).toEqual(['wand']);
+  });
+
+  it('keeps bow and arrow as separate families sharing the subfolder group', () => {
+    const bowDir = path.join(tmp, 'character-generator', 'assets', 'weapons', 'bowandarrow');
+    fs.mkdirSync(bowDir, { recursive: true });
+    fs.writeFileSync(path.join(bowDir, 'bowandarrow_wood.png'), fakePng());
+    fs.writeFileSync(path.join(bowDir, 'arrow_wood.png'), fakePng());
+    fs.writeFileSync(path.join(bowDir, 'arrow_gold.png'), fakePng());
+    const m = scanGeneratorAssets(tmp);
+    const fams = m.categories.weapon;
+    expect(fams.map((f) => f.id)).toEqual(['arrow', 'bowandarrow']);
+    expect(fams[0].group).toBe('bowandarrow');
+    expect(fams[1].group).toBe('bowandarrow');
+    expect(fams[0].variants.map((v) => v.id)).toEqual(['wood', 'gold']);
+  });
+
+  it('applies material suffixes only inside subfolders (flat files keep the _cN-only rule)', () => {
+    fs.writeFileSync(path.join(weaponDir, 'club_wood.png'), fakePng());
+    const m = scanGeneratorAssets(tmp);
+    expect(m.categories.weapon.map((f) => f.id)).toEqual(['club_wood']);
+    expect(m.categories.weapon[0].default.id).toBe('default');
+    expect(m.categories.weapon[0].group).toBeUndefined();
+  });
+
+  it('keeps _cN precedence inside subfolders and treats unknown materials as own families', () => {
+    const swordDir = path.join(tmp, 'character-generator', 'assets', 'weapons', 'sword');
+    fs.mkdirSync(swordDir, { recursive: true });
+    fs.writeFileSync(path.join(swordDir, 'sword_wood.png'), fakePng());
+    fs.writeFileSync(path.join(swordDir, 'sword_c2.png'), fakePng());
+    fs.writeFileSync(path.join(swordDir, 'sword_adamantium.png'), fakePng());
+    const m = scanGeneratorAssets(tmp);
+    const fams = m.categories.weapon;
+    expect(fams.map((f) => f.id)).toEqual(['sword', 'sword_adamantium']);
+    // _cN continua variante da família base; material fora do conjunto vira família própria
+    expect(fams[0].variants.map((v) => v.id)).toEqual(['wood', 'c2']);
+    expect(fams[1].default.id).toBe('default');
+    expect(fams[1].group).toBe('sword');
+  });
+
+  it('merges the alias folder and the plain folder into one category', () => {
+    fs.writeFileSync(path.join(weaponDir, 'flatfam.png'), fakePng());
+    const spearDir = path.join(tmp, 'character-generator', 'assets', 'weapons', 'spear');
+    fs.mkdirSync(spearDir, { recursive: true });
+    fs.writeFileSync(path.join(spearDir, 'spear_wood.png'), fakePng());
+    const m = scanGeneratorAssets(tmp);
+    expect(m.categories.weapon.map((f) => f.id)).toEqual(['flatfam', 'spear']);
+    expect(m.warnings).toEqual([]);
+  });
 });

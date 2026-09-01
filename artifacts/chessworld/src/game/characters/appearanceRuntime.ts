@@ -168,6 +168,15 @@ const MOVEMENT_SPECS: readonly ComposedMovementSpec[] = [
     poseColumn: COMPOSED_SHEET.standFrame,
   },
   {
+    // Disparo de arco (knock-and-bow): 12 fps × 4 colunas; a flecha é criada
+    // pelo WorldScene ao FIM da animação.
+    movement: 'shoot',
+    frames: COMPOSED_SHEET.shootFrames,
+    frameRate: 12,
+    repeat: 0,
+    poseColumn: COMPOSED_SHEET.standFrame,
+  },
+  {
     movement: 'death',
     frames: [COMPOSED_SHEET.deadFrame],
     frameRate: 1,

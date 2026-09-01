@@ -12,8 +12,10 @@
  *   family profile → rig's defaultWeaponHitboxProfileId → null (no hitbox).
  */
 import { getColyseusHttpUrl, isColyseusConfigured } from '../../config/colyseus';
-import type { RigConfig } from '../../shared/combat/RigShapes';
+import type { LocalRectangle, RigConfig, RigDirection } from '../../shared/combat/RigShapes';
 import {
+  DEFAULT_ARROW_RANGE_PX,
+  getWeaponVariantProjectile,
   parseWeaponAssetId,
   resolveWeaponLevelStats,
   resolveWeaponProfileId,
@@ -160,6 +162,34 @@ export async function resolveWeaponItemStats(
   const { familyId, variantId } = parseWeaponAssetId(weaponAssetId);
   const families = await loadWeaponFamiliesMap();
   return resolveWeaponLevelStats(families[familyId] ?? null, variantId, level, fallbackDamage);
+}
+
+/** Dados de DISPARO de uma variação de arma de arco (dano da flecha + alcance + hitbox). */
+export interface WeaponShootStats {
+  damage: number;
+  rangePx: number;
+  /** Hitbox da flecha por direção (local ao sprite da flecha); vazio = padrão do jogo. */
+  hitbox: Partial<Record<RigDirection, LocalRectangle>>;
+}
+
+/**
+ * Config de disparo por VARIAÇÃO (material): dano vem dos levels do item
+ * (mesma tabela das armas de golpe), alcance + hitbox vêm do bloco
+ * `projectile` salvo no admin. Tudo com defaults seguros quando ausente.
+ */
+export async function resolveWeaponShootStats(
+  familyId: string,
+  variantId: string,
+): Promise<WeaponShootStats> {
+  const families = await loadWeaponFamiliesMap();
+  const family = families[familyId] ?? null;
+  const stats = resolveWeaponLevelStats(family, variantId, 1);
+  const projectile = getWeaponVariantProjectile(family, variantId);
+  return {
+    damage: stats.damage,
+    rangePx: projectile?.rangePx ?? DEFAULT_ARROW_RANGE_PX,
+    hitbox: projectile?.hitbox ?? {},
+  };
 }
 
 export function clearWeaponCache(): void {

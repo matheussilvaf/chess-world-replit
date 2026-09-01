@@ -6,7 +6,7 @@
  */
 
 export interface GeneratorVariant {
-  id: string; // "default" | "c1" | "c2" | ...
+  id: string; // "default" | "c1" | "c2" | ... | "wood" | "stone" | ...
   file: string;
   /** URL relative to the app base path (prepend import.meta.env.BASE_URL). */
   url: string;
@@ -15,8 +15,10 @@ export interface GeneratorVariant {
 export interface GeneratorFamily {
   id: string;
   default: GeneratorVariant;
-  /** Default first, then c1, c2, ... in numeric order. */
+  /** Default first, then materials in canonical order, then c1, c2, ... */
   variants: GeneratorVariant[];
+  /** Subfolder the family came from (families sharing a group belong together). */
+  group?: string;
 }
 
 export interface GeneratorManifest {

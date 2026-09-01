@@ -24,6 +24,7 @@ import {
   emptyRigBoxGroup,
   mirrorRectAcrossOrigin,
   validateBoxGroup,
+  type LocalRectangle,
   type RigBoxGroupConfig,
   type RigCombatConfig,
   type RigConfig,
@@ -44,6 +45,35 @@ export function isWeaponLikeCategory(category: string): boolean {
   return (WEAPON_LIKE_CATEGORIES as readonly string[]).includes(category);
 }
 
+/**
+ * Canonical MATERIAL variant ids, in progression order (weakest → strongest).
+ * Material variants come from subfolder scans (e.g. `weapons/sword/sword_wood.png`
+ * → family "sword", variant "wood"). Kept in sync with MATERIAL_VARIANT_ORDER
+ * in vite-plugins/character-generator-manifest.ts.
+ */
+export const WEAPON_MATERIAL_IDS = [
+  'wood',
+  'stone',
+  'copper',
+  'iron',
+  'gold',
+  'diamond',
+  'lunar',
+  'cristalreal',
+] as const;
+
+/**
+ * Família de PROJÉTEIS: uma família com este id dentro de um grupo do manifest
+ * (subpasta) marca as outras famílias do MESMO grupo como armas de disparo
+ * (ex.: grupo "bowandarrow" = família "bowandarrow" + família "arrow").
+ */
+export const PROJECTILE_FAMILY_ID = 'arrow';
+
+/** Alcance padrão da flecha (px de mundo) quando a variação não foi configurada. */
+export const DEFAULT_ARROW_RANGE_PX = 320;
+export const MIN_ARROW_RANGE_PX = 16;
+export const MAX_ARROW_RANGE_PX = 4000;
+
 /** Profile ids follow the same convention as rig ids. */
 export const WEAPON_PROFILE_ID_RE = RIG_ID_RE;
 
@@ -61,6 +91,9 @@ export const WEAPON_FAMILY_ID_RE = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
 const WEAPON_FILE_VARIANT_RE = /^(.*)_c(\d+)\.png$/i;
 const WEAPON_FILE_PNG_RE = /\.png$/i;
 const WEAPON_ASSET_VARIANT_RE = /^(.*)_c(\d+)$/;
+/** Material suffix rule (closed set): `sword_wood` → family "sword", variant "wood". */
+const WEAPON_MATERIAL_SUFFIX_RE = /^(.+)_([a-z0-9]+)$/;
+const WEAPON_MATERIAL_SET: ReadonlySet<string> = new Set(WEAPON_MATERIAL_IDS);
 
 // ---------------------------------------------------------------- types
 
@@ -92,6 +125,8 @@ export interface WeaponFamilyManifestEntry {
   weaponHitboxProfileId: string | null;
   /** true when a persisted WeaponFamilyConfig row exists. */
   configured: boolean;
+  /** Subpasta do manifest (famílias no mesmo grupo pertencem juntas, ex.: arco+flecha). */
+  group?: string | null;
 }
 
 /**
@@ -121,9 +156,25 @@ export interface WeaponLevelStats {
   speed: number;
 }
 
+/**
+ * Config do PROJÉTIL de uma variação de arma de disparo (arco): a flecha
+ * correspondente viaja `rangePx` e usa `hitbox` (retângulo LOCAL ao sprite da
+ * flecha, origem no centro) para colidir. Direções ausentes usam um retângulo
+ * padrão fino no eixo do voo.
+ */
+export interface WeaponProjectileConfig {
+  /** Distância percorrida pela flecha, em px de mundo. */
+  rangePx: number;
+  /** Hitbox da flecha por direção (local ao sprite da flecha, origem no centro). */
+  hitbox?: Partial<Record<RigDirection, LocalRectangle>>;
+}
+
 /** Levels de um item (variante) específico de uma família. */
 export interface WeaponVariantConfig {
-  levels: WeaponLevelStats[];
+  /** Ausente = padrão implícito (level 1, dano 10, velocidade 1×). */
+  levels?: WeaponLevelStats[];
+  /** Só para variações de armas de disparo (arco): flecha correspondente. */
+  projectile?: WeaponProjectileConfig;
 }
 
 /** PUT payload for an association change (spec §30: ProfileAssociation). */
@@ -171,8 +222,11 @@ export interface ProfileMigrationResult {
 // ---------------------------------------------------------------- parsing
 
 /**
- * Applies the `_cN` rule to a PNG file name (spec §4). Returns null for
- * non-PNG names. Never inspects the name for meaning (spec §5).
+ * Applies the variant rules to a PNG file name (spec §4). Returns null for
+ * non-PNG names. Two suffix rules, tried in order:
+ *   1. `_cN` (historical):    "a_c2.png"       → family "a", variant "c2"
+ *   2. material (closed set): "sword_wood.png" → family "sword", variant "wood"
+ * Never inspects the name for meaning beyond these suffixes (spec §5).
  */
 export function parseWeaponFileName(
   file: string,
@@ -180,7 +234,12 @@ export function parseWeaponFileName(
   if (!WEAPON_FILE_PNG_RE.test(file)) return null;
   const m = WEAPON_FILE_VARIANT_RE.exec(file);
   if (m) return { familyId: m[1], variantId: `c${parseInt(m[2], 10)}` };
-  return { familyId: file.replace(WEAPON_FILE_PNG_RE, ''), variantId: 'default' };
+  const base = file.replace(WEAPON_FILE_PNG_RE, '');
+  const mat = WEAPON_MATERIAL_SUFFIX_RE.exec(base);
+  if (mat && WEAPON_MATERIAL_SET.has(mat[2].toLowerCase())) {
+    return { familyId: mat[1], variantId: mat[2].toLowerCase() };
+  }
+  return { familyId: base, variantId: 'default' };
 }
 
 /** Canonical asset id (same convention as the preview recipe). */
@@ -192,6 +251,10 @@ export function weaponAssetId(familyId: string, variantId: string): string {
 export function parseWeaponAssetId(assetId: string): { familyId: string; variantId: string } {
   const m = WEAPON_ASSET_VARIANT_RE.exec(assetId);
   if (m) return { familyId: m[1], variantId: `c${parseInt(m[2], 10)}` };
+  const mat = WEAPON_MATERIAL_SUFFIX_RE.exec(assetId);
+  if (mat && WEAPON_MATERIAL_SET.has(mat[2].toLowerCase())) {
+    return { familyId: mat[1], variantId: mat[2].toLowerCase() };
+  }
   return { familyId: assetId, variantId: 'default' };
 }
 
@@ -409,7 +472,7 @@ export function validateWeaponHitboxProfile(
 export const DEFAULT_WEAPON_DAMAGE = 10;
 /** 1 = velocidade padrão da animação de ataque no jogo (12 fps). */
 export const DEFAULT_WEAPON_SPEED = 1;
-export const WEAPON_VARIANT_ID_RE = /^(default|c[1-9][0-9]*)$/;
+export const WEAPON_VARIANT_ID_RE = new RegExp(`^(default|c[1-9][0-9]*|${WEAPON_MATERIAL_IDS.join('|')})$`);
 
 /** Level 1 implícito de todo item: dano padrão (ou do perfil) e velocidade 1×. */
 export function defaultWeaponLevels(damage: number = DEFAULT_WEAPON_DAMAGE): WeaponLevelStats[] {
@@ -446,6 +509,65 @@ export function resolveWeaponLevelStats(
   return best;
 }
 
+/** Config do projétil de uma variação: helper com fallback null. */
+export function getWeaponVariantProjectile(
+  family: { variants?: Record<string, WeaponVariantConfig> } | null | undefined,
+  variantId: string,
+): WeaponProjectileConfig | null {
+  return family?.variants?.[variantId]?.projectile ?? null;
+}
+
+/**
+ * Gira um retângulo LOCAL 90° em sentido horário (coordenadas de tela, y para
+ * baixo): sul→oeste→norte→leste. Usado pelo admin para replicar a hitbox da
+ * flecha nas quatro direções a partir da direção sul.
+ */
+export function rotateRectClockwise(rect: LocalRectangle): LocalRectangle {
+  return { ...rect, x: -(rect.y + rect.height), y: rect.x, width: rect.height, height: rect.width };
+}
+
+function validateWeaponProjectileConfig(value: unknown, where: string, errors: string[]): void {
+  if (!isRecord(value)) {
+    errors.push(`${where}: deve ser um objeto { rangePx, hitbox? }`);
+    return;
+  }
+  const range = value.rangePx;
+  if (typeof range !== 'number' || !Number.isFinite(range) || range < MIN_ARROW_RANGE_PX || range > MAX_ARROW_RANGE_PX) {
+    errors.push(`${where}.rangePx: número entre ${MIN_ARROW_RANGE_PX} e ${MAX_ARROW_RANGE_PX}`);
+  }
+  if (value.hitbox === undefined) return;
+  if (!isRecord(value.hitbox)) {
+    errors.push(`${where}.hitbox: deve ser um objeto por direção`);
+    return;
+  }
+  for (const [dirName, rect] of Object.entries(value.hitbox)) {
+    const rPath = `${where}.hitbox.${dirName}`;
+    if (!(RIG_DIRECTION_NAMES as readonly string[]).includes(dirName)) {
+      errors.push(`${rPath}: direção desconhecida (use ${RIG_DIRECTION_NAMES.join('/')})`);
+      continue;
+    }
+    if (!isRecord(rect)) {
+      errors.push(`${rPath}: deve ser um retângulo {id, x, y, width, height}`);
+      continue;
+    }
+    if (typeof rect.id !== 'string' || rect.id.length === 0 || rect.id.length > 64) {
+      errors.push(`${rPath}.id: obrigatório (até 64 caracteres)`);
+    }
+    for (const key of ['x', 'y'] as const) {
+      const v = rect[key];
+      if (typeof v !== 'number' || !Number.isFinite(v) || v < -192 || v > 192) {
+        errors.push(`${rPath}.${key}: número entre -192 e 192`);
+      }
+    }
+    for (const key of ['width', 'height'] as const) {
+      const v = rect[key];
+      if (typeof v !== 'number' || !Number.isFinite(v) || v <= 0 || v > 192) {
+        errors.push(`${rPath}.${key}: número maior que 0 e até 192`);
+      }
+    }
+  }
+}
+
 export function validateWeaponFamilyConfig(value: unknown): WeaponFamilyValidationResult {
   const errors: string[] = [];
   if (!isRecord(value)) return { ok: false, errors: ['config deve ser um objeto JSON'] };
@@ -462,40 +584,47 @@ export function validateWeaponFamilyConfig(value: unknown): WeaponFamilyValidati
   const variants = value.variants;
   if (variants !== undefined) {
     if (!isRecord(variants)) {
-      errors.push('variants: deve ser um objeto { variantId: { levels: [...] } }');
+      errors.push('variants: deve ser um objeto { variantId: { levels?, projectile? } }');
     } else if (Object.keys(variants).length > 64) {
       errors.push('variants: no máximo 64 itens');
     } else {
       for (const [variantId, raw] of Object.entries(variants)) {
         const where = `variants["${variantId}"]`;
         if (!WEAPON_VARIANT_ID_RE.test(variantId)) {
-          errors.push(`${where}: id de item inválido (use "default" ou "cN")`);
+          errors.push(`${where}: id de item inválido (use "default", "cN" ou um material: ${WEAPON_MATERIAL_IDS.join('/')})`);
           continue;
         }
-        if (!isRecord(raw) || !Array.isArray(raw.levels)) {
-          errors.push(`${where}.levels: deve ser uma lista de levels`);
+        if (!isRecord(raw)) {
+          errors.push(`${where}: deve ser um objeto { levels?, projectile? }`);
           continue;
         }
-        if (raw.levels.length === 0 || raw.levels.length > 99) {
-          errors.push(`${where}.levels: entre 1 e 99 levels`);
-          continue;
+        if (raw.levels !== undefined) {
+          if (!Array.isArray(raw.levels)) {
+            errors.push(`${where}.levels: deve ser uma lista de levels`);
+          } else if (raw.levels.length === 0 || raw.levels.length > 99) {
+            errors.push(`${where}.levels: entre 1 e 99 levels`);
+          } else {
+            raw.levels.forEach((entry, i) => {
+              const lw = `${where}.levels[${i}]`;
+              if (!isRecord(entry)) {
+                errors.push(`${lw}: deve ser um objeto {level, damage, speed}`);
+                return;
+              }
+              if (entry.level !== i + 1) {
+                errors.push(`${lw}.level: deve ser ${i + 1} (levels contíguos a partir do 1)`);
+              }
+              if (typeof entry.damage !== 'number' || !Number.isInteger(entry.damage) || entry.damage < 0 || entry.damage > 1000) {
+                errors.push(`${lw}.damage: inteiro entre 0 e 1000`);
+              }
+              if (typeof entry.speed !== 'number' || !Number.isFinite(entry.speed) || entry.speed < 0.1 || entry.speed > 10) {
+                errors.push(`${lw}.speed: número entre 0.1 e 10 (1 = padrão)`);
+              }
+            });
+          }
         }
-        raw.levels.forEach((entry, i) => {
-          const lw = `${where}.levels[${i}]`;
-          if (!isRecord(entry)) {
-            errors.push(`${lw}: deve ser um objeto {level, damage, speed}`);
-            return;
-          }
-          if (entry.level !== i + 1) {
-            errors.push(`${lw}.level: deve ser ${i + 1} (levels contíguos a partir do 1)`);
-          }
-          if (typeof entry.damage !== 'number' || !Number.isInteger(entry.damage) || entry.damage < 0 || entry.damage > 1000) {
-            errors.push(`${lw}.damage: inteiro entre 0 e 1000`);
-          }
-          if (typeof entry.speed !== 'number' || !Number.isFinite(entry.speed) || entry.speed < 0.1 || entry.speed > 10) {
-            errors.push(`${lw}.speed: número entre 0.1 e 10 (1 = padrão)`);
-          }
-        });
+        if (raw.projectile !== undefined) {
+          validateWeaponProjectileConfig(raw.projectile, `${where}.projectile`, errors);
+        }
       }
     }
   }
