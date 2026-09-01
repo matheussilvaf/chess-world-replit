@@ -6,7 +6,9 @@ import {
   COLLECTION_CONFIG_ID,
   DEFAULT_DROP_COUNT,
   DEFAULT_FLEE_RADIUS,
+  DEFAULT_RESOURCE_HP,
   DEFAULT_RESPAWN_SECONDS,
+  RESOURCE_HP_RANGE,
   FLEE_RADIUS_RANGE,
   FLEE_SPEED_RANGE,
   FLEEING_ANIMAL_KEYS,
@@ -369,6 +371,10 @@ export function CollectionAdminPage() {
   const [dropCounts, setDropCounts] = useState<Record<string, number>>(
     Object.fromEntries(COLLECTIBLE_ITEM_KEYS.map((key) => [key, DEFAULT_DROP_COUNT])),
   );
+  /** HP dos recursos golpeáveis (animais fora — eles fogem, não quebram). */
+  const [resourceHp, setResourceHp] = useState<Record<string, number>>(
+    Object.fromEntries(COLLECTIBLE_ITEM_KEYS.map((key) => [key, DEFAULT_RESOURCE_HP])),
+  );
   const [respawnSeconds, setRespawnSeconds] = useState<Record<string, number>>(
     Object.fromEntries(RESOURCE_KEYS.map((key) => [key, DEFAULT_RESPAWN_SECONDS])),
   );
@@ -462,6 +468,12 @@ export function CollectionAdminPage() {
             config.dropCounts?.[key] ?? DEFAULT_DROP_COUNT,
           ]),
         ));
+        setResourceHp(Object.fromEntries(
+          COLLECTIBLE_ITEM_KEYS.map((key) => [
+            key,
+            config.resourceHp?.[key] ?? DEFAULT_RESOURCE_HP,
+          ]),
+        ));
         setRespawnSeconds(Object.fromEntries(
           RESOURCE_KEYS.map((key) => [
             key,
@@ -484,6 +496,9 @@ export function CollectionAdminPage() {
         setHurtboxes({});
         setDropCounts(Object.fromEntries(
           COLLECTIBLE_ITEM_KEYS.map((key) => [key, DEFAULT_DROP_COUNT]),
+        ));
+        setResourceHp(Object.fromEntries(
+          COLLECTIBLE_ITEM_KEYS.map((key) => [key, DEFAULT_RESOURCE_HP]),
         ));
         setRespawnSeconds(Object.fromEntries(
           RESOURCE_KEYS.map((key) => [key, DEFAULT_RESPAWN_SECONDS]),
@@ -559,6 +574,9 @@ export function CollectionAdminPage() {
       dropCounts: Object.fromEntries(
         COLLECTIBLE_ITEM_KEYS.map((key) => [key, dropCounts[key] ?? DEFAULT_DROP_COUNT]),
       ),
+      resourceHp: Object.fromEntries(
+        COLLECTIBLE_ITEM_KEYS.map((key) => [key, resourceHp[key] ?? DEFAULT_RESOURCE_HP]),
+      ),
       respawnSeconds: Object.fromEntries(
         RESOURCE_KEYS.map((key) => [key, respawnSeconds[key] ?? DEFAULT_RESPAWN_SECONDS]),
       ),
@@ -585,6 +603,12 @@ export function CollectionAdminPage() {
         COLLECTIBLE_ITEM_KEYS.map((key) => [
           key,
           response.config.dropCounts?.[key] ?? DEFAULT_DROP_COUNT,
+        ]),
+      ));
+      setResourceHp(Object.fromEntries(
+        COLLECTIBLE_ITEM_KEYS.map((key) => [
+          key,
+          response.config.resourceHp?.[key] ?? DEFAULT_RESOURCE_HP,
         ]),
       ));
       setRespawnSeconds(Object.fromEntries(
@@ -805,27 +829,53 @@ export function CollectionAdminPage() {
                         </div>
                         <div className="mt-3 grid grid-cols-2 gap-2 border-t border-slate-800 pt-3">
                           {!resource.key.startsWith('animal:') && (
-                            <label className="text-[10px] text-slate-500">
-                              Itens por quebra
-                              <input
-                                type="number"
-                                min={0}
-                                max={20}
-                                step={1}
-                                disabled={busy || tableMissing}
-                                value={dropCounts[resource.key] ?? DEFAULT_DROP_COUNT}
-                                onChange={(event) => {
-                                  const value = Number(event.target.value);
-                                  if (Number.isInteger(value)) {
-                                    setDropCounts((current) => ({
-                                      ...current,
-                                      [resource.key]: Math.max(0, Math.min(20, value)),
-                                    }));
-                                  }
-                                }}
-                                className={`${inputClass} mt-0.5`}
-                              />
-                            </label>
+                            <>
+                              <label className="text-[10px] text-slate-500">
+                                Itens por quebra
+                                <input
+                                  type="number"
+                                  min={0}
+                                  max={20}
+                                  step={1}
+                                  disabled={busy || tableMissing}
+                                  value={dropCounts[resource.key] ?? DEFAULT_DROP_COUNT}
+                                  onChange={(event) => {
+                                    const value = Number(event.target.value);
+                                    if (Number.isInteger(value)) {
+                                      setDropCounts((current) => ({
+                                        ...current,
+                                        [resource.key]: Math.max(0, Math.min(20, value)),
+                                      }));
+                                    }
+                                  }}
+                                  className={`${inputClass} mt-0.5`}
+                                />
+                              </label>
+                              <label className="text-[10px] text-slate-500">
+                                HP do recurso
+                                <input
+                                  type="number"
+                                  min={RESOURCE_HP_RANGE.min}
+                                  max={RESOURCE_HP_RANGE.max}
+                                  step={1}
+                                  disabled={busy || tableMissing}
+                                  value={resourceHp[resource.key] ?? DEFAULT_RESOURCE_HP}
+                                  onChange={(event) => {
+                                    const value = Number(event.target.value);
+                                    if (Number.isInteger(value)) {
+                                      setResourceHp((current) => ({
+                                        ...current,
+                                        [resource.key]: Math.max(
+                                          RESOURCE_HP_RANGE.min,
+                                          Math.min(RESOURCE_HP_RANGE.max, value),
+                                        ),
+                                      }));
+                                    }
+                                  }}
+                                  className={`${inputClass} mt-0.5`}
+                                />
+                              </label>
+                            </>
                           )}
                           <label className={`text-[10px] text-slate-500 ${resource.key.startsWith('animal:') ? 'col-span-2' : ''}`}>
                             Renascer após

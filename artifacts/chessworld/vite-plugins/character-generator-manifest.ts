@@ -10,6 +10,9 @@
  * Files inside a subfolder additionally support MATERIAL variants:
  *   - `sword_wood.png`     → family "sword", variant "wood" (group "sword")
  *   - `arrow_gold.png`     → family "arrow", variant "gold" (group "bowandarrow")
+ * WEAPON-LIKE categories (weapon/crafttools) also apply the material rule to
+ * FLAT files: `crafttools/axe_stone.png` → family "axe", variant "stone"
+ * (sem group). Demais categorias planas mantêm a regra histórica só-_cN.
  * Material families have no base file by design: the first material in
  * MATERIAL_VARIANT_ORDER (wood) becomes the default, without a warning.
  * The subfolder name is recorded as `family.group` — families that share a
@@ -35,6 +38,13 @@ const ASSETS_DIR_SEGMENTS = ['character-generator', 'assets'];
 
 /** On-disk folder name → canonical category id in the manifest. */
 const CATEGORY_ALIASES: Record<string, string> = { weapons: 'weapon' };
+
+/**
+ * Categorias que usam VARIAÇÕES POR MATERIAL também em arquivos planos (fora
+ * de subpasta). Kept in sync with WEAPON_LIKE_CATEGORIES in
+ * src/shared/combat/WeaponShapes.ts.
+ */
+const MATERIAL_FLAT_CATEGORIES = new Set(['weapon', 'crafttools']);
 
 /** Expected spritesheet geometry — files that differ produce a warning. */
 const SHEET = { width: 2208, height: 384, rows: 4, cols: 23 };
@@ -167,7 +177,10 @@ export function scanGeneratorAssets(publicDir: string): GenManifest {
       let variant: { sortKey: number; v: GenVariant } | null = null;
 
       const cnMatch = file.match(VARIANT_RE);
-      const matMatch = group ? file.match(MATERIAL_RE) : null;
+      // Materiais valem em subpastas E em categorias weapon-like planas
+      // (crafttools/axe_stone.png); demais categorias planas: só _cN.
+      const matMatch =
+        group || MATERIAL_FLAT_CATEGORIES.has(category) ? file.match(MATERIAL_RE) : null;
       const matIdx = matMatch ? MATERIAL_INDEX.get(matMatch[2].toLowerCase()) : undefined;
 
       if (cnMatch) {
@@ -175,8 +188,8 @@ export function scanGeneratorAssets(publicDir: string): GenManifest {
         const n = parseInt(cnMatch[2], 10);
         variant = { sortKey: 1000 + n, v: { id: `c${n}`, file, url } };
       } else if (matMatch && matIdx !== undefined) {
-        // Material variants only exist inside subfolders — flat categories
-        // (crafttools etc.) keep the historical _cN-only rule untouched.
+        // Material variants: subpastas sempre; arquivos planos só em
+        // categorias weapon-like (MATERIAL_FLAT_CATEGORIES).
         baseName = matMatch[1];
         variant = { sortKey: matIdx, v: { id: matMatch[2].toLowerCase(), file, url } };
       } else {

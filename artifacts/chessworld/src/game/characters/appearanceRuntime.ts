@@ -30,7 +30,7 @@ import { fetchGeneratorManifest } from '../../lib/character-generator/manifest';
 import type { GeneratorFamily, GeneratorManifest } from '../../lib/character-generator/types';
 import {
   COMPOSED_SHEET,
-  WEAPON_REF_RE,
+  parseWeaponRef,
   appearanceHash,
   canonicalAppearanceString,
   parseAppearanceString,
@@ -121,11 +121,12 @@ function buildLayerSpecs(
   if (appearance.layers.hair) push('hair', appearance.layers.hair.familyId, appearance.layers.hair.variantId);
 
   if (weaponRef) {
-    const match = WEAPON_REF_RE.exec(weaponRef);
-    if (match) {
-      push('weapon', match[1], match[2] ?? 'default');
+    const parsed = parseWeaponRef(weaponRef);
+    if (parsed) {
+      // Categoria da ref = camada do compositor (weapon OU crafttools).
+      push(parsed.category, parsed.familyId, parsed.variantId ?? 'default');
     } else {
-      problems.push(`ref de arma inválida: ${weaponRef}`);
+      problems.push(`ref de item de mão inválida: ${weaponRef}`);
     }
   }
 

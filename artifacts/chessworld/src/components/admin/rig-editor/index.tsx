@@ -73,6 +73,7 @@ import {
   type WeaponHitboxProfile,
   type WeaponLevelStats,
   type WeaponProjectileConfig,
+  type WeaponToolConfig,
 } from '../../../shared/combat/WeaponShapes';
 
 /**
@@ -325,6 +326,16 @@ export function RigControllerPage() {
       previewWeapon
         ? (projectilePairedFamily(generatorManifest, previewWeapon.familyId)?.id ?? null)
         : null,
+    [generatorManifest, previewWeapon],
+  );
+
+  /** Item do preview é FERRAMENTA de coleta (família da categoria crafttools)? */
+  const previewIsTool = useMemo(
+    () =>
+      previewWeapon !== null &&
+      (generatorManifest?.categories?.['crafttools'] ?? []).some(
+        (f) => f.id === previewWeapon.familyId,
+      ),
     [generatorManifest, previewWeapon],
   );
 
@@ -1160,6 +1171,36 @@ export function RigControllerPage() {
     [applyWeaponApiError],
   );
 
+  /** Salva a config da FERRAMENTA (poder/durabilidade de coleta) de uma variação. */
+  const handleSaveVariantTool = useCallback(
+    async (familyId: string, variantId: string, tool: WeaponToolConfig) => {
+      setWeaponBusy(true);
+      setWeaponError(null);
+      try {
+        const existing = familiesRef.current[familyId];
+        const config: WeaponFamilyConfig = {
+          familyId,
+          ...(existing?.displayName ? { displayName: existing.displayName } : {}),
+          weaponHitboxProfileId: existing?.weaponHitboxProfileId ?? null,
+          // Merge por variação: preserva levels/projétil já salvos.
+          variants: {
+            ...(existing?.variants ?? {}),
+            [variantId]: { ...(existing?.variants?.[variantId] ?? {}), tool },
+          },
+        };
+        const res = await weaponApi.families.save(config);
+        setFamilies((prev) => ({ ...prev, [familyId]: res.family ?? config }));
+        return true;
+      } catch (e) {
+        applyWeaponApiError(e);
+        return false;
+      } finally {
+        setWeaponBusy(false);
+      }
+    },
+    [applyWeaponApiError],
+  );
+
   const handleCreateProfile = useCallback(
     async (opts: { id: string; displayName: string; animationId: string; duplicate: boolean }) => {
       const rig = workingRef.current;
@@ -1812,6 +1853,8 @@ export function RigControllerPage() {
                 onSaveVariantLevels={handleSaveVariantLevels}
                 isShooter={previewProjectileFamilyId !== null}
                 projectileFamilyId={previewProjectileFamilyId}
+                isTool={previewIsTool}
+                onSaveVariantTool={handleSaveVariantTool}
                 onSaveVariantProjectile={handleSaveVariantProjectile}
                 weaponDataEpoch={weaponDataEpoch}
                 onSetRigDefaultProfile={handleSetRigDefaultProfile}

@@ -80,15 +80,39 @@ export interface PlayerCharacterConfigV1 {
   v: 1;
   classId: PlayerClassId;
   appearance: CharacterAppearanceV1;
-  /** Ref de asset (`gen:weapon/<família>/<variante>`) ou null (nada equipado). */
+  /** Ref de asset de mão (`gen:weapon/...` arma ou `gen:crafttools/...` ferramenta) ou null. */
   equippedWeapon: string | null;
 }
 
 /** Segmento de id do gerador (família/variante): slug minúsculo curto. */
 const SEGMENT_RE = /^[a-z0-9][a-z0-9_-]{0,39}$/;
 
-/** Ref de arma equipável — sempre apontando para o layer `weapon`. */
-export const WEAPON_REF_RE = /^gen:weapon\/([a-z0-9][a-z0-9_-]{0,39})(?:\/([a-z0-9][a-z0-9_-]{0,39}))?$/;
+/**
+ * Ref de item de MÃO equipável — camada `weapon` (armas) ou `crafttools`
+ * (ferramentas de coleta). Grupos: [1] categoria, [2] família, [3] variação.
+ * Prefira parseWeaponRef() a .exec para não depender dos índices.
+ */
+export const WEAPON_REF_RE =
+  /^gen:(weapon|crafttools)\/([a-z0-9][a-z0-9_-]{0,39})(?:\/([a-z0-9][a-z0-9_-]{0,39}))?$/;
+
+/** Ref de equipável decomposta (null = fora do formato). */
+export interface ParsedWeaponRef {
+  category: 'weapon' | 'crafttools';
+  familyId: string;
+  /** null = variação default da família. */
+  variantId: string | null;
+}
+
+export function parseWeaponRef(ref: string | null | undefined): ParsedWeaponRef | null {
+  if (!ref) return null;
+  const m = WEAPON_REF_RE.exec(ref);
+  if (!m) return null;
+  return {
+    category: m[1] as ParsedWeaponRef['category'],
+    familyId: m[2],
+    variantId: m[3] ?? null,
+  };
+}
 
 // --------------------------------------------------------------- validação
 

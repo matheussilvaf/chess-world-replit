@@ -603,10 +603,11 @@ export class WorldRoom extends Room<WorldState> {
         void this.persistEquippedWeapon(player.id, null);
         return;
       }
-      // FASE DE TESTE das armas novas: o cliente pode pedir uma arma
-      // específica (`ref`), validada pelo FORMATO (gen:weapon/...). A
-      // existência da folha vem do manifest do cliente nesta fase. Sem ref,
-      // comportamento antigo: a arma padrão da classe.
+      // FASE DE TESTE dos itens novos: o cliente pode pedir um item
+      // específico (`ref`), validado pelo FORMATO (gen:weapon/... ou
+      // gen:crafttools/... — ferramentas de coleta). A existência da folha
+      // vem do manifest do cliente nesta fase. Sem ref, comportamento
+      // antigo: a arma padrão da classe.
       const requested =
         typeof data?.ref === 'string' && WEAPON_REF_RE.test(data.ref) ? (data.ref as string) : null;
       let ref = requested;

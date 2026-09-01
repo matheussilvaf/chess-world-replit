@@ -163,12 +163,35 @@ describe('scanGeneratorAssets', () => {
     expect(fams[0].variants.map((v) => v.id)).toEqual(['wood', 'gold']);
   });
 
-  it('applies material suffixes only inside subfolders (flat files keep the _cN-only rule)', () => {
+  it('applies material suffixes to FLAT files in weapon-like categories (weapon/crafttools)', () => {
     fs.writeFileSync(path.join(weaponDir, 'club_wood.png'), fakePng());
+    const toolsDir = path.join(tmp, 'character-generator', 'assets', 'crafttools');
+    fs.mkdirSync(toolsDir, { recursive: true });
+    fs.writeFileSync(path.join(toolsDir, 'axe_stone.png'), fakePng());
+    fs.writeFileSync(path.join(toolsDir, 'axe_iron.png'), fakePng());
+    fs.writeFileSync(path.join(toolsDir, 'machete_iron.png'), fakePng());
     const m = scanGeneratorAssets(tmp);
-    expect(m.categories.weapon.map((f) => f.id)).toEqual(['club_wood']);
-    expect(m.categories.weapon[0].default.id).toBe('default');
+    // weapon plano: club_wood.png agrupa na família "club" (variação wood).
+    expect(m.categories.weapon.map((f) => f.id)).toEqual(['club']);
+    expect(m.categories.weapon[0].default.id).toBe('wood');
     expect(m.categories.weapon[0].group).toBeUndefined();
+    // crafttools plano: variações por material na ordem canônica.
+    const tools = m.categories.crafttools;
+    expect(tools.map((f) => f.id)).toEqual(['axe', 'machete']);
+    expect(tools[0].variants.map((v) => v.id)).toEqual(['stone', 'iron']);
+    expect(tools[0].default.id).toBe('stone');
+    // Família sem arquivo-base (machete só tem iron): promove SEM warning.
+    expect(tools[1].default.id).toBe('iron');
+    expect(m.warnings).toEqual([]);
+  });
+
+  it('keeps the historical _cN-only rule for flat files in NON weapon-like categories', () => {
+    const hairDir = path.join(tmp, 'character-generator', 'assets', 'hair');
+    fs.mkdirSync(hairDir, { recursive: true });
+    fs.writeFileSync(path.join(hairDir, 'bob_wood.png'), fakePng());
+    const m = scanGeneratorAssets(tmp);
+    expect(m.categories.hair.map((f) => f.id)).toEqual(['bob_wood']);
+    expect(m.categories.hair[0].default.id).toBe('default');
   });
 
   it('keeps _cN precedence inside subfolders and treats unknown materials as own families', () => {

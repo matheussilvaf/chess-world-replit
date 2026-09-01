@@ -145,9 +145,6 @@ export const animalWalkTextureKey = (id: string) => `craft-animal-walk-${id}`;
 export const animalAnimKey = (id: string, action: 'eat' | 'walk', dir: AnimalDirection) =>
   `craft-animal-${action}-${dir}-${id}`;
 
-/** Fase de teste: golpes de ferramenta para quebrar/coletar qualquer recurso. */
-export const RESOURCE_HITS_TO_BREAK = 3;
-
 /** Drops: mini-itens que pulam do nó quebrado e são atraídos pelo jogador (imã). */
 export const RESOURCE_DROP = {
   /** Itens por nó quebrado. */

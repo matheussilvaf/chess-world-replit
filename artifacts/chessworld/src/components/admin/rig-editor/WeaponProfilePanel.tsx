@@ -27,14 +27,19 @@ import {
 import type { LocalRectangle, RigConfig, RigDirection } from '../../../shared/combat/RigShapes';
 import {
   DEFAULT_ARROW_RANGE_PX,
+  DEFAULT_TOOL_DURABILITY,
+  DEFAULT_TOOL_POWER,
   DEFAULT_WEAPON_DAMAGE,
   DEFAULT_WEAPON_SPEED,
   MAX_ARROW_RANGE_PX,
   MIN_ARROW_RANGE_PX,
+  TOOL_DURABILITY_RANGE,
+  TOOL_POWER_RANGE,
   WEAPON_PROFILE_ID_RE,
   countWeaponProfileRects,
   getWeaponVariantLevels,
   getWeaponVariantProjectile,
+  getWeaponVariantTool,
   rotateRectClockwise,
   weaponFamiliesUsingProfile,
   type WeaponFamilyConfig,
@@ -42,6 +47,7 @@ import {
   type WeaponHitboxProfile,
   type WeaponLevelStats,
   type WeaponProjectileConfig,
+  type WeaponToolConfig,
 } from '../../../shared/combat/WeaponShapes';
 
 export interface PreviewWeapon {
@@ -87,6 +93,14 @@ interface WeaponProfilePanelProps {
     familyId: string,
     variantId: string,
     projectile: WeaponProjectileConfig,
+  ) => Promise<boolean>;
+  /** Item do preview é FERRAMENTA de coleta (categoria crafttools)? */
+  isTool: boolean;
+  /** Salva poder/durabilidade da ferramenta (por variação); true quando persistiu. */
+  onSaveVariantTool: (
+    familyId: string,
+    variantId: string,
+    tool: WeaponToolConfig,
   ) => Promise<boolean>;
   /** Incrementado a cada recarga dos dados de arma — descarta rascunhos obsoletos. */
   weaponDataEpoch: number;
@@ -187,6 +201,8 @@ export function WeaponProfilePanel(props: WeaponProfilePanelProps) {
   const [rawLevelInputs, setRawLevelInputs] = useState<Record<string, string>>({});
   /** Rascunhos do PROJÉTIL (flecha) por item do preview — idem, até "Salvar". */
   const [projDrafts, setProjDrafts] = useState<Record<string, WeaponProjectileConfig>>({});
+  /** Rascunhos da FERRAMENTA (poder/durabilidade) por item — idem, até "Salvar". */
+  const [toolDrafts, setToolDrafts] = useState<Record<string, WeaponToolConfig>>({});
 
   // Recarga dos dados de arma (Recarregar/migração/reabertura): rascunhos
   // antigos são descartados para não sobrescrever mudanças vindas do servidor.
@@ -194,6 +210,7 @@ export function WeaponProfilePanel(props: WeaponProfilePanelProps) {
     setLevelDrafts({});
     setRawLevelInputs({});
     setProjDrafts({});
+    setToolDrafts({});
   }, [props.weaponDataEpoch]);
 
   const animNames = useMemo(() => Object.keys(rig.animations), [rig]);
@@ -329,6 +346,37 @@ export function WeaponProfilePanel(props: WeaponProfilePanelProps) {
     if (!previewWeapon || !statsTarget) return;
     const ok = await props.onSaveVariantProjectile(statsTarget.familyId, statsTarget.variantId, draftProj);
     if (ok) clearProjDraft();
+  };
+
+  // ---- Ferramenta (coleta): poder/durabilidade POR VARIAÇÃO do item ----
+  // Ao contrário do arco (stats na flecha pareada), a ferramenta é o PRÓPRIO
+  // alvo: salva em famílias crafttools, chaveado pela variação (material).
+  const { isTool } = props;
+  const savedTool =
+    isTool && previewWeapon ? getWeaponVariantTool(previewFamilyConfig, previewWeapon.variantId) : null;
+  const baselineTool: WeaponToolConfig = savedTool ?? {
+    power: DEFAULT_TOOL_POWER,
+    durability: DEFAULT_TOOL_DURABILITY,
+  };
+  const draftTool = previewWeapon ? (toolDrafts[previewWeapon.assetId] ?? baselineTool) : baselineTool;
+  const toolDirty =
+    isTool && previewWeapon !== null && JSON.stringify(draftTool) !== JSON.stringify(baselineTool);
+  const setToolDraft = (cfg: WeaponToolConfig) => {
+    if (!previewWeapon) return;
+    setToolDrafts((prev) => ({ ...prev, [previewWeapon.assetId]: cfg }));
+  };
+  const clearToolDraft = () => {
+    if (!previewWeapon) return;
+    setToolDrafts((prev) => {
+      const next = { ...prev };
+      delete next[previewWeapon.assetId];
+      return next;
+    });
+  };
+  const handleSaveTool = async () => {
+    if (!previewWeapon) return;
+    const ok = await props.onSaveVariantTool(previewWeapon.familyId, previewWeapon.variantId, draftTool);
+    if (ok) clearToolDraft();
   };
 
   const openCreate = (duplicate: boolean) => {
@@ -576,6 +624,74 @@ export function WeaponProfilePanel(props: WeaponProfilePanelProps) {
             O dano do level substitui o damagePerHit do perfil para ESTE item; a velocidade multiplica
             a animação de ataque quando o item estiver equipado. Salvo por item, junto da família.
           </p>
+        </div>
+      )}
+
+      {/* Ferramenta (coleta): poder + durabilidade — POR VARIAÇÃO */}
+      {previewWeapon && isTool && (
+        <div className="mt-2.5 border border-amber-900/50 rounded p-2 bg-amber-950/10 space-y-1.5">
+          <div className="flex items-center gap-2">
+            <span className={titleCls}>Ferramenta (coleta)</span>
+            <span className="text-[10px] font-mono text-amber-300">
+              {previewWeapon.familyId}/{previewWeapon.variantId}
+            </span>
+            {toolDirty && (
+              <span className="text-[10px] px-1.5 py-0.5 rounded bg-amber-900/50 border border-amber-700 text-amber-300">
+                não salvo
+              </span>
+            )}
+          </div>
+          <p className="text-[10px] text-slate-500">
+            Poder = HP tirado do recurso por golpe no Mundo de Coleta. A durabilidade é só
+            autorada por enquanto — nenhum uso a consome ainda.
+          </p>
+          <div className="grid grid-cols-2 gap-2">
+            <label className="block">
+              <span className="text-[10px] text-slate-500">
+                Poder ({TOOL_POWER_RANGE.min}–{TOOL_POWER_RANGE.max})
+              </span>
+              <NumField
+                key={`${previewWeapon.assetId}:tool-power`}
+                value={draftTool.power}
+                min={TOOL_POWER_RANGE.min}
+                max={TOOL_POWER_RANGE.max}
+                integer
+                disabled={busy}
+                className={`${fieldCls} block w-full`}
+                onCommit={(v) => setToolDraft({ ...draftTool, power: v })}
+              />
+            </label>
+            <label className="block">
+              <span className="text-[10px] text-slate-500">
+                Durabilidade ({TOOL_DURABILITY_RANGE.min}–{TOOL_DURABILITY_RANGE.max})
+              </span>
+              <NumField
+                key={`${previewWeapon.assetId}:tool-durability`}
+                value={draftTool.durability}
+                min={TOOL_DURABILITY_RANGE.min}
+                max={TOOL_DURABILITY_RANGE.max}
+                integer
+                disabled={busy}
+                className={`${fieldCls} block w-full`}
+                onCommit={(v) => setToolDraft({ ...draftTool, durability: v })}
+              />
+            </label>
+          </div>
+          <div className="flex flex-wrap gap-1.5 pt-1">
+            <button
+              type="button"
+              className={`${btnCls} border-emerald-800 bg-emerald-950/50 text-emerald-300 hover:bg-emerald-900/50`}
+              disabled={busy || !toolDirty || props.weaponTablesMissing}
+              onClick={() => void handleSaveTool()}
+            >
+              <Save size={12} /> Salvar ferramenta
+            </button>
+            {toolDirty && (
+              <button type="button" className={neutralBtn} disabled={busy} onClick={clearToolDraft}>
+                Descartar
+              </button>
+            )}
+          </div>
         </div>
       )}
 

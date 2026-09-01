@@ -218,3 +218,9 @@ Rotas Express custom do servidor devem ser registradas COM o prefixo `/api` (ex.
 - Tiro é client-side nesta fase: flecha local testa nós do mapa de coleta; remotos recebem flecha cosmética (broadcast `player_attack` movement `shoot`). Dano configurado AINDA não aplicado aos nós (3 golpes fixos). `equip_weapon` aceita `ref` validado só por FORMATO (fase de teste) — endurecer (existência/liberação) antes de produção.
 - Persistência da arma equipada: writes serializados POR JOGADOR (fila de promises no WorldRoom) — fire-and-forget concorrente reordenava writes e ressuscitava arma velha no reload.
 - Projéteis com delayedCall: capturar o ref no momento do disparo e re-checar no spawn (troca/desequipar no meio da anim); tiro remoto espera a promise do cache (1º tiro caía no cache-miss e era descartado); destruir o pool de projéteis no shutdown da cena.
+
+## Coleta: ferramentas/HP (decisões da fase de teste)
+- Golpe/flecha de coleta é 100% client-side por design nesta fase; servidor não valida acertos em nós. Pareamento ferramenta→recurso (ex.: minério exige picareta) fica para depois.
+- `equip_weapon` aceita ref por FORMATO (`gen:(weapon|crafttools)/...`) sem checar existência no manifest — intencional na fase de teste.
+- `tool.durability` é SÓ autorada no /admin/rigs; nenhum código consome durabilidade ainda (não é bug).
+- Poder de coleta: crafttools = tool.power (padrão 10); arma = dano do level 1; mão limpa/ref inválida = 1. HP padrão dos nós = 30 (~3 golpes como antes).

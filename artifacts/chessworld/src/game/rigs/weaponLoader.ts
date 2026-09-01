@@ -15,7 +15,9 @@ import { getColyseusHttpUrl, isColyseusConfigured } from '../../config/colyseus'
 import type { LocalRectangle, RigConfig, RigDirection } from '../../shared/combat/RigShapes';
 import {
   DEFAULT_ARROW_RANGE_PX,
+  DEFAULT_TOOL_POWER,
   getWeaponVariantProjectile,
+  getWeaponVariantTool,
   parseWeaponAssetId,
   resolveWeaponLevelStats,
   resolveWeaponProfileId,
@@ -190,6 +192,26 @@ export async function resolveWeaponShootStats(
     rangePx: projectile?.rangePx ?? DEFAULT_ARROW_RANGE_PX,
     hitbox: projectile?.hitbox ?? {},
   };
+}
+
+/**
+ * PODER DE COLETA de um item de mão equipado — quanto de HP um golpe/flecha
+ * tira de um nó de recurso no Mundo de Coleta:
+ *  - ferramenta (crafttools): `tool.power` da variação (admin), padrão 10;
+ *  - arma comum: dano do level 1 do item (mesma tabela dos golpes);
+ *  - família não configurada: padrões acima (nunca quebra).
+ */
+export async function resolveGatherPower(
+  category: 'weapon' | 'crafttools',
+  familyId: string,
+  variantId: string,
+): Promise<number> {
+  const families = await loadWeaponFamiliesMap();
+  const family = families[familyId] ?? null;
+  if (category === 'crafttools') {
+    return getWeaponVariantTool(family, variantId)?.power ?? DEFAULT_TOOL_POWER;
+  }
+  return resolveWeaponLevelStats(family, variantId, 1).damage;
 }
 
 export function clearWeaponCache(): void {

@@ -19,16 +19,15 @@ import {
   type Direction8,
 } from '../characters/characterCatalog';
 import { composedDefIdFor, ensureAppearanceDef, getGeneratorManifest, pruneComposedAppearances } from '../characters/appearanceRuntime';
-import { COMPOSED_SHEET, WEAPON_REF_RE } from '../../shared/characters/PlayerCharacterShapes';
+import { COMPOSED_SHEET, parseWeaponRef } from '../../shared/characters/PlayerCharacterShapes';
 import { loadRigConfig } from '../rigs/rigLoader';
-import { resolveWeaponProfileForFamily, resolveWeaponShootStats } from '../rigs/weaponLoader';
+import { resolveGatherPower, resolveWeaponProfileForFamily, resolveWeaponShootStats } from '../rigs/weaponLoader';
 import { projectilePairedFamily } from '../../lib/character-generator/weaponCatalog';
 import { ArrowProjectiles } from '../world/ArrowProjectiles';
 import {
   RIG_DIRECTION_BY_ROW,
   composedFrameColumn,
   rigHurtboxRectsFor,
-  weaponFamilyFromRef,
   weaponHitboxRectsFor,
 } from '../rigs/composedRigFrames';
 import { localRectToWorldRect, type LocalRectangle, type RigConfig, type RigDirection } from '../../shared/combat/RigShapes';
@@ -82,7 +81,7 @@ const HOLD_MOVE_MIN_DELTA_PX = 6;
 interface ArrowShootData {
   arrowSheetUrl: string;
   rangePx: number;
-  /** Dano da flecha (levels da variação no admin) — ainda NÃO aplicado aos nós (contam golpes). */
+  /** Dano da flecha (levels da variação no admin) — HP tirado do nó atingido. */
   damage: number;
   hitbox: Partial<Record<RigDirection, LocalRectangle>>;
 }
@@ -207,6 +206,8 @@ export class WorldScene extends Phaser.Scene {
   /** Dados de disparo por ref de arma (null = arma comum, não atira). */
   private shootDataByRef = new Map<string, ArrowShootData | null>();
   private shootDataInflight = new Map<string, Promise<ArrowShootData | null>>();
+  /** Poder de coleta por ref equipada (HP tirado por golpe; mão limpa = 1). */
+  private gatherPowerByRef = new Map<string, number>();
   /** Flechas em voo (local + cosméticas dos remotos). */
   private arrowProjectiles: ArrowProjectiles | null = null;
   private currentDirection: Direction8 = 'down';
@@ -1256,7 +1257,8 @@ export class WorldScene extends Phaser.Scene {
     // Flechas em voo: movem e (no mundo de coleta) testam contra os nós.
     if (this.arrowProjectiles) {
       const tester = this.craftingRuntime.active
-        ? (rects: Phaser.Geom.Rectangle[], x: number, y: number) => this.craftingRuntime.tryProjectileHit(rects, x, y)
+        ? (rects: Phaser.Geom.Rectangle[], x: number, y: number, damage: number) =>
+            this.craftingRuntime.tryProjectileHit(rects, x, y, damage)
         : null;
       this.arrowProjectiles.update(delta, tester);
     }
@@ -3355,6 +3357,7 @@ export class WorldScene extends Phaser.Scene {
       startY: py + off.y,
       rangePx: data.rangePx,
       hitbox: data.hitbox,
+      damage: data.damage,
       cosmetic,
     });
   }
@@ -3372,13 +3375,13 @@ export class WorldScene extends Phaser.Scene {
     if (inflight) return inflight;
     const p = (async (): Promise<ArrowShootData | null> => {
       try {
-        const m = WEAPON_REF_RE.exec(ref);
-        if (!m) {
+        const parsed = parseWeaponRef(ref);
+        if (!parsed) {
           this.shootDataByRef.set(ref, null);
           return null;
         }
-        const familyId = m[1];
-        const variantId = m[2] ?? 'default';
+        const familyId = parsed.familyId;
+        const variantId = parsed.variantId ?? 'default';
         const manifest = await getGeneratorManifest();
         const arrowFam = projectilePairedFamily(manifest, familyId);
         if (!arrowFam) {
@@ -3728,17 +3731,28 @@ export class WorldScene extends Phaser.Scene {
         const rig = this.localRig ?? (await loadRigConfig());
         this.localRig = rig;
         if (!this.weaponProfilesByRef.has(ref)) {
-          // Ref persistida (gen:weapon/...) → família → perfil. Sem família
-          // (mão limpa/ref inválida) fica null: sem perfil, sem golpe.
-          const family = weaponFamilyFromRef(ref);
+          // Ref persistida (gen:weapon/... | gen:crafttools/...) → família →
+          // perfil. Sem família (mão limpa/ref inválida) fica null: sem
+          // perfil, sem golpe.
+          const parsed = parseWeaponRef(ref);
           let profile: WeaponHitboxProfile | null = null;
-          if (family) {
+          if (parsed) {
             // Arma de DISPARO (arco): o dano vem da flecha — sem perfil de
             // golpe, nem fallback do rig (evita debug/golpe melee enganoso).
-            const shooter = projectilePairedFamily(await getGeneratorManifest(), family) !== null;
-            profile = shooter ? null : await resolveWeaponProfileForFamily(family, rig);
+            // Ferramentas (flat, sem `group`) nunca pareiam com flecha.
+            const shooter = projectilePairedFamily(await getGeneratorManifest(), parsed.familyId) !== null;
+            profile = shooter ? null : await resolveWeaponProfileForFamily(parsed.familyId, rig);
           }
           this.weaponProfilesByRef.set(ref, profile);
+        }
+        if (!this.gatherPowerByRef.has(ref)) {
+          // Poder de coleta (HP por golpe no Mundo de Coleta): ferramenta =
+          // tool.power (admin); arma = dano do level 1; sem item = 1.
+          const parsed = parseWeaponRef(ref);
+          const power = parsed
+            ? await resolveGatherPower(parsed.category, parsed.familyId, parsed.variantId ?? 'default')
+            : 1;
+          this.gatherPowerByRef.set(ref, Math.max(1, Math.round(power)));
         }
       } catch (e) {
         console.warn('[WorldScene] rig/perfil de arma indisponível:', e instanceof Error ? e.message : e);
@@ -3791,6 +3805,7 @@ export class WorldScene extends Phaser.Scene {
     playerX: number;
     playerY: number;
     rects: Phaser.Geom.Rectangle[];
+    power: number;
   } | null {
     if (!this.player || !this.localDef) return null;
     if (Date.now() >= this.attackingUntil) return null;
@@ -3805,7 +3820,13 @@ export class WorldScene extends Phaser.Scene {
       const w = localRectToWorldRect(r, this.player.x, this.player.y);
       return new Phaser.Geom.Rectangle(w.x, w.y, w.width, w.height);
     });
-    return { swingId: this.swingSeq, playerX: this.player.x, playerY: this.player.y, rects };
+    return {
+      swingId: this.swingSeq,
+      playerX: this.player.x,
+      playerY: this.player.y,
+      rects,
+      power: this.gatherPowerByRef.get(this.localWeaponRef ?? '') ?? 1,
+    };
   }
 
   private drawCombatDebug() {

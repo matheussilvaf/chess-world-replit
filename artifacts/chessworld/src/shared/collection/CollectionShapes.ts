@@ -55,6 +55,10 @@ export const RESPAWN_OPTIONS_SECONDS: readonly number[] = [
 export const DEFAULT_DROP_COUNT = 3;
 export const DEFAULT_RESPAWN_SECONDS = 60;
 
+/** HP padrão de um nó de recurso (poder padrão 10 → 3 golpes, como antes). */
+export const DEFAULT_RESOURCE_HP = 30;
+export const RESOURCE_HP_RANGE = { min: 1, max: 99999 } as const;
+
 /** Animais que fogem ao apanhar (galinha nunca foge). */
 export const FLEEING_ANIMAL_KEYS: readonly string[] = ['animal:cow', 'animal:sheep'];
 
@@ -87,6 +91,8 @@ export interface CollectionWorldConfig {
   fleeRadius?: Record<string, number>;
   /** animal:<id> → velocidade de fuga em px/s (padrão: 2.2× o passeio do bicho). */
   fleeSpeed?: Record<string, number>;
+  /** resourceKey → HP total do nó (padrão 30). Animais não usam (não morrem). */
+  resourceHp?: Record<string, number>;
 }
 
 export interface ValidationResult {
@@ -189,6 +195,21 @@ export function validateCollectionWorldConfig(value: unknown): ValidationResult 
           v < FLEE_SPEED_RANGE.min || v > FLEE_SPEED_RANGE.max
         ) {
           errors.push(`fleeSpeed["${k}"]: inteiro entre ${FLEE_SPEED_RANGE.min} e ${FLEE_SPEED_RANGE.max} px/s`);
+        }
+      }
+    }
+  }
+  if (value.resourceHp !== undefined) {
+    if (!isRecord(value.resourceHp)) {
+      errors.push('resourceHp deve ser um objeto {resourceKey: hp}');
+    } else {
+      for (const [k, v] of Object.entries(value.resourceHp)) {
+        if (!KEY_RE.test(k)) errors.push(`resourceHp["${k}"]: chave inválida`);
+        if (
+          typeof v !== 'number' || !Number.isInteger(v) ||
+          v < RESOURCE_HP_RANGE.min || v > RESOURCE_HP_RANGE.max
+        ) {
+          errors.push(`resourceHp["${k}"]: inteiro entre ${RESOURCE_HP_RANGE.min} e ${RESOURCE_HP_RANGE.max}`);
         }
       }
     }

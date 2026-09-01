@@ -1,11 +1,12 @@
 /**
  * Painel de EQUIPAMENTO (estilo RPG pixelado, como a referência do usuário).
  *
- * FASE DE TESTE DAS ARMAS NOVAS: os 4 primeiros slots da grade são itens
- * fixos de madeira — arco (primeiro), espada, cajado e lança. Clicar num
- * item equipa AQUELA arma em tempo real via `equip_weapon {equip, ref}`;
- * clicar no item já equipado desequipa. Nada é auto-equipado: o padrão é
- * mão limpa. Desktop: cartão à direita. Mobile: folha inferior.
+ * FASE DE TESTE DOS ITENS NOVOS: os primeiros slots da grade são itens
+ * fixos — armas de madeira (arco, espada, cajado, lança) e ferramentas de
+ * coleta (machado, facão, picareta). Clicar num item equipa AQUELE item em
+ * tempo real via `equip_weapon {equip, ref}`; clicar no item já equipado
+ * desequipa. Nada é auto-equipado: o padrão é mão limpa. Desktop: cartão à
+ * direita. Mobile: folha inferior.
  */
 import { useEffect, useMemo, useState } from 'react';
 import { AnimatedPreview } from '../admin/character-generator/AnimatedPreview';
@@ -19,20 +20,26 @@ import { usePlayerCharacterStore } from '../../stores/playerCharacterStore';
 import { useAuthStore } from '../../stores/authStore';
 
 /**
- * Itens de teste (armas finais, variação madeira). O arco usa a coluna 16
- * como miniatura: as folhas bowandarrow_* só têm arte nas colunas 15–18.
+ * Itens de teste: armas finais (variação madeira) + ferramentas de coleta.
+ * Miniaturas: o arco usa a coluna 16 (folhas bowandarrow_* só têm arte nas
+ * colunas 15–18) e as ferramentas a coluna 11 (arte do golpe — a picareta
+ * não tem arte nas colunas de "parado").
  */
 const TEST_ITEMS: ReadonlyArray<{
   ref: string;
+  category: 'weapon' | 'crafttools';
   familyId: string;
   variantId: string;
   name: string;
   thumbCol: number;
 }> = [
-  { ref: 'gen:weapon/bowandarrow/wood', familyId: 'bowandarrow', variantId: 'wood', name: 'Arco (madeira)', thumbCol: 16 },
-  { ref: 'gen:weapon/sword/wood', familyId: 'sword', variantId: 'wood', name: 'Espada (madeira)', thumbCol: 1 },
-  { ref: 'gen:weapon/wand/wood', familyId: 'wand', variantId: 'wood', name: 'Cajado (madeira)', thumbCol: 1 },
-  { ref: 'gen:weapon/spear/wood', familyId: 'spear', variantId: 'wood', name: 'Lança (madeira)', thumbCol: 1 },
+  { ref: 'gen:weapon/bowandarrow/wood', category: 'weapon', familyId: 'bowandarrow', variantId: 'wood', name: 'Arco (madeira)', thumbCol: 16 },
+  { ref: 'gen:weapon/sword/wood', category: 'weapon', familyId: 'sword', variantId: 'wood', name: 'Espada (madeira)', thumbCol: 1 },
+  { ref: 'gen:weapon/wand/wood', category: 'weapon', familyId: 'wand', variantId: 'wood', name: 'Cajado (madeira)', thumbCol: 1 },
+  { ref: 'gen:weapon/spear/wood', category: 'weapon', familyId: 'spear', variantId: 'wood', name: 'Lança (madeira)', thumbCol: 1 },
+  { ref: 'gen:crafttools/axe/stone', category: 'crafttools', familyId: 'axe', variantId: 'stone', name: 'Machado (pedra)', thumbCol: 11 },
+  { ref: 'gen:crafttools/machete/iron', category: 'crafttools', familyId: 'machete', variantId: 'iron', name: 'Facão (ferro)', thumbCol: 11 },
+  { ref: 'gen:crafttools/pickaxe/stone', category: 'crafttools', familyId: 'pickaxe', variantId: 'stone', name: 'Picareta (pedra)', thumbCol: 11 },
 ];
 
 const SLOT_COUNT = 16;
@@ -121,7 +128,7 @@ export function EquipmentPanel() {
     const out: Record<string, string | null> = {};
     if (!manifest) return out;
     for (const item of TEST_ITEMS) {
-      const fam = manifest.categories['weapon']?.find((f) => f.id === item.familyId);
+      const fam = manifest.categories[item.category]?.find((f) => f.id === item.familyId);
       const v = fam ? (fam.variants.find((x) => x.id === item.variantId) ?? fam.default) : null;
       out[item.ref] = v ? `${import.meta.env.BASE_URL}${v.url}` : null;
     }

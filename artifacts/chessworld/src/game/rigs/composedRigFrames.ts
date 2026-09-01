@@ -27,18 +27,16 @@ import {
   getActiveWeaponHitboxRects,
   type WeaponHitboxProfile,
 } from '../../shared/combat/WeaponShapes';
-import { WEAPON_REF_RE } from '../../shared/characters/PlayerCharacterShapes';
+import { parseWeaponRef } from '../../shared/characters/PlayerCharacterShapes';
 
 /**
- * Família da arma a partir da ref PERSISTIDA (`gen:weapon/<família>[/<var>]`)
- * — é a família que resolve o perfil de hitbox (variantes compartilham).
- * Ref vazia/nula (mão limpa) ou fora do formato → null: sem família não há
- * perfil, e mão limpa NUNCA herda o perfil default do rig (coisa de arma).
+ * Família do item a partir da ref PERSISTIDA (`gen:weapon/...` ou
+ * `gen:crafttools/...`) — é a família que resolve o perfil de hitbox
+ * (variantes compartilham). Ref vazia/nula (mão limpa) ou fora do formato →
+ * null: sem família não há perfil, e mão limpa NUNCA herda o default do rig.
  */
 export function weaponFamilyFromRef(ref: string | null | undefined): string | null {
-  if (!ref) return null;
-  const m = WEAPON_REF_RE.exec(ref);
-  return m ? m[1] : null;
+  return parseWeaponRef(ref)?.familyId ?? null;
 }
 
 /** Linhas do pack composto (down/left/right/up) → direções do rig (mesmas linhas 0-3). */

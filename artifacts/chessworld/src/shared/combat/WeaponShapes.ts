@@ -169,12 +169,26 @@ export interface WeaponProjectileConfig {
   hitbox?: Partial<Record<RigDirection, LocalRectangle>>;
 }
 
+/**
+ * Stats de FERRAMENTA de coleta (categoria crafttools) de uma variação:
+ * poder (HP tirado de um recurso por golpe) e durabilidade (já autorada;
+ * consumo por uso ainda não implementado).
+ */
+export interface WeaponToolConfig {
+  /** HP tirado do recurso por golpe (inteiro 1..1000). */
+  power: number;
+  /** Usos até quebrar (inteiro 1..100000) — só autoração nesta fase. */
+  durability: number;
+}
+
 /** Levels de um item (variante) específico de uma família. */
 export interface WeaponVariantConfig {
   /** Ausente = padrão implícito (level 1, dano 10, velocidade 1×). */
   levels?: WeaponLevelStats[];
   /** Só para variações de armas de disparo (arco): flecha correspondente. */
   projectile?: WeaponProjectileConfig;
+  /** Só para variações de FERRAMENTA (crafttools): poder + durabilidade. */
+  tool?: WeaponToolConfig;
 }
 
 /** PUT payload for an association change (spec §30: ProfileAssociation). */
@@ -517,6 +531,20 @@ export function getWeaponVariantProjectile(
   return family?.variants?.[variantId]?.projectile ?? null;
 }
 
+/** Padrões de ferramenta: poder 10 (recurso padrão de 30 HP = 3 golpes) e durabilidade 100. */
+export const DEFAULT_TOOL_POWER = 10;
+export const DEFAULT_TOOL_DURABILITY = 100;
+export const TOOL_POWER_RANGE = { min: 1, max: 1000 } as const;
+export const TOOL_DURABILITY_RANGE = { min: 1, max: 100000 } as const;
+
+/** Config de ferramenta de uma variação: helper com fallback null. */
+export function getWeaponVariantTool(
+  family: { variants?: Record<string, WeaponVariantConfig> } | null | undefined,
+  variantId: string,
+): WeaponToolConfig | null {
+  return family?.variants?.[variantId]?.tool ?? null;
+}
+
 /**
  * Gira um retângulo LOCAL 90° em sentido horário (coordenadas de tela, y para
  * baixo): sul→oeste→norte→leste. Usado pelo admin para replicar a hitbox da
@@ -584,7 +612,7 @@ export function validateWeaponFamilyConfig(value: unknown): WeaponFamilyValidati
   const variants = value.variants;
   if (variants !== undefined) {
     if (!isRecord(variants)) {
-      errors.push('variants: deve ser um objeto { variantId: { levels?, projectile? } }');
+      errors.push('variants: deve ser um objeto { variantId: { levels?, projectile?, tool? } }');
     } else if (Object.keys(variants).length > 64) {
       errors.push('variants: no máximo 64 itens');
     } else {
@@ -595,7 +623,7 @@ export function validateWeaponFamilyConfig(value: unknown): WeaponFamilyValidati
           continue;
         }
         if (!isRecord(raw)) {
-          errors.push(`${where}: deve ser um objeto { levels?, projectile? }`);
+          errors.push(`${where}: deve ser um objeto { levels?, projectile?, tool? }`);
           continue;
         }
         if (raw.levels !== undefined) {
@@ -624,6 +652,26 @@ export function validateWeaponFamilyConfig(value: unknown): WeaponFamilyValidati
         }
         if (raw.projectile !== undefined) {
           validateWeaponProjectileConfig(raw.projectile, `${where}.projectile`, errors);
+        }
+        if (raw.tool !== undefined) {
+          if (!isRecord(raw.tool)) {
+            errors.push(`${where}.tool: deve ser um objeto { power, durability }`);
+          } else {
+            const power = raw.tool.power;
+            const durability = raw.tool.durability;
+            if (
+              typeof power !== 'number' || !Number.isInteger(power) ||
+              power < TOOL_POWER_RANGE.min || power > TOOL_POWER_RANGE.max
+            ) {
+              errors.push(`${where}.tool.power: inteiro entre ${TOOL_POWER_RANGE.min} e ${TOOL_POWER_RANGE.max}`);
+            }
+            if (
+              typeof durability !== 'number' || !Number.isInteger(durability) ||
+              durability < TOOL_DURABILITY_RANGE.min || durability > TOOL_DURABILITY_RANGE.max
+            ) {
+              errors.push(`${where}.tool.durability: inteiro entre ${TOOL_DURABILITY_RANGE.min} e ${TOOL_DURABILITY_RANGE.max}`);
+            }
+          }
         }
       }
     }

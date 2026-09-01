@@ -63,7 +63,7 @@ collectionAdminRouter.put('/', async (req: Request, res: Response) => {
         } satisfies ResourceHurtbox,
       ]),
     ),
-    // Campos opcionais novos (itens por quebra + cooldown de respawn).
+    // Campos opcionais novos (itens por quebra, respawn, HP dos recursos).
     ...(body.dropCounts
       ? {
           dropCounts: Object.fromEntries(
@@ -75,6 +75,13 @@ collectionAdminRouter.put('/', async (req: Request, res: Response) => {
       ? {
           respawnSeconds: Object.fromEntries(
             Object.entries(body.respawnSeconds).map(([k, v]) => [k, Math.round(v)]),
+          ),
+        }
+      : {}),
+    ...(body.resourceHp
+      ? {
+          resourceHp: Object.fromEntries(
+            Object.entries(body.resourceHp).map(([k, v]) => [k, Math.round(v)]),
           ),
         }
       : {}),

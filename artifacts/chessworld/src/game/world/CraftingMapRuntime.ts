@@ -23,7 +23,6 @@ import {
   HERBS,
   herbTextureKey,
   herbUrl,
-  RESOURCE_HITS_TO_BREAK,
   RESOURCE_DROP,
   ANIMAL_FLEE,
   SELF_DROP_SCALE,
@@ -41,6 +40,7 @@ import { loadCollectionWorldConfig } from '../config/collectionConfigLoader';
 import {
   DEFAULT_DROP_COUNT,
   DEFAULT_RESPAWN_SECONDS,
+  DEFAULT_RESOURCE_HP,
   DEFAULT_FLEE_RADIUS,
   type CollectionWorldConfig,
   type ResourceHurtbox,
@@ -98,17 +98,22 @@ interface AnimalAgent {
   animLockUntilMs?: number;
 }
 
-/** Nó de recurso golpeável (fase de teste: N golpes → quebra/coleta). */
+/** Nó de recurso golpeável: HP (admin) − poder do item por golpe → quebra/coleta. */
 interface ResourceNode {
   sprite: Phaser.GameObjects.Image | Phaser.GameObjects.Sprite;
   /** Chave de hurtbox do admin: mineral:<id> | tree:<tipo> | herb:<id> | bush | hand_stone | animal:<id>. */
   key: string;
   kind: 'mineral' | 'tree' | 'herb' | 'bush' | 'hand_stone' | 'animal';
   id: string;
-  hits: number;
+  /** HP restante; -1 = ainda não inicializado (lê a config no 1º golpe). */
+  hp: number;
   broken: boolean;
   /** Quando renasce (scene.time.now em ms); definido ao quebrar. */
   respawnAtMs?: number;
+  /** Barrinha de HP (aparece ao golpear; some ao quebrar ou por inatividade). */
+  hpBar?: Phaser.GameObjects.Graphics;
+  /** Instante (scene.time.now) em que a barrinha some sem novos golpes. */
+  hpBarUntilMs?: number;
 }
 
 /** Mini-item dropado por um nó quebrado (pulo → imã → coleta). */
@@ -132,6 +137,8 @@ export interface PlayerSwingState {
   playerY: number;
   /** Hitboxes do frame ATUAL da animação (vazio = frame sem hitbox). */
   rects: Phaser.Geom.Rectangle[];
+  /** Poder de coleta do item equipado — HP tirado do nó neste golpe. */
+  power: number;
 }
 
 const GID_FLAGS = 0x0fffffff;
@@ -429,6 +436,7 @@ export class CraftingMapRuntime {
     for (const s of this.sprites) s.destroy();
     this.sprites = [];
     this.animals = [];
+    for (const n of this.nodes) n.hpBar?.destroy(); // barrinhas são Graphics à parte
     this.nodes = [];
     for (const d of this.drops) d.sprite.destroy();
     this.drops = [];
@@ -450,6 +458,7 @@ export class CraftingMapRuntime {
     this.pollPlayerSwing();
     this.updateDrops(deltaMs, playerX, playerY);
     this.updateRespawns();
+    this.updateNodeHpBars();
     const now = this.scene.time.now;
     for (const ag of this.animals) {
       if (!ag.sprite.active) continue;
@@ -600,9 +609,10 @@ export class CraftingMapRuntime {
   private respawnNode(node: ResourceNode): void {
     const spr = node.sprite;
     if (!spr.active) return; // destruído no teardown — não ocorre com o mapa ativo
-    node.hits = 0;
+    node.hp = -1; // volta "cheio": relê a config do admin no próximo golpe
     node.broken = false;
     node.respawnAtMs = undefined;
+    this.hideNodeHpBar(node);
     if ((node.kind === 'mineral' || node.kind === 'tree') && spr instanceof Phaser.GameObjects.Sprite) {
       spr.setFrame(0); // sai do último frame da quebra/toco
     }
@@ -614,7 +624,7 @@ export class CraftingMapRuntime {
   }
 
   // ------------------------------------------------------------------
-  // golpes em recursos (fase de teste: 3 golpes → quebra + drops)
+  // golpes em recursos (HP do admin − poder do item; HP ≤ 0 → quebra + drops)
   // ------------------------------------------------------------------
 
   /** Hurtbox do admin (px do frame fonte, ancorada no pé do sprite) → retângulo no mundo. */
@@ -661,14 +671,14 @@ export class CraftingMapRuntime {
 
   /**
    * Acerto de PROJÉTIL (flecha do arco): testa a hitbox de mundo da flecha
-   * contra as hurtboxes dos nós — mesmo dano de golpe (1 hit). O chamador
-   * garante 1 acerto por flecha (a flecha "morre" quando conecta).
+   * contra as hurtboxes dos nós — o dano da flecha (levels no admin) vira HP
+   * tirado do nó. O chamador garante 1 acerto por flecha ("morre" ao conectar).
    */
-  tryProjectileHit(rects: Phaser.Geom.Rectangle[], x: number, y: number): boolean {
+  tryProjectileHit(rects: Phaser.Geom.Rectangle[], x: number, y: number, damage = 1): boolean {
     if (!this.nodes.length || rects.length === 0) return false;
     const best = this.nearestNodeHitBy(rects, x, y);
     if (!best) return false;
-    this.applyHit(best);
+    this.applyHit(best, damage);
     return true;
   }
 
@@ -685,7 +695,7 @@ export class CraftingMapRuntime {
     const best = this.swingTargetFor(state);
     if (!best) return;
     this.lastConsumedSwingId = state.swingId;
-    this.applyHit(best);
+    this.applyHit(best, state.power);
   }
 
   /** Itens por quebra (config do admin ou padrão 3). */
@@ -696,6 +706,51 @@ export class CraftingMapRuntime {
   /** Segundos até renascer (config do admin ou padrão 60). */
   private respawnSecondsFor(key: string): number {
     return this.worldConfig?.respawnSeconds?.[key] ?? DEFAULT_RESPAWN_SECONDS;
+  }
+
+  /** HP máximo de um nó (config do admin em /admin/mundo-coleta ou padrão). */
+  private maxHpFor(key: string): number {
+    return this.worldConfig?.resourceHp?.[key] ?? DEFAULT_RESOURCE_HP;
+  }
+
+  /**
+   * Barrinha de HP sobre o nó golpeado: fundo escuro + preenchimento
+   * verde/amarelo/vermelho conforme o HP restante. Redesenhada a cada golpe;
+   * some sozinha após ~3 s sem golpes (update) ou quando o nó quebra.
+   */
+  private showNodeHpBar(node: ResourceNode): void {
+    const ratio = Phaser.Math.Clamp(node.hp / Math.max(1, this.maxHpFor(node.key)), 0, 1);
+    const w = 30;
+    const h = 4;
+    const hurt = this.nodeHurtboxRect(node);
+    const gfx = node.hpBar ?? this.scene.add.graphics();
+    node.hpBar = gfx;
+    gfx.clear();
+    gfx.setPosition(node.sprite.x - w / 2, hurt.y - 8);
+    gfx.fillStyle(0x000000, 0.55);
+    gfx.fillRect(0, 0, w, h);
+    const color = ratio > 0.5 ? 0x22c55e : ratio > 0.25 ? 0xfacc15 : 0xef4444;
+    gfx.fillStyle(color, 1);
+    gfx.fillRect(1, 1, Math.max(1, Math.round((w - 2) * ratio)), h - 2);
+    gfx.setDepth(this.depthForY(node.sprite.y) + 2);
+    node.hpBarUntilMs = this.scene.time.now + 3000; // some após ~3 s sem golpes
+  }
+
+  /** Destrói a barrinha de HP do nó (quebra, respawn ou timeout). */
+  private hideNodeHpBar(node: ResourceNode): void {
+    node.hpBar?.destroy();
+    node.hpBar = undefined;
+    node.hpBarUntilMs = undefined;
+  }
+
+  /** Esconde barrinhas de HP paradas há mais de ~3 s (chamado no update). */
+  private updateNodeHpBars(): void {
+    const now = this.scene.time.now;
+    for (const node of this.nodes) {
+      if (node.hpBar && node.hpBarUntilMs !== undefined && now >= node.hpBarUntilMs) {
+        this.hideNodeHpBar(node);
+      }
+    }
   }
 
   /** Raio de fuga em px (config do admin ou padrão). */
@@ -752,7 +807,7 @@ export class CraftingMapRuntime {
     }
   }
 
-  private applyHit(node: ResourceNode): void {
+  private applyHit(node: ResourceNode, power = 1): void {
     const spr = node.sprite;
     // Flash branco curto — feedback visual do golpe.
     // Phaser 4: fill-tint é setTint + setTintMode (setTintFill não recebe cor).
@@ -781,11 +836,15 @@ export class CraftingMapRuntime {
       }
       return;
     }
-    node.hits++;
-    if (node.hits >= RESOURCE_HITS_TO_BREAK) {
+    // HP: lazy-init na 1ª pancada (worldConfig já foi carregada em prepare()).
+    if (node.hp < 0) node.hp = this.maxHpFor(node.key);
+    node.hp -= Math.max(1, Math.round(power));
+    if (node.hp <= 0) {
       node.broken = true;
+      this.hideNodeHpBar(node);
       this.breakNode(node);
     } else {
+      this.showNodeHpBar(node);
       // Tremidinha de dano.
       this.scene.tweens.add({ targets: spr, x: spr.x + 2, duration: 45, yoyo: true, repeat: 1 });
     }
@@ -1154,7 +1213,7 @@ export class CraftingMapRuntime {
       const img = place(obj.x, obj.y, treeTextureKey(type as TreeType), 0);
       if (img) {
         img.setData('treeType', type);
-        this.nodes.push({ sprite: img, key: `tree:${type}`, kind: 'tree', id: type, hits: 0, broken: false });
+        this.nodes.push({ sprite: img, key: `tree:${type}`, kind: 'tree', id: type, hp: -1, broken: false });
       }
     }
     if (unknownTreeTypes) console.warn(`[CraftingMap] ${unknownTreeTypes} pontos de árvore com treeType desconhecido`);
@@ -1177,7 +1236,7 @@ export class CraftingMapRuntime {
         const img = place(p.x, p.y, mineralTextureKey(m.id), 0);
         if (img) {
           img.setData('mineralId', m.id);
-          this.nodes.push({ sprite: img, key: `mineral:${m.id}`, kind: 'mineral', id: m.id, hits: 0, broken: false });
+          this.nodes.push({ sprite: img, key: `mineral:${m.id}`, kind: 'mineral', id: m.id, hp: -1, broken: false });
         }
       }
     }
@@ -1185,20 +1244,20 @@ export class CraftingMapRuntime {
     // Pedras coletáveis com a mão (posições fixas do mapa).
     for (const obj of this.findObjects(tmj, 'fallen_simple_stones')) {
       const img = place(obj.x, obj.y, HAND_STONE.textureKey, 0);
-      if (img) this.nodes.push({ sprite: img, key: 'hand_stone', kind: 'hand_stone', id: 'hand_stone', hits: 0, broken: false });
+      if (img) this.nodes.push({ sprite: img, key: 'hand_stone', kind: 'hand_stone', id: 'hand_stone', hp: -1, broken: false });
     }
 
     // Arbustos simples.
     for (const obj of this.findObjects(tmj, 'simple_bush')) {
       const img = place(obj.x, obj.y, BUSH.textureKey);
-      if (img) this.nodes.push({ sprite: img, key: 'bush', kind: 'bush', id: 'bush', hits: 0, broken: false });
+      if (img) this.nodes.push({ sprite: img, key: 'bush', kind: 'bush', id: 'bush', hp: -1, broken: false });
     }
 
     // Ervas e plantas (erva-da-cura, erva vermelha, erva azul, espinho da dama, raiz do cavalo).
     for (const h of HERBS) {
       for (const obj of this.findObjects(tmj, h.layer)) {
         const img = place(obj.x, obj.y, herbTextureKey(h.id));
-        if (img) this.nodes.push({ sprite: img, key: `herb:${h.id}`, kind: 'herb', id: h.id, hits: 0, broken: false });
+        if (img) this.nodes.push({ sprite: img, key: `herb:${h.id}`, kind: 'herb', id: h.id, hp: -1, broken: false });
       }
     }
 
@@ -1226,7 +1285,7 @@ export class CraftingMapRuntime {
           targetY: obj.y,
         });
         // Animais também recebem golpes (só reagem — morte será especificada depois).
-        this.nodes.push({ sprite: spr, key: `animal:${a.id}`, kind: 'animal', id: a.id, hits: 0, broken: false });
+        this.nodes.push({ sprite: spr, key: `animal:${a.id}`, kind: 'animal', id: a.id, hp: -1, broken: false });
       }
     }
   }

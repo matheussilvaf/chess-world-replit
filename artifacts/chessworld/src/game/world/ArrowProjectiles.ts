@@ -53,6 +53,8 @@ export interface ArrowShotSpec {
   rangePx: number;
   /** Hitbox local ao centro do sprite da flecha, por direção (admin). */
   hitbox: Partial<Record<RigDirection, LocalRectangle>>;
+  /** Poder aplicado ao nó atingido (HP tirado; levels da flecha no admin). */
+  damage: number;
   /** true = flecha de outro jogador: só visual, não acerta nós. */
   cosmetic: boolean;
 }
@@ -65,13 +67,19 @@ interface ActiveArrow {
   startY: number;
   rangePx: number;
   rect: LocalRectangle;
+  damage: number;
   cosmetic: boolean;
   /** true depois de conectar/cair — sem movimento nem testes, só o fade. */
   done: boolean;
 }
 
-/** Testa a hitbox de mundo da flecha; true = conectou (a flecha morre). */
-export type ProjectileHitTester = (rects: Phaser.Geom.Rectangle[], x: number, y: number) => boolean;
+/** Testa a hitbox de mundo da flecha (com o poder dela); true = conectou (a flecha morre). */
+export type ProjectileHitTester = (
+  rects: Phaser.Geom.Rectangle[],
+  x: number,
+  y: number,
+  damage: number,
+) => boolean;
 
 export class ArrowProjectiles {
   private scene: Phaser.Scene;
@@ -135,6 +143,7 @@ export class ArrowProjectiles {
         startY: spec.startY,
         rangePx: Math.max(1, spec.rangePx),
         rect: spec.hitbox[rigDir] ?? defaultArrowRect(spec.direction),
+        damage: Math.max(1, Math.round(spec.damage)),
         cosmetic: spec.cosmetic,
         done: false,
       });
@@ -165,7 +174,7 @@ export class ArrowProjectiles {
           arrow.rect.width,
           arrow.rect.height,
         );
-        if (hitTester([world], spr.x, spr.y)) {
+        if (hitTester([world], spr.x, spr.y, arrow.damage)) {
           this.finish(arrow, true);
           continue;
         }
