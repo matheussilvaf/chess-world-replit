@@ -47,6 +47,7 @@ import {
 } from '../../shared/collection/CollectionShapes';
 import { sweepPath } from './moveSweep';
 import { queueCollect } from '../../stores/collectionInventoryStore';
+import { gatherAudio } from '../audio/gatherAudio';
 
 /**
  * Runtime do Mundo de Coleta.
@@ -222,6 +223,10 @@ export class CraftingMapRuntime {
   /** Garante TMJ no cache + todas as texturas necessárias carregadas. */
   async prepare(): Promise<void> {
     const scene = this.scene;
+
+    // SFX de coleta: baixa/decodifica em paralelo com o mapa — no 1º golpe o
+    // buffer já está pronto e o som sai sem atraso (init é idempotente).
+    void gatherAudio.init();
 
     // Config do admin relida a cada entrada — mudanças valem na próxima visita.
     this.worldConfig = await loadCollectionWorldConfig();
@@ -836,6 +841,10 @@ export class CraftingMapRuntime {
       }
       return;
     }
+    // SFX do golpe — WebAudio cumulativo: cada hit dispara uma fonte nova na
+    // hora, sem cortar o som do hit anterior (inclusive no golpe que quebra).
+    if (node.kind === 'tree') gatherAudio.play('chopWood');
+    else if (node.kind === 'mineral' || node.kind === 'hand_stone') gatherAudio.play('pickaxe');
     // HP: lazy-init na 1ª pancada (worldConfig já foi carregada em prepare()).
     if (node.hp < 0) node.hp = this.maxHpFor(node.key);
     node.hp -= Math.max(1, Math.round(power));
@@ -859,6 +868,7 @@ export class CraftingMapRuntime {
     node.respawnAtMs = scene.time.now + this.respawnSecondsFor(node.key) * 1000;
     if (node.kind === 'mineral' && spr instanceof Phaser.GameObjects.Sprite && scene.anims.exists(mineralBreakAnimKey(node.id))) {
       spr.play(mineralBreakAnimKey(node.id));
+      gatherAudio.play('rockBreaking'); // som junto com o início da animação de quebra
       spr.once(Phaser.Animations.Events.ANIMATION_COMPLETE, () => {
         this.spawnDrops(node, dropX, dropY);
         spr.setVisible(false); // some até o respawn
@@ -868,6 +878,8 @@ export class CraftingMapRuntime {
     if (node.kind === 'tree' && spr instanceof Phaser.GameObjects.Sprite && scene.anims.exists(treeFallAnimKey(node.id as TreeType))) {
       spr.play(treeFallAnimKey(node.id as TreeType));
       spr.once(Phaser.Animations.Events.ANIMATION_COMPLETE, () => {
+        // Impacto no chão: som da queda quando a animação de cair finaliza.
+        gatherAudio.play('treeFall');
         // Toco (último frame) permanece durante o cooldown; drops na base.
         this.spawnDrops(node, dropX, dropY);
       });

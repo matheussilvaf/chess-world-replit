@@ -224,3 +224,4 @@ Rotas Express custom do servidor devem ser registradas COM o prefixo `/api` (ex.
 - `equip_weapon` aceita ref por FORMATO (`gen:(weapon|crafttools)/...`) sem checar existência no manifest — intencional na fase de teste.
 - `tool.durability` é SÓ autorada no /admin/rigs; nenhum código consome durabilidade ainda (não é bug).
 - Poder de coleta: crafttools = tool.power (padrão 10); arma = dano do level 1; mão limpa/ref inválida = 1. HP padrão dos nós = 30 (~3 golpes como antes).
+- SFX de coleta: `src/game/audio/gatherAudio.ts` segue o padrão WebAudio do chessAudio (buffer decodificado 1×, fonte nova por play = sons cumulativos). Política "toca agora ou pula": golpe sem buffer/ctx suspenso fica mudo — NUNCA enfileirar som para depois (sai em rajada/fora de contexto). Vale para qualquer SFX futuro.
