@@ -1,16 +1,21 @@
 /**
  * Painel de EQUIPAMENTO (estilo RPG pixelado, como a referência do usuário).
  *
- * FASE DE TESTE DOS ITENS NOVOS: os primeiros slots da grade são itens
- * fixos — armas de madeira (arco, espada, cajado, lança) e ferramentas de
- * coleta (machado, facão, picareta). Clicar num item equipa AQUELE item em
- * tempo real via `equip_weapon {equip, ref}`; clicar no item já equipado
- * desequipa. Nada é auto-equipado: o padrão é mão limpa. Desktop: cartão à
- * direita. Mobile: folha inferior.
+ * Duas seções:
+ *  - "Armas de teste": itens fixos (arco, espada, cajado, lança de madeira).
+ *  - "Ferramentas": inventário DINÂMICO — todas as variações de crafttools
+ *    marcadas como "incluir no inventário" no /admin/rigs, com barrinha de
+ *    durabilidade e REORDENAÇÃO por arrastar-e-soltar (pointer events; a
+ *    ordem também define os slots da hotbar). Arrastar = soltar em cima de
+ *    outro slot; clique curto = equipar/desequipar.
+ *
+ * Clicar num item equipa em tempo real via `equip_weapon {equip, ref}`;
+ * clicar no item já equipado desequipa. Nada é auto-equipado (padrão = mão).
  */
 import { useEffect, useMemo, useState } from 'react';
 import { AnimatedPreview } from '../admin/character-generator/AnimatedPreview';
 import { SpriteFrameThumb } from './SpriteFrameThumb';
+import { ToolDurabilityBar, TOOL_THUMB_COL } from './ToolHotbar';
 import { loadLayerCanvases, type LayerSpec, type LoadedLayer } from '../../lib/character-generator/compositor';
 import { getSkinTone } from '../../lib/character-generator/skinTones';
 import type { GeneratorManifest } from '../../lib/character-generator/types';
@@ -18,12 +23,11 @@ import { getGeneratorManifest } from '../../game/characters/appearanceRuntime';
 import { PLAYER_CLASS_LABELS } from '../../shared/characters/PlayerCharacterShapes';
 import { usePlayerCharacterStore } from '../../stores/playerCharacterStore';
 import { useAuthStore } from '../../stores/authStore';
+import { useToolInventoryStore, type ToolInventoryItem } from '../../stores/toolInventoryStore';
 
 /**
- * Itens de teste: armas finais (variação madeira) + ferramentas de coleta.
- * Miniaturas: o arco usa a coluna 16 (folhas bowandarrow_* só têm arte nas
- * colunas 15–18) e as ferramentas a coluna 11 (arte do golpe — a picareta
- * não tem arte nas colunas de "parado").
+ * Armas de teste (variação madeira). Miniaturas: o arco usa a coluna 16
+ * (folhas bowandarrow_* só têm arte nas colunas 15–18); as demais, coluna 1.
  */
 const TEST_ITEMS: ReadonlyArray<{
   ref: string;
@@ -37,12 +41,23 @@ const TEST_ITEMS: ReadonlyArray<{
   { ref: 'gen:weapon/sword/wood', category: 'weapon', familyId: 'sword', variantId: 'wood', name: 'Espada (madeira)', thumbCol: 1 },
   { ref: 'gen:weapon/wand/wood', category: 'weapon', familyId: 'wand', variantId: 'wood', name: 'Cajado (madeira)', thumbCol: 1 },
   { ref: 'gen:weapon/spear/wood', category: 'weapon', familyId: 'spear', variantId: 'wood', name: 'Lança (madeira)', thumbCol: 1 },
-  { ref: 'gen:crafttools/axe/stone', category: 'crafttools', familyId: 'axe', variantId: 'stone', name: 'Machado (pedra)', thumbCol: 11 },
-  { ref: 'gen:crafttools/machete/iron', category: 'crafttools', familyId: 'machete', variantId: 'iron', name: 'Facão (ferro)', thumbCol: 11 },
-  { ref: 'gen:crafttools/pickaxe/stone', category: 'crafttools', familyId: 'pickaxe', variantId: 'stone', name: 'Picareta (pedra)', thumbCol: 11 },
 ];
 
-const SLOT_COUNT = 16;
+/** Distância (px) a partir da qual o gesto vira arrasto (menos = clique). */
+const DRAG_THRESHOLD_PX = 6;
+
+interface ToolDragState {
+  /** Índice do item sendo arrastado (na ordem atual do store). */
+  index: number;
+  startX: number;
+  startY: number;
+  x: number;
+  y: number;
+  /** Slot sob o ponteiro agora (destino do drop). */
+  over: number | null;
+  /** true depois de passar o threshold — deixou de ser clique. */
+  active: boolean;
+}
 
 export function EquipmentButton() {
   const character = usePlayerCharacterStore((s) => s.character);
@@ -68,16 +83,23 @@ export function EquipmentPanel() {
   const liveWeapon = usePlayerCharacterStore((s) => s.liveWeapon);
   const equipSender = usePlayerCharacterStore((s) => s.equipSender);
   const profile = useAuthStore((s) => s.profile);
+  const toolItems = useToolInventoryStore((s) => s.items);
+  const toolDurability = useToolInventoryStore((s) => s.durability);
+  const toolError = useToolInventoryStore((s) => s.error);
+  const loadTools = useToolInventoryStore((s) => s.load);
+  const moveItem = useToolInventoryStore((s) => s.moveItem);
 
   const [manifest, setManifest] = useState<GeneratorManifest | null>(null);
   const [loadErr, setLoadErr] = useState<string | null>(null);
   const [layers, setLayers] = useState<LoadedLayer[]>([]);
+  const [toolDrag, setToolDrag] = useState<ToolDragState | null>(null);
 
-  // Manifest ao abrir (cacheado por módulo — só a 1ª abertura custa rede).
+  // Manifest + inventário de ferramentas ao abrir (cacheados — só a 1ª custa rede).
   useEffect(() => {
     if (!panelOpen || !character) return;
     let cancelled = false;
     setLoadErr(null);
+    void loadTools();
     getGeneratorManifest()
       .then((mf) => {
         if (!cancelled) setManifest(mf);
@@ -88,7 +110,7 @@ export function EquipmentPanel() {
     return () => {
       cancelled = true;
     };
-  }, [panelOpen, character]);
+  }, [panelOpen, character, loadTools]);
 
   // Preview do próprio personagem (parado, de frente).
   const previewSpecs = useMemo<LayerSpec[]>(() => {
@@ -123,7 +145,7 @@ export function EquipmentPanel() {
     };
   }, [previewSpecs, character]);
 
-  /** URLs das folhas dos itens de teste (miniaturas), resolvidas do manifest. */
+  /** URLs das folhas das armas de teste (miniaturas), resolvidas do manifest. */
   const sheetUrls = useMemo<Record<string, string | null>>(() => {
     const out: Record<string, string | null> = {};
     if (!manifest) return out;
@@ -137,13 +159,65 @@ export function EquipmentPanel() {
 
   if (!character || !panelOpen) return null;
 
-  const equippedItem = TEST_ITEMS.find((i) => i.ref === liveWeapon) ?? null;
+  const equippedName =
+    TEST_ITEMS.find((i) => i.ref === liveWeapon)?.name ??
+    toolItems.find((i) => i.ref === liveWeapon)?.name ??
+    null;
 
   const toggleItem = (ref: string) => {
     if (!equipSender) return;
     if (liveWeapon === ref) equipSender(false);
     else equipSender(true, ref);
   };
+
+  // ---- Drag-and-drop das ferramentas (pointer events; mouse E toque) ----
+
+  const toolIndexFromPoint = (x: number, y: number): number | null => {
+    const el = document.elementFromPoint(x, y)?.closest('[data-tool-idx]');
+    if (!el) return null;
+    const idx = Number(el.getAttribute('data-tool-idx'));
+    return Number.isInteger(idx) && idx >= 0 && idx < toolItems.length ? idx : null;
+  };
+
+  const onToolPointerDown = (e: React.PointerEvent<HTMLButtonElement>, index: number) => {
+    if (e.pointerType === 'mouse' && e.button !== 0) return;
+    e.currentTarget.setPointerCapture(e.pointerId);
+    setToolDrag({
+      index,
+      startX: e.clientX,
+      startY: e.clientY,
+      x: e.clientX,
+      y: e.clientY,
+      over: null,
+      active: false,
+    });
+  };
+
+  const onToolPointerMove = (e: React.PointerEvent<HTMLButtonElement>) => {
+    const cx = e.clientX;
+    const cy = e.clientY;
+    setToolDrag((d) => {
+      if (!d) return d;
+      const active = d.active || Math.hypot(cx - d.startX, cy - d.startY) > DRAG_THRESHOLD_PX;
+      return { ...d, x: cx, y: cy, active, over: active ? toolIndexFromPoint(cx, cy) : null };
+    });
+  };
+
+  const onToolPointerUp = (item: ToolInventoryItem) => {
+    const d = toolDrag;
+    setToolDrag(null);
+    if (!d) return;
+    if (d.active) {
+      // Soltou: troca de posição (a ordem persiste e alimenta a hotbar).
+      if (d.over != null && d.over !== d.index) moveItem(d.index, d.over);
+    } else {
+      toggleItem(item.ref); // gesto curto = clique
+    }
+  };
+
+  const draggedItem = toolDrag?.active ? (toolItems[toolDrag.index] ?? null) : null;
+
+  const toolCells = Math.max(8, Math.ceil(toolItems.length / 4) * 4);
 
   return (
     <div className="fixed inset-x-0 bottom-0 z-[150] max-h-[70vh] w-full overflow-y-auto rounded-t-xl border-4 border-b-0 border-[#8a5a2b] bg-[#2b1c10] shadow-[0_0_50px_rgba(0,0,0,0.85)] md:inset-x-auto md:bottom-[70px] md:right-3 md:w-[360px] md:rounded-lg md:border-b-4">
@@ -182,52 +256,100 @@ export function EquipmentPanel() {
           {loadErr && (
             <p className="mb-2 rounded border-2 border-red-800 bg-red-950/60 p-2 text-xs text-red-200">{loadErr}</p>
           )}
+          {toolError && (
+            <p className="mb-2 rounded border-2 border-red-800 bg-red-950/60 p-2 text-xs text-red-200">{toolError}</p>
+          )}
+
+          <p className="mb-1 text-[10px] font-bold uppercase tracking-[0.2em] text-amber-200/60">Armas de teste</p>
           <div className="grid grid-cols-4 gap-1.5">
-            {Array.from({ length: SLOT_COUNT }, (_, i) => {
-              const item = TEST_ITEMS[i];
-              if (item) {
-                const isEquipped = liveWeapon === item.ref;
-                const url = sheetUrls[item.ref] ?? null;
+            {TEST_ITEMS.map((item) => {
+              const isEquipped = liveWeapon === item.ref;
+              const url = sheetUrls[item.ref] ?? null;
+              return (
+                <button
+                  key={item.ref}
+                  type="button"
+                  disabled={!equipSender}
+                  onClick={() => toggleItem(item.ref)}
+                  title={`${item.name} — clique para ${isEquipped ? 'remover' : 'equipar'}`}
+                  className={`relative aspect-square overflow-hidden rounded border-2 bg-black/40 transition-colors ${
+                    isEquipped ? 'border-emerald-500' : 'border-[#6b4a26] hover:border-amber-500'
+                  } disabled:cursor-not-allowed disabled:opacity-60`}
+                >
+                  {url ? (
+                    <SpriteFrameThumb url={url} col={item.thumbCol} size={64} className="h-full w-full" />
+                  ) : (
+                    <span className="text-lg">⚔️</span>
+                  )}
+                  {isEquipped && (
+                    <span className="absolute left-0 right-0 top-0 bg-emerald-600/95 py-[1px] text-center text-[8px] font-bold uppercase tracking-wider text-white">
+                      Equipado
+                    </span>
+                  )}
+                </button>
+              );
+            })}
+          </div>
+
+          <p className="mb-1 mt-3 text-[10px] font-bold uppercase tracking-[0.2em] text-amber-200/60">
+            Ferramentas <span className="normal-case tracking-normal text-amber-200/40">(arraste para organizar — os 6 primeiros vão para a hotbar)</span>
+          </p>
+          <div className="grid grid-cols-4 gap-1.5">
+            {Array.from({ length: toolCells }, (_, i) => {
+              const item = toolItems[i];
+              if (!item) {
                 return (
-                  <button
-                    key={item.ref}
-                    type="button"
-                    disabled={!equipSender}
-                    onClick={() => toggleItem(item.ref)}
-                    title={`${item.name} — clique para ${isEquipped ? 'remover' : 'equipar'}`}
-                    className={`relative aspect-square overflow-hidden rounded border-2 bg-black/40 transition-colors ${
-                      isEquipped ? 'border-emerald-500' : 'border-[#6b4a26] hover:border-amber-500'
-                    } disabled:cursor-not-allowed disabled:opacity-60`}
+                  <div
+                    key={`empty-${i}`}
+                    className="flex aspect-square items-center justify-center rounded border-2 border-[#6b4a26]/50 bg-black/25 text-amber-100/20"
                   >
-                    {url ? (
-                      <SpriteFrameThumb url={url} col={item.thumbCol} size={64} className="h-full w-full" />
-                    ) : (
-                      <span className="text-lg">⚔️</span>
-                    )}
-                    {isEquipped && (
-                      <span className="absolute left-0 right-0 top-0 bg-emerald-600/95 py-[1px] text-center text-[8px] font-bold uppercase tracking-wider text-white">
-                        Equipado
-                      </span>
-                    )}
-                  </button>
+                    ·
+                  </div>
                 );
               }
+              const isEquipped = liveWeapon === item.ref;
+              const cur = toolDurability[item.ref] ?? item.maxDurability;
+              const isDragSource = toolDrag?.active && toolDrag.index === i;
+              const isDropTarget = toolDrag?.active && toolDrag.over === i && toolDrag.index !== i;
               return (
-                <div
-                  key={i}
-                  className="flex aspect-square items-center justify-center rounded border-2 border-[#6b4a26]/50 bg-black/25 text-amber-100/20"
+                <button
+                  key={item.ref}
+                  type="button"
+                  data-tool-idx={i}
+                  disabled={!equipSender}
+                  onPointerDown={(e) => onToolPointerDown(e, i)}
+                  onPointerMove={onToolPointerMove}
+                  onPointerUp={() => onToolPointerUp(item)}
+                  onPointerCancel={() => setToolDrag(null)}
+                  title={`${item.name} — nível ${item.level} · durabilidade ${cur}/${item.maxDurability}`}
+                  className={`relative aspect-square touch-none select-none overflow-hidden rounded border-2 bg-black/40 transition-colors ${
+                    isDropTarget
+                      ? 'border-amber-400 bg-amber-500/20'
+                      : isEquipped
+                        ? 'border-emerald-500'
+                        : 'border-[#6b4a26] hover:border-amber-500'
+                  } ${isDragSource ? 'opacity-40' : ''} disabled:cursor-not-allowed disabled:opacity-60`}
                 >
-                  ·
-                </div>
+                  <SpriteFrameThumb url={item.sheetUrl} col={TOOL_THUMB_COL} size={64} className="h-full w-full" />
+                  <span className="absolute right-0.5 top-0 text-[8px] font-bold text-amber-200/80">{item.level}</span>
+                  {isEquipped && (
+                    <span className="absolute left-0 right-0 top-0 bg-emerald-600/95 py-[1px] text-center text-[8px] font-bold uppercase tracking-wider text-white">
+                      Equipado
+                    </span>
+                  )}
+                  <div className="absolute inset-x-0.5 bottom-0.5">
+                    <ToolDurabilityBar current={cur} max={item.maxDurability} />
+                  </div>
+                </button>
               );
             })}
           </div>
 
           <div className="mt-3 flex items-center justify-between gap-2">
             <p className="min-w-0 truncate text-xs text-amber-100/80">
-              {equippedItem ? `${equippedItem.name} — em uso` : 'Nenhuma arma equipada'}
+              {equippedName ? `${equippedName} — em uso` : 'Nenhuma arma equipada'}
             </p>
-            {equippedItem && (
+            {equippedName && (
               <button
                 type="button"
                 disabled={!equipSender}
@@ -240,6 +362,16 @@ export function EquipmentPanel() {
           </div>
         </div>
       </div>
+
+      {/* Fantasma do arrasto (segue o ponteiro). */}
+      {draggedItem && toolDrag && (
+        <div
+          className="pointer-events-none fixed z-[200] h-12 w-12 -translate-x-1/2 -translate-y-1/2 overflow-hidden rounded border-2 border-amber-400 bg-[#2b1c10]/95 shadow-xl"
+          style={{ left: toolDrag.x, top: toolDrag.y }}
+        >
+          <SpriteFrameThumb url={draggedItem.sheetUrl} col={TOOL_THUMB_COL} size={64} className="h-full w-full" />
+        </div>
+      )}
     </div>
   );
 }

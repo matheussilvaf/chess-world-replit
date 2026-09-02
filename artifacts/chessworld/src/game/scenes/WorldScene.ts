@@ -21,7 +21,8 @@ import {
 import { composedDefIdFor, ensureAppearanceDef, getGeneratorManifest, pruneComposedAppearances } from '../characters/appearanceRuntime';
 import { COMPOSED_SHEET, parseWeaponRef } from '../../shared/characters/PlayerCharacterShapes';
 import { loadRigConfig } from '../rigs/rigLoader';
-import { resolveGatherPower, resolveWeaponProfileForFamily, resolveWeaponShootStats } from '../rigs/weaponLoader';
+import { resolveGatherStats, resolveWeaponProfileForFamily, resolveWeaponShootStats, type GatherToolStats } from '../rigs/weaponLoader';
+import type { GatherToolKind } from '../../shared/collection/CollectionShapes';
 import { projectilePairedFamily } from '../../lib/character-generator/weaponCatalog';
 import { ArrowProjectiles } from '../world/ArrowProjectiles';
 import {
@@ -206,8 +207,8 @@ export class WorldScene extends Phaser.Scene {
   /** Dados de disparo por ref de arma (null = arma comum, não atira). */
   private shootDataByRef = new Map<string, ArrowShootData | null>();
   private shootDataInflight = new Map<string, Promise<ArrowShootData | null>>();
-  /** Poder de coleta por ref equipada (HP tirado por golpe; mão limpa = 1). */
-  private gatherPowerByRef = new Map<string, number>();
+  /** Stats de coleta por ref equipada (poder/nível/tipo; mão limpa = soco). */
+  private gatherStatsByRef = new Map<string, GatherToolStats>();
   /** Flechas em voo (local + cosméticas dos remotos). */
   private arrowProjectiles: ArrowProjectiles | null = null;
   private currentDirection: Direction8 = 'down';
@@ -3745,14 +3746,15 @@ export class WorldScene extends Phaser.Scene {
           }
           this.weaponProfilesByRef.set(ref, profile);
         }
-        if (!this.gatherPowerByRef.has(ref)) {
-          // Poder de coleta (HP por golpe no Mundo de Coleta): ferramenta =
-          // tool.power (admin); arma = dano do level 1; sem item = 1.
+        if (!this.gatherStatsByRef.has(ref)) {
+          // Stats de coleta (Mundo de Coleta): ferramenta = tool.power/level
+          // do admin + tipo (= familyId); arma comum = dano do level 1 e
+          // nunca é ferramenta; mão limpa = soco (poder 1, nível 0, 'hand').
           const parsed = parseWeaponRef(ref);
-          const power = parsed
-            ? await resolveGatherPower(parsed.category, parsed.familyId, parsed.variantId ?? 'default')
-            : 1;
-          this.gatherPowerByRef.set(ref, Math.max(1, Math.round(power)));
+          const stats: GatherToolStats = parsed
+            ? await resolveGatherStats(parsed.category, parsed.familyId, parsed.variantId ?? 'default')
+            : { power: 1, level: 0, kind: 'hand' };
+          this.gatherStatsByRef.set(ref, { ...stats, power: Math.max(1, Math.round(stats.power)) });
         }
       } catch (e) {
         console.warn('[WorldScene] rig/perfil de arma indisponível:', e instanceof Error ? e.message : e);
@@ -3795,10 +3797,19 @@ export class WorldScene extends Phaser.Scene {
     return { movement, direction: this.dirForDef(def, fallbackDirection), column, playing: false };
   }
 
+  /** Caixa do SOCO (mão limpa) por direção, relativa ao pé do jogador. */
+  private readonly bareHandSwingRects: Record<RigDirection, LocalRectangle> = {
+    south: { id: 'hand-south', x: -14, y: -6, width: 28, height: 26 },
+    north: { id: 'hand-north', x: -14, y: -36, width: 28, height: 26 },
+    east: { id: 'hand-east', x: 4, y: -28, width: 26, height: 26 },
+    west: { id: 'hand-west', x: -30, y: -28, width: 26, height: 26 },
+  };
+
   /**
    * Hitboxes de MUNDO do golpe local em andamento — direto do perfil da arma
    * equipada (Character Rig Controller). Fora de golpe, sem perfil ou frame
-   * sem caixa autorada → null/vazio; nunca uma caixa inventada.
+   * sem caixa autorada → null/vazio. Exceção: MÃO LIMPA (sem ref) usa uma
+   * caixa curta fixa à frente do jogador — soco coleta recursos "de mão".
    */
   private currentSwingState(): {
     swingId: number;
@@ -3806,26 +3817,42 @@ export class WorldScene extends Phaser.Scene {
     playerY: number;
     rects: Phaser.Geom.Rectangle[];
     power: number;
+    toolKind: GatherToolKind | null;
+    toolLevel: number;
+    toolRef: string;
   } | null {
     if (!this.player || !this.localDef) return null;
     if (Date.now() >= this.attackingUntil) return null;
+    const ref = this.localWeaponRef ?? '';
+    const isBareHand = ref === '';
     const rig = this.localRig;
     const profile = this.weaponProfileFor(this.localWeaponRef);
-    if (!rig || !profile) return null;
+    // Arma/ferramenta SEM perfil de golpe (ex.: arco) segue sem swing melee.
+    if (!isBareHand && (!rig || !profile)) return null;
     const st = this.composedSpriteState(this.player, this.localDef, this.currentDirection);
     if (!st || !st.playing || st.movement !== 'attack') return null;
     const rigDir = RIG_DIRECTION_BY_ROW[st.direction];
     if (!rigDir) return null;
-    const rects = weaponHitboxRectsFor(rig, profile, rigDir, st.column).map((r) => {
+    const locals =
+      !isBareHand && rig && profile
+        ? weaponHitboxRectsFor(rig, profile, rigDir, st.column)
+        : [this.bareHandSwingRects[rigDir]];
+    const rects = locals.map((r) => {
       const w = localRectToWorldRect(r, this.player.x, this.player.y);
       return new Phaser.Geom.Rectangle(w.x, w.y, w.width, w.height);
     });
+    const stats =
+      this.gatherStatsByRef.get(ref) ??
+      ({ power: 1, level: 0, kind: isBareHand ? 'hand' : null } satisfies GatherToolStats);
     return {
       swingId: this.swingSeq,
       playerX: this.player.x,
       playerY: this.player.y,
       rects,
-      power: this.gatherPowerByRef.get(this.localWeaponRef ?? '') ?? 1,
+      power: stats.power,
+      toolKind: stats.kind,
+      toolLevel: stats.level,
+      toolRef: ref,
     };
   }
 

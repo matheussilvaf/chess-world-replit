@@ -8,13 +8,17 @@ import {
   DEFAULT_FLEE_RADIUS,
   DEFAULT_RESOURCE_HP,
   DEFAULT_RESPAWN_SECONDS,
+  GATHER_TOOL_LABELS,
   RESOURCE_HP_RANGE,
+  RESOURCE_MIN_LEVEL_RANGE,
   FLEE_RADIUS_RANGE,
   FLEE_SPEED_RANGE,
   FLEEING_ANIMAL_KEYS,
   RESOURCE_KEYS,
   RESPAWN_OPTIONS_SECONDS,
+  defaultGatherToolFor,
   type CollectionWorldConfig,
+  type GatherToolKind,
   type ResourceHurtbox,
   validateCollectionWorldConfig,
 } from '../../../shared/collection/CollectionShapes';
@@ -375,6 +379,14 @@ export function CollectionAdminPage() {
   const [resourceHp, setResourceHp] = useState<Record<string, number>>(
     Object.fromEntries(COLLECTIBLE_ITEM_KEYS.map((key) => [key, DEFAULT_RESOURCE_HP])),
   );
+  /** Nível mínimo da ferramenta por recurso (0 = qualquer nível extrai). */
+  const [resourceMinLevel, setResourceMinLevel] = useState<Record<string, number>>(
+    Object.fromEntries(COLLECTIBLE_ITEM_KEYS.map((key) => [key, 0])),
+  );
+  /** Ferramenta que extrai cada recurso (padrão por tipo: árvore→machado etc.). */
+  const [resourceTool, setResourceTool] = useState<Record<string, GatherToolKind>>(
+    Object.fromEntries(COLLECTIBLE_ITEM_KEYS.map((key) => [key, defaultGatherToolFor(key)])),
+  );
   const [respawnSeconds, setRespawnSeconds] = useState<Record<string, number>>(
     Object.fromEntries(RESOURCE_KEYS.map((key) => [key, DEFAULT_RESPAWN_SECONDS])),
   );
@@ -474,6 +486,18 @@ export function CollectionAdminPage() {
             config.resourceHp?.[key] ?? DEFAULT_RESOURCE_HP,
           ]),
         ));
+        setResourceMinLevel(Object.fromEntries(
+          COLLECTIBLE_ITEM_KEYS.map((key) => [
+            key,
+            config.resourceMinLevel?.[key] ?? 0,
+          ]),
+        ));
+        setResourceTool(Object.fromEntries(
+          COLLECTIBLE_ITEM_KEYS.map((key) => [
+            key,
+            config.resourceTool?.[key] ?? defaultGatherToolFor(key),
+          ]),
+        ));
         setRespawnSeconds(Object.fromEntries(
           RESOURCE_KEYS.map((key) => [
             key,
@@ -499,6 +523,12 @@ export function CollectionAdminPage() {
         ));
         setResourceHp(Object.fromEntries(
           COLLECTIBLE_ITEM_KEYS.map((key) => [key, DEFAULT_RESOURCE_HP]),
+        ));
+        setResourceMinLevel(Object.fromEntries(
+          COLLECTIBLE_ITEM_KEYS.map((key) => [key, 0]),
+        ));
+        setResourceTool(Object.fromEntries(
+          COLLECTIBLE_ITEM_KEYS.map((key) => [key, defaultGatherToolFor(key)]),
         ));
         setRespawnSeconds(Object.fromEntries(
           RESOURCE_KEYS.map((key) => [key, DEFAULT_RESPAWN_SECONDS]),
@@ -577,6 +607,12 @@ export function CollectionAdminPage() {
       resourceHp: Object.fromEntries(
         COLLECTIBLE_ITEM_KEYS.map((key) => [key, resourceHp[key] ?? DEFAULT_RESOURCE_HP]),
       ),
+      resourceMinLevel: Object.fromEntries(
+        COLLECTIBLE_ITEM_KEYS.map((key) => [key, resourceMinLevel[key] ?? 0]),
+      ),
+      resourceTool: Object.fromEntries(
+        COLLECTIBLE_ITEM_KEYS.map((key) => [key, resourceTool[key] ?? defaultGatherToolFor(key)]),
+      ),
       respawnSeconds: Object.fromEntries(
         RESOURCE_KEYS.map((key) => [key, respawnSeconds[key] ?? DEFAULT_RESPAWN_SECONDS]),
       ),
@@ -609,6 +645,18 @@ export function CollectionAdminPage() {
         COLLECTIBLE_ITEM_KEYS.map((key) => [
           key,
           response.config.resourceHp?.[key] ?? DEFAULT_RESOURCE_HP,
+        ]),
+      ));
+      setResourceMinLevel(Object.fromEntries(
+        COLLECTIBLE_ITEM_KEYS.map((key) => [
+          key,
+          response.config.resourceMinLevel?.[key] ?? 0,
+        ]),
+      ));
+      setResourceTool(Object.fromEntries(
+        COLLECTIBLE_ITEM_KEYS.map((key) => [
+          key,
+          response.config.resourceTool?.[key] ?? defaultGatherToolFor(key),
         ]),
       ));
       setRespawnSeconds(Object.fromEntries(
@@ -874,6 +922,49 @@ export function CollectionAdminPage() {
                                   }}
                                   className={`${inputClass} mt-0.5`}
                                 />
+                              </label>
+                              <label className="text-[10px] text-slate-500">
+                                Nível mínimo ({RESOURCE_MIN_LEVEL_RANGE.min}–{RESOURCE_MIN_LEVEL_RANGE.max})
+                                <input
+                                  type="number"
+                                  min={RESOURCE_MIN_LEVEL_RANGE.min}
+                                  max={RESOURCE_MIN_LEVEL_RANGE.max}
+                                  step={1}
+                                  disabled={busy || tableMissing}
+                                  value={resourceMinLevel[resource.key] ?? 0}
+                                  onChange={(event) => {
+                                    const value = Number(event.target.value);
+                                    if (Number.isInteger(value)) {
+                                      setResourceMinLevel((current) => ({
+                                        ...current,
+                                        [resource.key]: Math.max(
+                                          RESOURCE_MIN_LEVEL_RANGE.min,
+                                          Math.min(RESOURCE_MIN_LEVEL_RANGE.max, value),
+                                        ),
+                                      }));
+                                    }
+                                  }}
+                                  className={`${inputClass} mt-0.5`}
+                                />
+                              </label>
+                              <label className="text-[10px] text-slate-500">
+                                Dado por qual ferramenta?
+                                <select
+                                  disabled={busy || tableMissing}
+                                  value={resourceTool[resource.key] ?? defaultGatherToolFor(resource.key)}
+                                  onChange={(event) => {
+                                    const value = event.target.value as GatherToolKind;
+                                    setResourceTool((current) => ({
+                                      ...current,
+                                      [resource.key]: value,
+                                    }));
+                                  }}
+                                  className={`${inputClass} mt-0.5`}
+                                >
+                                  {Object.entries(GATHER_TOOL_LABELS).map(([kind, label]) => (
+                                    <option key={kind} value={kind}>{label}</option>
+                                  ))}
+                                </select>
                               </label>
                             </>
                           )}

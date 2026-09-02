@@ -42,9 +42,15 @@ import {
   DEFAULT_RESPAWN_SECONDS,
   DEFAULT_RESOURCE_HP,
   DEFAULT_FLEE_RADIUS,
+  RESOURCE_MIN_LEVEL_RANGE,
+  defaultGatherToolFor,
+  isGatherToolKind,
+  lockedHpFloorFor,
   type CollectionWorldConfig,
+  type GatherToolKind,
   type ResourceHurtbox,
 } from '../../shared/collection/CollectionShapes';
+import { useToolInventoryStore } from '../../stores/toolInventoryStore';
 import { sweepPath } from './moveSweep';
 import { queueCollect } from '../../stores/collectionInventoryStore';
 import { gatherAudio } from '../audio/gatherAudio';
@@ -115,6 +121,8 @@ interface ResourceNode {
   hpBar?: Phaser.GameObjects.Graphics;
   /** Instante (scene.time.now) em que a barrinha some sem novos golpes. */
   hpBarUntilMs?: number;
+  /** Throttle da mensagem "Ferramenta muito fraca!" (uma por vez por nó). */
+  weakMsgUntilMs?: number;
 }
 
 /** Mini-item dropado por um nó quebrado (pulo → imã → coleta). */
@@ -140,7 +148,16 @@ export interface PlayerSwingState {
   rects: Phaser.Geom.Rectangle[];
   /** Poder de coleta do item equipado — HP tirado do nó neste golpe. */
   power: number;
+  /** Tipo de ferramenta equipada ('hand' = mão limpa; null = arma comum). */
+  toolKind: GatherToolKind | null;
+  /** Nível da ferramenta (0..6) — comparado ao nível mínimo do recurso. */
+  toolLevel: number;
+  /** Ref equipada (gen:crafttools/... consome durabilidade ao acertar; '' = mão). */
+  toolRef: string;
 }
+
+/** Dados de um golpe/flecha que conectou num nó (subconjunto do swing state). */
+export type SwingHit = Pick<PlayerSwingState, 'power' | 'toolKind' | 'toolLevel' | 'toolRef'>;
 
 const GID_FLAGS = 0x0fffffff;
 const FLIPPED_H = 0x80000000;
@@ -683,7 +700,9 @@ export class CraftingMapRuntime {
     if (!this.nodes.length || rects.length === 0) return false;
     const best = this.nearestNodeHitBy(rects, x, y);
     if (!best) return false;
-    this.applyHit(best, damage);
+    // Flecha nunca é ferramenta: com o pareamento ferramenta→recurso ela só
+    // dá o feedback de "item errado" (e segue espantando os animais).
+    this.applyHit(best, { power: damage, toolKind: null, toolLevel: 0, toolRef: '' });
     return true;
   }
 
@@ -700,7 +719,7 @@ export class CraftingMapRuntime {
     const best = this.swingTargetFor(state);
     if (!best) return;
     this.lastConsumedSwingId = state.swingId;
-    this.applyHit(best, state.power);
+    this.applyHit(best, state);
   }
 
   /** Itens por quebra (config do admin ou padrão 3). */
@@ -812,11 +831,22 @@ export class CraftingMapRuntime {
     }
   }
 
-  private applyHit(node: ResourceNode, power = 1): void {
-    const spr = node.sprite;
-    // Flash branco curto — feedback visual do golpe.
+  /** Ferramenta que EXTRAI este recurso (admin em /admin/mundo-coleta ou padrão por tipo). */
+  private requiredToolFor(key: string): GatherToolKind {
+    const configured = this.worldConfig?.resourceTool?.[key];
+    return isGatherToolKind(configured) ? configured : defaultGatherToolFor(key);
+  }
+
+  /** Nível mínimo da ferramenta para EXTRAIR este recurso (admin; padrão 0). */
+  private minLevelFor(key: string): number {
+    const raw = this.worldConfig?.resourceMinLevel?.[key] ?? RESOURCE_MIN_LEVEL_RANGE.min;
+    return Phaser.Math.Clamp(Math.round(raw), RESOURCE_MIN_LEVEL_RANGE.min, RESOURCE_MIN_LEVEL_RANGE.max);
+  }
+
+  /** Flash de tinta curto no nó (branco = golpe válido; vermelho = item errado). */
+  private flashNode(spr: ResourceNode['sprite'], color: number): void {
     // Phaser 4: fill-tint é setTint + setTintMode (setTintFill não recebe cor).
-    spr.setTint(0xffffff);
+    spr.setTint(color);
     spr.setTintMode(Phaser.TintModes.FILL);
     this.scene.time.delayedCall(90, () => {
       if (spr.active) {
@@ -824,9 +854,54 @@ export class CraftingMapRuntime {
         spr.setTintMode(Phaser.TintModes.MULTIPLY);
       }
     });
+  }
+
+  /** "Ferramenta muito fraca!" flutuando sobre o nó (throttle por nó). */
+  private showWeakToolMessage(node: ResourceNode): void {
+    const now = this.scene.time.now;
+    if ((node.weakMsgUntilMs ?? 0) > now) return;
+    node.weakMsgUntilMs = now + 1200;
+    const hurt = this.nodeHurtboxRect(node);
+    const txt = this.scene.add
+      .text(node.sprite.x, hurt.y - 12, 'Ferramenta muito fraca!', {
+        fontFamily: 'monospace',
+        fontSize: '10px',
+        color: '#fecaca',
+        stroke: '#7f1d1d',
+        strokeThickness: 3,
+      })
+      .setOrigin(0.5, 1)
+      .setDepth(this.depthForY(node.sprite.y) + 3)
+      .setResolution(2);
+    this.scene.tweens.add({
+      targets: txt,
+      y: txt.y - 14,
+      alpha: 0,
+      duration: 1100,
+      ease: 'Quad.easeOut',
+      onComplete: () => txt.destroy(),
+    });
+  }
+
+  /**
+   * Regras de um golpe/flecha que CONECTOU num nó:
+   *  1. Qualquer acerto consome durabilidade da FERRAMENTA usada (item errado
+   *     e nível baixo também — golpe no vento não passa por aqui).
+   *  2. Animais: flash + fuga, como antes (ferramenta/nível não se aplicam).
+   *  3. Item errado (inclusive arma comum/flecha): flash VERMELHO e nada mais —
+   *     sem dano, sem barrinha, sem som.
+   *  4. Ferramenta certa com nível < mínimo: o HP desce normalmente mas TRAVA
+   *     num piso (lockedHpFloorFor) — o nó nunca quebra; ao travar, aviso.
+   *  5. Ferramenta certa com nível suficiente: fluxo normal (quebra em ≤ 0).
+   */
+  private applyHit(node: ResourceNode, hit: SwingHit): void {
+    const spr = node.sprite;
+    // (1) Durabilidade: −1 por golpe computado num nó (só crafttools do inventário).
+    if (hit.toolRef) useToolInventoryStore.getState().consumeDurability(hit.toolRef);
     if (node.kind === 'animal') {
-      // Animais ainda não morrem (a morte será especificada depois).
+      // (2) Animais ainda não morrem (a morte será especificada depois).
       // Vaca/ovelha fogem em raio limitado; galinha só toma o flash.
+      this.flashNode(spr, 0xffffff);
       const ag = this.animals.find((a) => a.sprite === node.sprite);
       if (ag && ag.def.id !== 'chicken') {
         const now = this.scene.time.now;
@@ -841,13 +916,30 @@ export class CraftingMapRuntime {
       }
       return;
     }
+    // (3) Item errado: só o flash vermelho — recurso intacto, sem som/barrinha.
+    if (hit.toolKind !== this.requiredToolFor(node.key)) {
+      this.flashNode(spr, 0xff4444);
+      return;
+    }
+    this.flashNode(spr, 0xffffff);
     // SFX do golpe — WebAudio cumulativo: cada hit dispara uma fonte nova na
     // hora, sem cortar o som do hit anterior (inclusive no golpe que quebra).
     if (node.kind === 'tree') gatherAudio.play('chopWood');
     else if (node.kind === 'mineral' || node.kind === 'hand_stone') gatherAudio.play('pickaxe');
     // HP: lazy-init na 1ª pancada (worldConfig já foi carregada em prepare()).
     if (node.hp < 0) node.hp = this.maxHpFor(node.key);
-    node.hp -= Math.max(1, Math.round(power));
+    const damage = Math.max(1, Math.round(hit.power));
+    if (hit.toolLevel < this.minLevelFor(node.key)) {
+      // (4) Ferramenta fraca: trava no piso (nunca sobe HP se já estava abaixo).
+      const floorHp = Math.min(lockedHpFloorFor(this.maxHpFor(node.key)), node.hp);
+      node.hp = Math.max(floorHp, node.hp - damage);
+      this.showNodeHpBar(node);
+      this.scene.tweens.add({ targets: spr, x: spr.x + 2, duration: 45, yoyo: true, repeat: 1 });
+      if (node.hp <= floorHp) this.showWeakToolMessage(node);
+      return;
+    }
+    // (5) Fluxo normal.
+    node.hp -= damage;
     if (node.hp <= 0) {
       node.broken = true;
       this.hideNodeHpBar(node);

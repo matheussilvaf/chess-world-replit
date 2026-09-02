@@ -28,12 +28,14 @@ import type { LocalRectangle, RigConfig, RigDirection } from '../../../shared/co
 import {
   DEFAULT_ARROW_RANGE_PX,
   DEFAULT_TOOL_DURABILITY,
+  DEFAULT_TOOL_LEVEL,
   DEFAULT_TOOL_POWER,
   DEFAULT_WEAPON_DAMAGE,
   DEFAULT_WEAPON_SPEED,
   MAX_ARROW_RANGE_PX,
   MIN_ARROW_RANGE_PX,
   TOOL_DURABILITY_RANGE,
+  TOOL_LEVEL_RANGE,
   TOOL_POWER_RANGE,
   WEAPON_PROFILE_ID_RE,
   countWeaponProfileRects,
@@ -354,9 +356,13 @@ export function WeaponProfilePanel(props: WeaponProfilePanelProps) {
   const { isTool } = props;
   const savedTool =
     isTool && previewWeapon ? getWeaponVariantTool(previewFamilyConfig, previewWeapon.variantId) : null;
-  const baselineTool: WeaponToolConfig = savedTool ?? {
-    power: DEFAULT_TOOL_POWER,
-    durability: DEFAULT_TOOL_DURABILITY,
+  // Normalizado campo a campo: configs antigas (sem level/inInventory) viram
+  // o padrão explícito, e o dirty-compare fica estável.
+  const baselineTool: WeaponToolConfig = {
+    power: savedTool?.power ?? DEFAULT_TOOL_POWER,
+    durability: savedTool?.durability ?? DEFAULT_TOOL_DURABILITY,
+    level: savedTool?.level ?? DEFAULT_TOOL_LEVEL,
+    inInventory: savedTool?.inInventory ?? true,
   };
   const draftTool = previewWeapon ? (toolDrafts[previewWeapon.assetId] ?? baselineTool) : baselineTool;
   const toolDirty =
@@ -642,10 +648,12 @@ export function WeaponProfilePanel(props: WeaponProfilePanelProps) {
             )}
           </div>
           <p className="text-[10px] text-slate-500">
-            Poder = HP tirado do recurso por golpe no Mundo de Coleta. A durabilidade é só
-            autorada por enquanto — nenhum uso a consome ainda.
+            Poder = HP tirado do recurso por golpe no Mundo de Coleta. Durabilidade: −1 a cada
+            golpe que ACERTA um recurso (em 0 a ferramenta continua funcionando — quebra é
+            regra futura). Nível: comparado ao "nível mínimo" do recurso em /admin/mundo-coleta
+            — abaixo do mínimo, o HP do recurso trava num piso e ele não quebra.
           </p>
-          <div className="grid grid-cols-2 gap-2">
+          <div className="grid grid-cols-3 gap-2">
             <label className="block">
               <span className="text-[10px] text-slate-500">
                 Poder ({TOOL_POWER_RANGE.min}–{TOOL_POWER_RANGE.max})
@@ -663,7 +671,7 @@ export function WeaponProfilePanel(props: WeaponProfilePanelProps) {
             </label>
             <label className="block">
               <span className="text-[10px] text-slate-500">
-                Durabilidade ({TOOL_DURABILITY_RANGE.min}–{TOOL_DURABILITY_RANGE.max})
+                Durab. ({TOOL_DURABILITY_RANGE.min}–{TOOL_DURABILITY_RANGE.max})
               </span>
               <NumField
                 key={`${previewWeapon.assetId}:tool-durability`}
@@ -676,7 +684,31 @@ export function WeaponProfilePanel(props: WeaponProfilePanelProps) {
                 onCommit={(v) => setToolDraft({ ...draftTool, durability: v })}
               />
             </label>
+            <label className="block">
+              <span className="text-[10px] text-slate-500">
+                Nível ({TOOL_LEVEL_RANGE.min}–{TOOL_LEVEL_RANGE.max})
+              </span>
+              <NumField
+                key={`${previewWeapon.assetId}:tool-level`}
+                value={draftTool.level ?? DEFAULT_TOOL_LEVEL}
+                min={TOOL_LEVEL_RANGE.min}
+                max={TOOL_LEVEL_RANGE.max}
+                integer
+                disabled={busy}
+                className={`${fieldCls} block w-full`}
+                onCommit={(v) => setToolDraft({ ...draftTool, level: v })}
+              />
+            </label>
           </div>
+          <label className="flex items-center gap-1.5 pt-0.5 text-[11px] text-slate-300">
+            <input
+              type="checkbox"
+              checked={draftTool.inInventory !== false}
+              disabled={busy}
+              onChange={(e) => setToolDraft({ ...draftTool, inInventory: e.target.checked })}
+            />
+            Incluir no inventário de teste do jogador
+          </label>
           <div className="flex flex-wrap gap-1.5 pt-1">
             <button
               type="button"

@@ -85,6 +85,15 @@ collectionAdminRouter.put('/', async (req: Request, res: Response) => {
           ),
         }
       : {}),
+    // Ferramenta certa + nível mínimo por recurso (regras de coleta).
+    ...(body.resourceMinLevel
+      ? {
+          resourceMinLevel: Object.fromEntries(
+            Object.entries(body.resourceMinLevel).map(([k, v]) => [k, Math.round(v)]),
+          ),
+        }
+      : {}),
+    ...(body.resourceTool ? { resourceTool: { ...body.resourceTool } } : {}),
     ...(body.fleeRadius
       ? {
           fleeRadius: Object.fromEntries(

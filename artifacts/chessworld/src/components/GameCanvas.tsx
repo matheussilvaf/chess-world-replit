@@ -27,6 +27,7 @@ import { PlayerNameTags } from './game/PlayerNameTags';
 import { AttackButton } from './game/AttackButton';
 import { CharacterCreationModal } from './character-creation/CharacterCreationModal';
 import { EquipmentButton, EquipmentPanel } from './game/EquipmentPanel';
+import { ToolHotbar } from './game/ToolHotbar';
 import { usePlayerCharacterStore } from '../stores/playerCharacterStore';
 
 export function GameCanvas() {
@@ -859,6 +860,7 @@ export function GameCanvas() {
       />
       {/* Personagem do jogador: criação obrigatória + equipamento */}
       {showCreation && <CharacterCreationModal />}
+      <ToolHotbar />
       <EquipmentButton />
       <EquipmentPanel />
     </div>

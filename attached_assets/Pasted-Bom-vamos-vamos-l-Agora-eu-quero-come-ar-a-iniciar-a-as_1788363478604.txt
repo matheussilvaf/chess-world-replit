@@ -1,0 +1,20 @@
+Bom, vamos vamos lá. Agora eu quero começar a iniciar a as regras de negócio do jogo, que é o seguinte, que vai que vai ser, no caso vamos determinar aqui as regras em relação às ferramentas e recursos. Em cada recurso eu quero que você adicione um campo numérico que vai ser o nível mínimo, e em cada ferramenta, em cada ferramenta, em cada variação de ferramenta no caso também, eu quero que você utilize um campo numérico que vai ser o chamado de nível. Tá. Esse nível, ele vai, ele de ferramenta, né, ele vai ser de zero a seis. E o nível mínimo de recurso também vai ser de zero a seis. E em cada recurso, eu quero que você adicione um. Adicione um select, que vai ser por exemplo uma regra, que tem a seguinte pergunta. Qual é dado por qual ferramenta? E um select com as opções, Pickaxe,axe, Machete, Scissors e mão.
+
+
+
+Eu sei que eu ainda não adicionei a ferramenta scissors, que é a tesoura. Mas a ferramenta mão, ela simplesmente significa Atacar, com a animação attack-full, sendo que sem estar com nenhuma ferramenta equipada. Ou seja, seria basicamente uma coleta à mão, tá? E o que acontece? Definindo essa regra, você percebe que, eu não vou poder coletar um mineral se eu estiver equipando um machado, né? Porque o machado, eu vou definir que será pra para as árvores. Então por exemplo se, algum, uma pessoa, se o usuário tentar coletar um recurso com a ferramenta errada, você vai adicionar um efeito de hit, né naquele naquele recurso só que em vermelho, entendeu? Em vermelho, que aí com o tempo o jogador ele vai conseguir identificar que ele está tentando craftar algo com a ferramenta errada. E outra, se ele estiver tentando, proferir golpes com a ferramenta errada em algum recurso, você não vai mostrar a barrinha do h p do recurso, tá?
+
+
+
+uma regra de negócio super importante que você deve adotar é a seguinte. Se um jogador tentar craftar, um recurso com uma ferramenta abaixo do nível mínimo, ele vai conseguir proferir os golpes, o h p do recurso ele vai decrescer normalmente de acordo com o poder daquela ferramenta, só que, o h p ele o h p daquele recurso ele nunca vai chegar em zero, nunca vai chegar em zero. Ele vai ficar travado por exemplo quando ele chegar abaixo de vinte, digamos assim. E quando atingir, e quando travar nessa, quando a barra de h p daquele recurso travar, você não pode em nenhum momento quebrar aquele mineral, né, ele nunca poderá ser quebrado por uma por uma ferramenta que está abaixo do nível mínimo daquele recurso. E aí quando chegar nesse travamento, você vai simplesmente, mostrar uma mensagem, né logo acima daquele recurso, né dizendo que Ops, você está utilizando uma ferramenta muito fraca. Mas, ao mesmo tempo, você deve considerar que aquela ferramenta está tendo a sua durabilidade gasta. O que vai, como é que vai funcionar, em relação à durabilidade? A durabilidade ela deve ser decrescida de um a cada golpe efetuado, em algum recurso. Esse esse esse ele tem que ser realmente um que acertou o recurso, ele não pode ser um um golpe que foi feito no vento ou no nada. Ele tem que de fato ter sido computado no recurso para a durabilidade daquela ferramenta ser decrescida
+
+
+
+
+ no inventário, logo abaixo de cada ferramenta, adicione uma barrinha que significa a durabilidade daquela ferramenta.
+
+
+no canto inferior da tela, adicione um shortcut do iventário, mostrando alguns slots, e dando preferência aos primeiros itens, esse shortcut deve ter os slots clicaveis para selecionar os itens. Faça também o iventario sendo dinamico, ou seja, o jogador pode arrastar os itens e trocar eles de lugar, drag and drog, suave e otimizado
+
+
+para motivos de teste, gostaria que voce deixasse no inventários todas as ferramentas de crafting disponíveis para teste. E aproveitanda deixa. Gostaria que em cada ferramenta, lá no rig character, voce deixasse um toggle disponível para que eu possa ativar ou desativar, e esse toggle vai significa incluir essa ferramenta no inventário. Nesse caso, já deixe esse toggle ativo para todas as ferramentas, de todos os tipos

@@ -59,6 +59,50 @@ export const DEFAULT_RESPAWN_SECONDS = 60;
 export const DEFAULT_RESOURCE_HP = 30;
 export const RESOURCE_HP_RANGE = { min: 1, max: 99999 } as const;
 
+// ------------------------------------------------- ferramenta certa + nível
+/** Ferramentas de coleta que um recurso pode exigir ('hand' = mão limpa). */
+export const GATHER_TOOL_KINDS = ['pickaxe', 'axe', 'machete', 'scissors', 'hand'] as const;
+export type GatherToolKind = (typeof GATHER_TOOL_KINDS)[number];
+
+export function isGatherToolKind(v: unknown): v is GatherToolKind {
+  return typeof v === 'string' && (GATHER_TOOL_KINDS as readonly string[]).includes(v);
+}
+
+/** Rótulos PT-BR para o admin. */
+export const GATHER_TOOL_LABELS: Record<GatherToolKind, string> = {
+  pickaxe: 'Picareta',
+  axe: 'Machado',
+  machete: 'Facão',
+  scissors: 'Tesoura',
+  hand: 'Mão (sem ferramenta)',
+};
+
+/** Nível mínimo que a ferramenta precisa ter para EXTRAIR o recurso (0 = qualquer). */
+export const RESOURCE_MIN_LEVEL_RANGE = { min: 0, max: 6 } as const;
+
+/**
+ * Ferramenta padrão por tipo de recurso, quando o admin ainda não escolheu:
+ * árvore→machado, minério→picareta, arbusto→facão, erva/pedra de mão→mão.
+ */
+export function defaultGatherToolFor(resourceKey: string): GatherToolKind {
+  if (resourceKey.startsWith('tree:')) return 'axe';
+  if (resourceKey.startsWith('mineral:')) return 'pickaxe';
+  if (resourceKey.startsWith('herb:')) return 'hand';
+  if (resourceKey === 'bush') return 'machete';
+  if (resourceKey === 'hand_stone') return 'hand';
+  return 'hand'; // animais/desconhecidos — irrelevante (animais não quebram)
+}
+
+/**
+ * Piso de HP quando a ferramenta é a CERTA mas o nível é menor que o mínimo:
+ * os golpes descem o HP até aqui e TRAVAM (o recurso nunca quebra).
+ * Percentual do HP máximo para valer com qualquer HP configurado no admin.
+ */
+export const GATHER_LOCK_HP_RATIO = 0.2;
+export function lockedHpFloorFor(maxHp: number): number {
+  return Math.max(1, Math.round(maxHp * GATHER_LOCK_HP_RATIO));
+}
+
 /** Animais que fogem ao apanhar (galinha nunca foge). */
 export const FLEEING_ANIMAL_KEYS: readonly string[] = ['animal:cow', 'animal:sheep'];
 
@@ -93,6 +137,10 @@ export interface CollectionWorldConfig {
   fleeSpeed?: Record<string, number>;
   /** resourceKey → HP total do nó (padrão 30). Animais não usam (não morrem). */
   resourceHp?: Record<string, number>;
+  /** resourceKey → nível mínimo da ferramenta (0..6; ausente = 0). */
+  resourceMinLevel?: Record<string, number>;
+  /** resourceKey → ferramenta que extrai o recurso (ausente = padrão por tipo). */
+  resourceTool?: Record<string, GatherToolKind>;
 }
 
 export interface ValidationResult {
@@ -210,6 +258,33 @@ export function validateCollectionWorldConfig(value: unknown): ValidationResult 
           v < RESOURCE_HP_RANGE.min || v > RESOURCE_HP_RANGE.max
         ) {
           errors.push(`resourceHp["${k}"]: inteiro entre ${RESOURCE_HP_RANGE.min} e ${RESOURCE_HP_RANGE.max}`);
+        }
+      }
+    }
+  }
+  if (value.resourceMinLevel !== undefined) {
+    if (!isRecord(value.resourceMinLevel)) {
+      errors.push('resourceMinLevel deve ser um objeto {resourceKey: nível}');
+    } else {
+      for (const [k, v] of Object.entries(value.resourceMinLevel)) {
+        if (!KEY_RE.test(k)) errors.push(`resourceMinLevel["${k}"]: chave inválida`);
+        if (
+          typeof v !== 'number' || !Number.isInteger(v) ||
+          v < RESOURCE_MIN_LEVEL_RANGE.min || v > RESOURCE_MIN_LEVEL_RANGE.max
+        ) {
+          errors.push(`resourceMinLevel["${k}"]: inteiro entre ${RESOURCE_MIN_LEVEL_RANGE.min} e ${RESOURCE_MIN_LEVEL_RANGE.max}`);
+        }
+      }
+    }
+  }
+  if (value.resourceTool !== undefined) {
+    if (!isRecord(value.resourceTool)) {
+      errors.push('resourceTool deve ser um objeto {resourceKey: ferramenta}');
+    } else {
+      for (const [k, v] of Object.entries(value.resourceTool)) {
+        if (!KEY_RE.test(k)) errors.push(`resourceTool["${k}"]: chave inválida`);
+        if (!isGatherToolKind(v)) {
+          errors.push(`resourceTool["${k}"]: ferramenta inválida (use ${GATHER_TOOL_KINDS.join(', ')})`);
         }
       }
     }

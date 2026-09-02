@@ -13,9 +13,11 @@
  */
 import { getColyseusHttpUrl, isColyseusConfigured } from '../../config/colyseus';
 import type { LocalRectangle, RigConfig, RigDirection } from '../../shared/combat/RigShapes';
+import { GATHER_TOOL_KINDS, type GatherToolKind } from '../../shared/collection/CollectionShapes';
 import {
   DEFAULT_ARROW_RANGE_PX,
   DEFAULT_TOOL_POWER,
+  getToolLevel,
   getWeaponVariantProjectile,
   getWeaponVariantTool,
   parseWeaponAssetId,
@@ -194,24 +196,43 @@ export async function resolveWeaponShootStats(
   };
 }
 
+/** Stats de COLETA de um item de mão: poder + nível + tipo de ferramenta. */
+export interface GatherToolStats {
+  /** HP tirado do nó por golpe/flecha. */
+  power: number;
+  /** Nível da ferramenta (0..6); armas comuns contam como 0. */
+  level: number;
+  /** Tipo de ferramenta (familyId de crafttools); null = não é ferramenta. */
+  kind: GatherToolKind | null;
+}
+
 /**
- * PODER DE COLETA de um item de mão equipado — quanto de HP um golpe/flecha
- * tira de um nó de recurso no Mundo de Coleta:
- *  - ferramenta (crafttools): `tool.power` da variação (admin), padrão 10;
- *  - arma comum: dano do level 1 do item (mesma tabela dos golpes);
- *  - família não configurada: padrões acima (nunca quebra).
+ * STATS DE COLETA de um item de mão equipado no Mundo de Coleta:
+ *  - ferramenta (crafttools): `tool.power`/`tool.level` da variação (admin);
+ *    o TIPO é o próprio familyId (axe, pickaxe, machete, scissors);
+ *  - arma comum: dano do level 1 do item; nunca é ferramenta (kind null) —
+ *    com o pareamento ferramenta→recurso, armas não extraem mais nada;
+ *  - família não configurada: padrões (poder 10, nível 0).
  */
-export async function resolveGatherPower(
+export async function resolveGatherStats(
   category: 'weapon' | 'crafttools',
   familyId: string,
   variantId: string,
-): Promise<number> {
+): Promise<GatherToolStats> {
   const families = await loadWeaponFamiliesMap();
   const family = families[familyId] ?? null;
   if (category === 'crafttools') {
-    return getWeaponVariantTool(family, variantId)?.power ?? DEFAULT_TOOL_POWER;
+    const kind =
+      (GATHER_TOOL_KINDS as readonly string[]).includes(familyId) && familyId !== 'hand'
+        ? (familyId as GatherToolKind)
+        : null;
+    return {
+      power: getWeaponVariantTool(family, variantId)?.power ?? DEFAULT_TOOL_POWER,
+      level: getToolLevel(family, variantId),
+      kind,
+    };
   }
-  return resolveWeaponLevelStats(family, variantId, 1).damage;
+  return { power: resolveWeaponLevelStats(family, variantId, 1).damage, level: 0, kind: null };
 }
 
 export function clearWeaponCache(): void {

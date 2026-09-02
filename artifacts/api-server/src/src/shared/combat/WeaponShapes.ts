@@ -171,14 +171,20 @@ export interface WeaponProjectileConfig {
 
 /**
  * Stats de FERRAMENTA de coleta (categoria crafttools) de uma variação:
- * poder (HP tirado de um recurso por golpe) e durabilidade (já autorada;
- * consumo por uso ainda não implementado).
+ * poder (HP tirado por golpe), durabilidade (consumida a cada golpe que
+ * acerta um recurso; chegar a 0 ainda NÃO quebra a ferramenta — regra
+ * futura), nível (0–6, comparado ao nível mínimo do recurso) e presença no
+ * inventário de teste do jogador.
  */
 export interface WeaponToolConfig {
   /** HP tirado do recurso por golpe (inteiro 1..1000). */
   power: number;
-  /** Usos até quebrar (inteiro 1..100000) — só autoração nesta fase. */
+  /** Usos até quebrar (inteiro 1..100000). */
   durability: number;
+  /** Nível da ferramenta (inteiro 0..6). Ausente = 0 (configs antigas). */
+  level?: number;
+  /** Entra no inventário de teste do jogador? Ausente = sim. */
+  inInventory?: boolean;
 }
 
 /** Levels de um item (variante) específico de uma família. */
@@ -536,6 +542,9 @@ export const DEFAULT_TOOL_POWER = 10;
 export const DEFAULT_TOOL_DURABILITY = 100;
 export const TOOL_POWER_RANGE = { min: 1, max: 1000 } as const;
 export const TOOL_DURABILITY_RANGE = { min: 1, max: 100000 } as const;
+/** Nível da ferramenta (0–6) — comparado ao nível MÍNIMO exigido pelo recurso. */
+export const DEFAULT_TOOL_LEVEL = 0;
+export const TOOL_LEVEL_RANGE = { min: 0, max: 6 } as const;
 
 /** Config de ferramenta de uma variação: helper com fallback null. */
 export function getWeaponVariantTool(
@@ -543,6 +552,24 @@ export function getWeaponVariantTool(
   variantId: string,
 ): WeaponToolConfig | null {
   return family?.variants?.[variantId]?.tool ?? null;
+}
+
+/** Nível da ferramenta de uma variação (0..6; sem config = 0). */
+export function getToolLevel(
+  family: { variants?: Record<string, WeaponVariantConfig> } | null | undefined,
+  variantId: string,
+): number {
+  const level = getWeaponVariantTool(family, variantId)?.level;
+  if (typeof level !== 'number' || !Number.isFinite(level)) return DEFAULT_TOOL_LEVEL;
+  return Math.max(TOOL_LEVEL_RANGE.min, Math.min(TOOL_LEVEL_RANGE.max, Math.round(level)));
+}
+
+/** A variação da ferramenta entra no inventário de teste? (ausente = sim). */
+export function isToolInInventory(
+  family: { variants?: Record<string, WeaponVariantConfig> } | null | undefined,
+  variantId: string,
+): boolean {
+  return getWeaponVariantTool(family, variantId)?.inInventory !== false;
 }
 
 /**
@@ -670,6 +697,19 @@ export function validateWeaponFamilyConfig(value: unknown): WeaponFamilyValidati
               durability < TOOL_DURABILITY_RANGE.min || durability > TOOL_DURABILITY_RANGE.max
             ) {
               errors.push(`${where}.tool.durability: inteiro entre ${TOOL_DURABILITY_RANGE.min} e ${TOOL_DURABILITY_RANGE.max}`);
+            }
+            // Campos novos — opcionais (configs antigas continuam válidas).
+            const level = raw.tool.level;
+            if (
+              level !== undefined && (
+                typeof level !== 'number' || !Number.isInteger(level) ||
+                level < TOOL_LEVEL_RANGE.min || level > TOOL_LEVEL_RANGE.max
+              )
+            ) {
+              errors.push(`${where}.tool.level: inteiro entre ${TOOL_LEVEL_RANGE.min} e ${TOOL_LEVEL_RANGE.max}`);
+            }
+            if (raw.tool.inInventory !== undefined && typeof raw.tool.inInventory !== 'boolean') {
+              errors.push(`${where}.tool.inInventory: deve ser booleano`);
             }
           }
         }
