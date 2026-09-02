@@ -25,108 +25,22 @@ import {
 import {
   ANIMAL_FLEE,
   ANIMALS,
-  BUSH,
   CRAFTING_MAP,
-  HAND_STONE,
-  HERBS,
   MINERALS,
-  MINERAL_SHEET,
   RESOURCES_BASE,
-  TREE_SHEET,
-  TREE_TYPES,
-  herbUrl,
-  treeSheetUrl,
 } from '../../../game/config/craftingMapConfig';
+import {
+  RESOURCE_DEFINITIONS,
+  RESOURCE_LABELS,
+  type ResourceDefinition,
+} from '../../../lib/collection/resourceCatalog';
 import { RigApiError } from '../rig-editor/rigApi';
 import { collectionApi } from './collectionApi';
 
-interface ResourceDefinition {
-  key: string;
-  label: string;
-  group: 'Minerais' | 'Árvores' | 'Ervas' | 'Outros' | 'Animais';
-  url: string;
-  frameWidth: number;
-  frameHeight: number;
-  naturalImage?: boolean;
-}
-
-const labels: Record<string, string> = {
-  pedra: 'Pedra',
-  carvao: 'Carvão',
-  ferro: 'Ferro',
-  cobre: 'Cobre',
-  ouro: 'Ouro',
-  diamante: 'Diamante',
-  cristal_real: 'Cristal real',
-  pinheiro_peao: 'Pinheiro-peão',
-  carvalho_torre: 'Carvalho-torre',
-  freixo_cavalo: 'Freixo-cavalo',
-  ebano_dama: 'Ébano-dama',
-  salgueiro_bispo: 'Salgueiro-bispo',
-  heal_herb: 'Erva de cura',
-  red_herb: 'Erva vermelha',
-  blue_herb: 'Erva azul',
-  queen_thorn: 'Espinho da rainha',
-  horse_root: 'Raiz de cavalo',
-  bush: 'Arbusto',
-  hand_stone: 'Pedra de mão',
-  cow: 'Vaca',
-  sheep: 'Ovelha',
-  chicken: 'Galinha',
-};
-
-const resources: ResourceDefinition[] = [
-  ...MINERALS.map((m) => ({
-    key: `mineral:${m.id}`,
-    label: labels[m.id],
-    group: 'Minerais' as const,
-    url: `${RESOURCES_BASE}minerals/${m.file}`,
-    frameWidth: MINERAL_SHEET.frameWidth,
-    frameHeight: MINERAL_SHEET.frameHeight,
-  })),
-  ...TREE_TYPES.map((tree) => ({
-    key: `tree:${tree}`,
-    label: labels[tree],
-    group: 'Árvores' as const,
-    url: treeSheetUrl(tree),
-    frameWidth: TREE_SHEET.frameWidth,
-    frameHeight: TREE_SHEET.frameHeight,
-  })),
-  ...HERBS.map((herb) => ({
-    key: `herb:${herb.id}`,
-    label: labels[herb.id],
-    group: 'Ervas' as const,
-    url: herbUrl(herb.file),
-    frameWidth: 1,
-    frameHeight: 1,
-    naturalImage: true,
-  })),
-  {
-    key: 'bush',
-    label: labels.bush,
-    group: 'Outros',
-    url: BUSH.url,
-    frameWidth: 1,
-    frameHeight: 1,
-    naturalImage: true,
-  },
-  {
-    key: 'hand_stone',
-    label: labels.hand_stone,
-    group: 'Outros',
-    url: HAND_STONE.url,
-    frameWidth: HAND_STONE.frameWidth,
-    frameHeight: HAND_STONE.frameHeight,
-  },
-  ...ANIMALS.map((animal) => ({
-    key: `animal:${animal.id}`,
-    label: labels[animal.id],
-    group: 'Animais' as const,
-    url: `${RESOURCES_BASE}animais/${animal.file}`,
-    frameWidth: animal.frameSize,
-    frameHeight: animal.frameSize,
-  })),
-];
+// Rótulos e definições de recurso agora vêm do catálogo único
+// (lib/collection/resourceCatalog) — compartilhado com o /admin/craft.
+const labels = RESOURCE_LABELS;
+const resources = RESOURCE_DEFINITIONS;
 
 /** Velocidade de fuga padrão (px/s) = speedMultiplier × o passeio do bicho. */
 const defaultFleeSpeed = (key: string): number => {

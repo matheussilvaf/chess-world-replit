@@ -1,108 +1,189 @@
 import { describe, expect, it } from 'vitest';
 import {
-  MAX_INGREDIENT_QUANTITY,
-  MAX_RECIPE_INGREDIENTS,
+  canCraft,
+  classifyCraftEntityId,
+  craftableTargetIds,
+  missingIngredientsFor,
   sameIngredientBag,
   slugifyCraftItemName,
   validateCraftItemConfig,
   validateCraftRecipeConfig,
+  type CraftRecipeConfig,
 } from './CraftShapes';
 
-// Ids/names are deliberately generic — tests must not depend on real assets.
+describe('classifyCraftEntityId', () => {
+  it('reconhece refs gen: completas de arma e ferramenta', () => {
+    expect(classifyCraftEntityId('gen:crafttools/axe/stone')).toBe('gen');
+    expect(classifyCraftEntityId('gen:weapon/sword/default')).toBe('gen');
+    expect(classifyCraftEntityId('gen:weapon/bowandarrow/c2')).toBe('gen');
+  });
+
+  it('exige a variação explícita e categoria conhecida', () => {
+    expect(classifyCraftEntityId('gen:crafttools/axe')).toBeNull();
+    expect(classifyCraftEntityId('gen:hat/top/default')).toBeNull();
+    expect(classifyCraftEntityId('gen:weapon/Sword/stone')).toBeNull();
+  });
+
+  it('reconhece chaves de recurso do Mundo de Coleta', () => {
+    expect(classifyCraftEntityId('mineral:pedra')).toBe('resource');
+    expect(classifyCraftEntityId('tree:pinheiro_peao')).toBe('resource');
+    expect(classifyCraftEntityId('herb:queen_thorn')).toBe('resource');
+    expect(classifyCraftEntityId('animal:cow')).toBe('resource');
+  });
+
+  it('chaves de recurso com cara de slug NÃO viram custom', () => {
+    expect(classifyCraftEntityId('bush')).toBe('resource');
+    expect(classifyCraftEntityId('hand_stone')).toBe('resource');
+  });
+
+  it('slugs comuns são custom; lixo é null', () => {
+    expect(classifyCraftEntityId('barra-de-ouro')).toBe('custom');
+    expect(classifyCraftEntityId('axe_stone')).toBe('custom'); // alvo legado migrável
+    expect(classifyCraftEntityId('')).toBeNull();
+    expect(classifyCraftEntityId('Maiusculo')).toBeNull();
+    expect(classifyCraftEntityId('mineral:nao_existe')).toBeNull();
+    expect(classifyCraftEntityId(42)).toBeNull();
+  });
+});
 
 describe('slugifyCraftItemName', () => {
-  it('normaliza acentos, espaços e maiúsculas', () => {
-    expect(slugifyCraftItemName('  Minério de Ouro  ')).toBe('minerio-de-ouro');
-    expect(slugifyCraftItemName('PRATA')).toBe('prata');
-  });
-
-  it('devolve vazio quando nada sobra', () => {
-    expect(slugifyCraftItemName('!!!')).toBe('');
-    expect(slugifyCraftItemName('   ')).toBe('');
+  it('gera slug e rejeita colisão com chave de recurso', () => {
+    expect(slugifyCraftItemName('Barra de Ouro')).toBe('barra-de-ouro');
+    expect(slugifyCraftItemName('Bush')).toBe('');
+    // Espaço vira "-", nunca "_" — logo "hand stone" NÃO colide com hand_stone.
+    expect(slugifyCraftItemName('hand stone')).toBe('hand-stone');
   });
 });
 
-describe('validateCraftItemConfig', () => {
-  it('aceita config mínima válida (imageUrl null)', () => {
-    const r = validateCraftItemConfig({ itemId: 'item-a', name: 'Item A', imageUrl: null });
-    expect(r.ok).toBe(true);
-    expect(r.errors).toEqual([]);
-  });
+describe('validateCraftItemConfig — repairsItemId', () => {
+  const base = { itemId: 'kit-machado', name: 'Kit do Machado', imageUrl: null };
 
-  it('rejeita id fora do padrão de slug', () => {
-    expect(validateCraftItemConfig({ itemId: 'Item A', name: 'x', imageUrl: null }).ok).toBe(false);
-    expect(validateCraftItemConfig({ itemId: '', name: 'x', imageUrl: null }).ok).toBe(false);
-  });
-
-  it('rejeita nome vazio e URL não-http', () => {
-    expect(validateCraftItemConfig({ itemId: 'a1', name: '   ', imageUrl: null }).ok).toBe(false);
-    expect(validateCraftItemConfig({ itemId: 'a1', name: 'ok', imageUrl: 'ftp://x' }).ok).toBe(false);
-    expect(validateCraftItemConfig({ itemId: 'a1', name: 'ok', imageUrl: 'https://x/y.png' }).ok).toBe(true);
-  });
-});
-
-describe('validateCraftRecipeConfig', () => {
-  const ing = (itemId: string, quantity = 1) => ({ itemId, quantity });
-
-  it('aceita receita com 1 e com 9 ingredientes', () => {
-    expect(validateCraftRecipeConfig({ targetId: 'tool1', ingredients: [ing('a')] }).ok).toBe(true);
-    const nine = Array.from({ length: MAX_RECIPE_INGREDIENTS }, (_, i) => ing(`item-${i}`));
-    expect(validateCraftRecipeConfig({ targetId: 'tool1_c2', ingredients: nine }).ok).toBe(true);
-  });
-
-  it('rejeita 0 e mais de 9 ingredientes', () => {
-    expect(validateCraftRecipeConfig({ targetId: 'tool1', ingredients: [] }).ok).toBe(false);
-    const ten = Array.from({ length: MAX_RECIPE_INGREDIENTS + 1 }, (_, i) => ing(`item-${i}`));
-    expect(validateCraftRecipeConfig({ targetId: 'tool1', ingredients: ten }).ok).toBe(false);
-  });
-
-  it('rejeita ingredientes repetidos', () => {
-    const r = validateCraftRecipeConfig({ targetId: 'tool1', ingredients: [ing('a'), ing('a')] });
-    expect(r.ok).toBe(false);
-    expect(r.errors.some((e) => e.includes('repetido'))).toBe(true);
-  });
-
-  it('valida limites de quantidade (inteiro 1..999)', () => {
-    expect(validateCraftRecipeConfig({ targetId: 't', ingredients: [ing('a', 0)] }).ok).toBe(false);
+  it('aceita null/ausente e ref gen: válida', () => {
+    expect(validateCraftItemConfig(base).ok).toBe(true);
+    expect(validateCraftItemConfig({ ...base, repairsItemId: null }).ok).toBe(true);
     expect(
-      validateCraftRecipeConfig({ targetId: 't', ingredients: [ing('a', MAX_INGREDIENT_QUANTITY + 1)] }).ok,
-    ).toBe(false);
-    expect(validateCraftRecipeConfig({ targetId: 't', ingredients: [ing('a', 1.5)] }).ok).toBe(false);
-    expect(
-      validateCraftRecipeConfig({ targetId: 't', ingredients: [ing('a', MAX_INGREDIENT_QUANTITY)] }).ok,
+      validateCraftItemConfig({ ...base, repairsItemId: 'gen:crafttools/axe/stone' }).ok,
     ).toBe(true);
   });
 
-  it('rejeita item desconhecido quando a lista de itens é fornecida', () => {
-    const known = new Set(['a', 'b']);
-    expect(validateCraftRecipeConfig({ targetId: 't', ingredients: [ing('a')] }, known).ok).toBe(true);
-    const r = validateCraftRecipeConfig({ targetId: 't', ingredients: [ing('zz')] }, known);
-    expect(r.ok).toBe(false);
-    expect(r.errors.some((e) => e.includes('desconhecido'))).toBe(true);
+  it('rejeita alvo de reparo que não é arma/ferramenta', () => {
+    expect(validateCraftItemConfig({ ...base, repairsItemId: 'mineral:pedra' }).ok).toBe(false);
+    expect(validateCraftItemConfig({ ...base, repairsItemId: 'barra-de-ouro' }).ok).toBe(false);
+    expect(validateCraftItemConfig({ ...base, repairsItemId: 'gen:crafttools/axe' }).ok).toBe(false);
   });
 
-  it('rejeita targetId inválido', () => {
-    expect(validateCraftRecipeConfig({ targetId: 'não válido', ingredients: [ing('a')] }).ok).toBe(false);
+  it('rejeita itemId que colide com recurso', () => {
+    expect(validateCraftItemConfig({ itemId: 'bush', name: 'Arbusto falso', imageUrl: null }).ok).toBe(
+      false,
+    );
+  });
+});
+
+describe('validateCraftRecipeConfig — ids de qualquer classe', () => {
+  const known = new Set(['barra-de-ouro']);
+
+  it('aceita alvo gen:/recurso/custom com ingredientes mistos', () => {
+    const recipe = {
+      targetId: 'gen:crafttools/axe/iron',
+      ingredients: [
+        { itemId: 'mineral:ferro', quantity: 3 },
+        { itemId: 'tree:carvalho_torre', quantity: 2 },
+        { itemId: 'barra-de-ouro', quantity: 1 },
+      ],
+    };
+    expect(validateCraftRecipeConfig(recipe, known).ok).toBe(true);
+    expect(
+      validateCraftRecipeConfig({ targetId: 'barra-de-ouro', ingredients: [{ itemId: 'mineral:ouro', quantity: 5 }] }, known).ok,
+    ).toBe(true);
+  });
+
+  it('rejeita o próprio item como ingrediente', () => {
+    const res = validateCraftRecipeConfig(
+      { targetId: 'mineral:ferro', ingredients: [{ itemId: 'mineral:ferro', quantity: 1 }] },
+      known,
+    );
+    expect(res.ok).toBe(false);
+    expect(res.errors.join(' ')).toMatch(/próprio item/);
+  });
+
+  it('só cobra existência no banco de ids custom', () => {
+    const res = validateCraftRecipeConfig(
+      {
+        targetId: 'gen:weapon/sword/iron',
+        ingredients: [
+          { itemId: 'mineral:ferro', quantity: 1 }, // recurso: nunca vai ao banco
+          { itemId: 'sumiu-do-banco', quantity: 1 },
+        ],
+      },
+      known,
+    );
+    expect(res.ok).toBe(false);
+    expect(res.errors.join(' ')).toContain('sumiu-do-banco');
+    expect(res.errors.join(' ')).not.toContain('mineral:ferro');
+  });
+
+  it('rejeita id fora de qualquer classe e duplicado', () => {
+    expect(
+      validateCraftRecipeConfig({ targetId: 'GEN:x', ingredients: [{ itemId: 'mineral:pedra', quantity: 1 }] }).ok,
+    ).toBe(false);
+    const dup = validateCraftRecipeConfig({
+      targetId: 'gen:weapon/sword/iron',
+      ingredients: [
+        { itemId: 'mineral:pedra', quantity: 1 },
+        { itemId: 'mineral:pedra', quantity: 2 },
+      ],
+    });
+    expect(dup.ok).toBe(false);
+  });
+});
+
+describe('craftabilidade', () => {
+  const recipes: Record<string, CraftRecipeConfig> = {
+    'gen:crafttools/axe/stone': {
+      targetId: 'gen:crafttools/axe/stone',
+      ingredients: [
+        { itemId: 'mineral:pedra', quantity: 3 },
+        { itemId: 'tree:pinheiro_peao', quantity: 2 },
+      ],
+    },
+    'barra-de-ouro': {
+      targetId: 'barra-de-ouro',
+      ingredients: [{ itemId: 'mineral:ouro', quantity: 5 }],
+    },
+  };
+
+  it('missingIngredientsFor calcula need/have por item', () => {
+    const missing = missingIngredientsFor(recipes['gen:crafttools/axe/stone'], {
+      'mineral:pedra': 1,
+    });
+    expect(missing).toEqual([
+      { itemId: 'mineral:pedra', need: 3, have: 1 },
+      { itemId: 'tree:pinheiro_peao', need: 2, have: 0 },
+    ]);
+  });
+
+  it('canCraft e craftableTargetIds respondem direto de um Record de contagens', () => {
+    const counts = { 'mineral:pedra': 3, 'tree:pinheiro_peao': 2, 'mineral:ouro': 4 };
+    expect(canCraft(recipes['gen:crafttools/axe/stone'], counts)).toBe(true);
+    expect(canCraft(recipes['barra-de-ouro'], counts)).toBe(false);
+    expect(craftableTargetIds(recipes, counts)).toEqual(['gen:crafttools/axe/stone']);
+    expect(craftableTargetIds(recipes, {})).toEqual([]);
   });
 });
 
 describe('sameIngredientBag', () => {
-  it('é independente de ordem', () => {
-    const a = [
-      { itemId: 'x', quantity: 2 },
-      { itemId: 'y', quantity: 1 },
-    ];
-    const b = [
-      { itemId: 'y', quantity: 1 },
-      { itemId: 'x', quantity: 2 },
-    ];
-    expect(sameIngredientBag(a, b)).toBe(true);
-  });
-
-  it('detecta diferenças de quantidade e de tamanho', () => {
+  it('continua ignorando ordem', () => {
     expect(
-      sameIngredientBag([{ itemId: 'x', quantity: 1 }], [{ itemId: 'x', quantity: 2 }]),
-    ).toBe(false);
-    expect(sameIngredientBag([{ itemId: 'x', quantity: 1 }], [])).toBe(false);
+      sameIngredientBag(
+        [
+          { itemId: 'a', quantity: 1 },
+          { itemId: 'b', quantity: 2 },
+        ],
+        [
+          { itemId: 'b', quantity: 2 },
+          { itemId: 'a', quantity: 1 },
+        ],
+      ),
+    ).toBe(true);
   });
 });

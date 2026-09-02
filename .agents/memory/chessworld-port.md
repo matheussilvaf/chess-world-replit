@@ -225,3 +225,8 @@ Rotas Express custom do servidor devem ser registradas COM o prefixo `/api` (ex.
 - `tool.durability` é SÓ autorada no /admin/rigs; nenhum código consome durabilidade ainda (não é bug).
 - Poder de coleta: crafttools = tool.power (padrão 10); arma = dano do level 1; mão limpa/ref inválida = 1. HP padrão dos nós = 30 (~3 golpes como antes).
 - SFX de coleta: `src/game/audio/gatherAudio.ts` segue o padrão WebAudio do chessAudio (buffer decodificado 1×, fonte nova por play = sons cumulativos). Política "toca agora ou pula": golpe sem buffer/ctx suspenso fica mudo — NUNCA enfileirar som para depois (sai em rajada/fora de contexto). Vale para qualquer SFX futuro.
+
+## Gate de admin nas rotas de escrita
+`requireSupabaseAdmin` (auth/supabaseAuth) é o gate correto para rotas de escrita GLOBAIS de admin: allowlist ADMIN_EMAILS, fail-closed em produção, liberado só em development sem a var. Craft e collection já usam. **Pendente:** rigs/routes, rigs/weaponRoutes (×2 routers) e assets/assetCategoryRoutes ainda usam `requireSupabaseAuth` (qualquer logado escreve — buraco em produção). Rotas por-usuário (tournament, playerCharacter, inventory) usam `requireSupabaseAuth` corretamente.
+**Why:** review flagou o craft; endurecer os demais foi deixado fora de escopo do round de receitas.
+**How to apply:** ao tocar qualquer router admin desses, trocar o middleware junto (import + .use), espelhar no api-server e avisar o usuário para definir ADMIN_EMAILS antes de publicar.

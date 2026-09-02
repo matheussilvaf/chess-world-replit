@@ -15,10 +15,9 @@
  * Storage bucket `craft-items`; the persisted config keeps only the public URL.
  */
 import { raw, Router, type Request, type Response } from 'express';
-import { requireSupabaseAuth } from '../auth/supabaseAuth.js';
+import { requireSupabaseAdmin } from '../auth/supabaseAuth.js';
 import {
-  CRAFT_ITEM_ID_RE,
-  CRAFT_TARGET_ID_RE,
+  classifyCraftEntityId,
   validateCraftItemConfig,
   validateCraftRecipeConfig,
   type CraftIngredient,
@@ -71,13 +70,18 @@ function sniffImageFormat(bytes: Buffer): 'png' | 'jpeg' | 'webp' | 'gif' | null
 }
 
 function badItemId(res: Response, itemId: string): boolean {
-  if (CRAFT_ITEM_ID_RE.test(itemId)) return false;
-  res.status(400).json({ error: `itemId inválido: "${itemId}" (slug minúsculo)` });
+  // Craft items são SEMPRE 'custom' — recusa refs gen:, chaves de recurso
+  // reservadas (ex.: "bush") e qualquer slug fora do padrão.
+  if (classifyCraftEntityId(itemId) === 'custom') return false;
+  res.status(400).json({
+    error: `itemId inválido: "${itemId}" (slug minúsculo, sem colidir com chaves de recurso)`,
+  });
   return true;
 }
 
 function badTargetId(res: Response, targetId: string): boolean {
-  if (CRAFT_TARGET_ID_RE.test(targetId)) return false;
+  // Alvo de receita: QUALQUER item do jogo (ref gen:, recurso ou craft item).
+  if (classifyCraftEntityId(targetId) !== null) return false;
   res.status(400).json({ error: `targetId inválido: "${targetId}"` });
   return true;
 }
@@ -105,7 +109,7 @@ async function ensureImageBucket(): Promise<string | null> {
 // ------------------------------------------------------------- admin: items
 
 export const craftItemsAdminRouter = Router();
-craftItemsAdminRouter.use(requireSupabaseAuth);
+craftItemsAdminRouter.use(requireSupabaseAdmin);
 
 craftItemsAdminRouter.get('/', async (_req: Request, res: Response) => {
   const result = await listCraftItems();
@@ -140,6 +144,7 @@ craftItemsAdminRouter.put('/:itemId', async (req: Request, res: Response) => {
     itemId,
     name: body.name.trim(),
     imageUrl: body.imageUrl ?? null,
+    repairsItemId: body.repairsItemId ?? null,
   };
   const result = await saveCraftItem(config);
   if (!result.ok) {
@@ -168,6 +173,15 @@ craftItemsAdminRouter.delete('/:itemId', async (req: Request, res: Response) => 
       usedBy,
     });
     return;
+  }
+  // A receita do PRÓPRIO item morre junto (antes do item, para nunca deixar
+  // órfã invisível que "ressuscitaria" se o mesmo slug fosse recriado).
+  if (recipes.records[itemId] !== undefined) {
+    const recipeGone = await deleteCraftRecipe(itemId);
+    if (!recipeGone.ok) {
+      writeFailed(res, recipeGone);
+      return;
+    }
   }
   const result = await deleteCraftItem(itemId);
   if (!result.ok) {
@@ -249,7 +263,7 @@ craftItemsAdminRouter.post(
 // ----------------------------------------------------------- admin: recipes
 
 export const craftRecipesAdminRouter = Router();
-craftRecipesAdminRouter.use(requireSupabaseAuth);
+craftRecipesAdminRouter.use(requireSupabaseAdmin);
 
 craftRecipesAdminRouter.get('/', async (_req: Request, res: Response) => {
   const result = await listCraftRecipes();
@@ -306,7 +320,9 @@ craftRecipesAdminRouter.put('/:targetId', async (req: Request, res: Response) =>
   // (Janela residual mínima é aceita — refs vivem em jsonb, sem transação.)
   const recheck = await listCraftItems();
   if (!recheck.error && !recheck.tableMissing) {
-    const missing = config.ingredients.filter((i) => recheck.records[i.itemId] === undefined);
+    const missing = config.ingredients.filter(
+      (i) => classifyCraftEntityId(i.itemId) === 'custom' && recheck.records[i.itemId] === undefined,
+    );
     if (missing.length > 0) {
       await deleteCraftRecipe(targetId);
       res.status(409).json({

@@ -1,26 +1,36 @@
 /**
- * /admin/craft — Painel de Craft (spec deste round).
+ * /admin/craft — Manual de Receitas (spec deste round).
  *
- * Coluna 1: ferramentas de craft (scan dinâmico da pasta `crafttools` via
- *           manifest do gerador — nada de nomes hardcoded).
- * Coluna 2: receita do item selecionado — até 9 craft items (ordem NÃO
- *           importa), cada um com quantidade própria (1..999).
- * Coluna 3: cadastro dos craft items (nome + imagem upload).
+ * Coluna 1: TODOS os itens do jogo num acordeão por categoria — ferramentas
+ *           e armas (manifest do gerador), recursos do Mundo de Coleta e
+ *           itens criados no admin. "+ Novo item" abre o cadastro (modal).
+ * Coluna 2: receita do item selecionado — QUALQUER item pode ter receita e
+ *           qualquer item (menos o próprio) pode ser ingrediente. Até 9
+ *           ingredientes com quantidade (1..999); a ordem NUNCA importa.
+ *
+ * Ids canônicos (ver CraftShapes): ferramentas/armas usam a MESMA ref do
+ * equipamento (gen:crafttools/axe/stone), recursos usam a chave crua do
+ * inventário de coleta (mineral:pedra), itens criados usam slug. Receitas
+ * legadas com id de asset ("axe_stone") são migradas silenciosamente para a
+ * ref nova no primeiro load (o runtime ainda não consome receitas).
  *
  * Rascunhos são locais por alvo e NUNCA persistem sozinhos; "Salvar receita"
  * grava via API. Rascunhos são descartados em recarga (lição do editor de
  * rigs: rascunho velho jamais deve sobrescrever dados novos do servidor).
  */
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import {
   ArrowLeft,
   CheckCircle2,
+  ChevronDown,
   Copy,
   Hammer,
   Loader2,
   Minus,
+  Pencil,
   Plus,
+  PlusCircle,
   RefreshCw,
   Save,
   Swords,
@@ -29,29 +39,31 @@ import {
 } from 'lucide-react';
 import { fetchGeneratorManifest } from '../../../lib/character-generator/manifest';
 import type { GeneratorManifest } from '../../../lib/character-generator/types';
-import { CRAFTTOOLS_CATEGORY, weaponAssetId } from '../../../shared/combat/WeaponShapes';
+import {
+  CRAFTTOOLS_CATEGORY,
+  WEAPON_CATEGORY,
+  parseWeaponAssetId,
+} from '../../../shared/combat/WeaponShapes';
 import {
   MAX_INGREDIENT_QUANTITY,
   MAX_RECIPE_INGREDIENTS,
   MIN_INGREDIENT_QUANTITY,
+  classifyCraftEntityId,
   sameIngredientBag,
+  slugifyCraftItemName,
   type CraftIngredient,
   type CraftItemConfig,
   type CraftRecipeConfig,
 } from '../../../shared/craft/CraftShapes';
+import {
+  buildCraftCatalog,
+  type CraftCatalogEntry,
+  type CraftSectionId,
+} from '../../../lib/craft/craftCatalog';
 import { RigApiError } from '../rig-editor/rigApi';
 import { craftApi } from './craftApi';
-import { ItemsManager } from './ItemsManager';
-import { SpriteThumb } from './SpriteThumb';
-
-interface ToolEntry {
-  assetId: string;
-  familyId: string;
-  variantId: string;
-  url: string;
-}
-
-const withBase = (url: string) => `${import.meta.env.BASE_URL}${url.replace(/^\//, '')}`;
+import { CatalogThumb } from './CatalogThumb';
+import { ItemFormModal, type ItemFormMode, type ItemFormValues } from './ItemFormModal';
 
 const btnCls =
   'inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium transition-colors disabled:opacity-40 disabled:cursor-not-allowed';
@@ -87,6 +99,11 @@ export function CraftAdminPage() {
   const [recipeDrafts, setRecipeDrafts] = useState<Record<string, CraftIngredient[]>>({});
   /** Texto cru dos inputs de quantidade (digitação livre, commit só de nº válido). */
   const [rawQty, setRawQty] = useState<Record<string, string>>({});
+  /** Acordeão da coluna esquerda (ferramentas abertas por padrão). */
+  const [openSections, setOpenSections] = useState<Partial<Record<CraftSectionId, boolean>>>({
+    tools: true,
+  });
+  const [modal, setModal] = useState<ItemFormMode | null>(null);
 
   const applyApiError = useCallback((e: unknown) => {
     if (e instanceof RigApiError) {
@@ -144,20 +161,63 @@ export function CraftAdminPage() {
     };
   }, []);
 
-  // ------------------------------------------------------------ ferramentas
-  const toolFamilies = useMemo(() => manifest?.categories[CRAFTTOOLS_CATEGORY] ?? [], [manifest]);
-  const toolByAsset = useMemo(() => {
-    const map = new Map<string, ToolEntry>();
-    for (const family of toolFamilies) {
-      for (const v of family.variants) {
-        const assetId = weaponAssetId(family.id, v.id);
-        map.set(assetId, { assetId, familyId: family.id, variantId: v.id, url: withBase(v.url) });
+  // ------------------------------------------------------ catálogo unificado
+  const catalog = useMemo(() => buildCraftCatalog(manifest, items), [manifest, items]);
+
+  // Item custom excluído (ou manifest trocado) → seleção morta é limpa.
+  useEffect(() => {
+    if (selectedTarget && manifest && loaded && !catalog.byId.has(selectedTarget)) {
+      setSelectedTarget(null);
+    }
+  }, [selectedTarget, catalog, manifest, loaded]);
+
+  // ---------------------------------------- migração de receitas legadas
+  // Alvos antigos eram asset ids de crafttools ("axe_stone"). Reescreve cada
+  // um para a ref canônica nova quando a família/variação existe no manifest.
+  const migrationRan = useRef(false);
+  useEffect(() => {
+    if (migrationRan.current || !manifest || !loaded || tableMissing) return;
+    const plan: { oldId: string; newId: string }[] = [];
+    for (const oldId of Object.keys(recipes)) {
+      if (catalog.byId.has(oldId)) continue; // id atual (gen/recurso/custom vivo)
+      if (items[oldId] !== undefined) continue; // craft item real
+      if (classifyCraftEntityId(oldId) !== 'custom') continue;
+      const parsed = parseWeaponAssetId(oldId);
+      const variantId = parsed.variantId === 'default' ? 'default' : parsed.variantId;
+      for (const category of [CRAFTTOOLS_CATEGORY, WEAPON_CATEGORY]) {
+        const family = (manifest.categories[category] ?? []).find((f) => f.id === parsed.familyId);
+        if (family && family.variants.some((v) => v.id === variantId)) {
+          const newId = `gen:${category}/${parsed.familyId}/${variantId}`;
+          if (recipes[newId] === undefined) plan.push({ oldId, newId });
+          break;
+        }
       }
     }
-    return map;
-  }, [toolFamilies]);
+    if (plan.length === 0) return;
+    migrationRan.current = true;
+    void (async () => {
+      const next = { ...recipes };
+      for (const { oldId, newId } of plan) {
+        try {
+          const res = await craftApi.recipes.save({
+            targetId: newId,
+            ingredients: recipes[oldId].ingredients,
+          });
+          await craftApi.recipes.remove(oldId);
+          delete next[oldId];
+          next[newId] = res.recipe;
+        } catch (e) {
+          console.warn('[craft] migração de receita legada falhou:', oldId, e);
+        }
+      }
+      setRecipes(next);
+    })();
+  }, [manifest, loaded, tableMissing, recipes, catalog, items]);
 
-  const selectedTool = selectedTarget ? (toolByAsset.get(selectedTarget) ?? null) : null;
+  // ----------------------------------------------------------- seleção/draft
+  const selectedEntry: CraftCatalogEntry | null = selectedTarget
+    ? (catalog.byId.get(selectedTarget) ?? null)
+    : null;
   const persisted = selectedTarget ? (recipes[selectedTarget]?.ingredients ?? null) : null;
   const draft: CraftIngredient[] = selectedTarget
     ? (recipeDrafts[selectedTarget] ?? persisted ?? [])
@@ -167,7 +227,11 @@ export function CraftAdminPage() {
       ? !sameIngredientBag(draft, persisted)
       : draft.length > 0
     : false;
-  const unknownRefs = draft.filter((i) => items[i.itemId] === undefined);
+  /** Refs mortas: só ids fora de qualquer classe ou craft items excluídos. */
+  const unknownRefs = draft.filter((i) => {
+    const kind = classifyCraftEntityId(i.itemId);
+    return kind === null || (kind === 'custom' && items[i.itemId] === undefined);
+  });
 
   const setDraftFor = (targetId: string, list: CraftIngredient[]) => {
     setRecipeDrafts((prev) => ({ ...prev, [targetId]: list }));
@@ -188,6 +252,7 @@ export function CraftAdminPage() {
 
   const addIngredient = (itemId: string) => {
     if (!selectedTarget || draft.length >= MAX_RECIPE_INGREDIENTS) return;
+    if (itemId === selectedTarget) return;
     if (draft.some((i) => i.itemId === itemId)) return;
     setDraftFor(selectedTarget, [...draft, { itemId, quantity: 1 }]);
   };
@@ -248,7 +313,8 @@ export function CraftAdminPage() {
 
   const handleDeleteRecipe = async () => {
     if (!selectedTarget || !recipes[selectedTarget]) return;
-    if (!window.confirm(`Excluir a receita de "${selectedTarget}"?`)) return;
+    const label = selectedEntry?.name ?? selectedTarget;
+    if (!window.confirm(`Excluir a receita de "${label}"?`)) return;
     setBusy(true);
     setError(null);
     try {
@@ -286,48 +352,78 @@ export function CraftAdminPage() {
   );
 
   const handleDeleteItem = useCallback(
-    async (itemId: string): Promise<boolean> => {
+    async (item: CraftItemConfig): Promise<void> => {
+      if (!window.confirm(`Excluir o item "${item.name}" (${item.itemId})?`)) return;
       setBusy(true);
       setError(null);
       try {
-        await craftApi.items.remove(itemId);
+        await craftApi.items.remove(item.itemId);
         setItems((prev) => {
           const next = { ...prev };
-          delete next[itemId];
+          delete next[item.itemId];
           return next;
         });
-        return true;
+        // O servidor apaga junto a receita do próprio item — espelha no estado.
+        setRecipes((prev) => {
+          const next = { ...prev };
+          delete next[item.itemId];
+          return next;
+        });
+        if (selectedTarget === item.itemId) {
+          setSelectedTarget(null);
+          clearDraftFor(item.itemId);
+        }
       } catch (e) {
         if (e instanceof RigApiError && e.status === 409 && e.details) {
           setError(`${e.message}. Receitas que usam o item: ${e.details.join(', ')}`);
         } else {
           applyApiError(e);
         }
-        return false;
       } finally {
         setBusy(false);
       }
     },
-    [applyApiError],
+    [applyApiError, selectedTarget],
   );
 
-  const handleUploadImage = useCallback(
-    async (itemId: string, dataUrl: string): Promise<string | null> => {
-      setError(null);
+  /** Modal → upload (se houver imagem nova) + save. true fecha o modal. */
+  const handleModalSubmit = async (values: ItemFormValues): Promise<boolean> => {
+    const editing = modal?.kind === 'edit' ? modal.item : null;
+    const itemId = editing ? editing.itemId : slugifyCraftItemName(values.name);
+    if (!itemId) return false;
+    setError(null);
+    let imageUrl = editing?.imageUrl ?? null;
+    if (values.imageDataUrl) {
       try {
-        const res = await craftApi.items.uploadImage(itemId, dataUrl);
-        return res.imageUrl;
+        const res = await craftApi.items.uploadImage(itemId, values.imageDataUrl);
+        imageUrl = res.imageUrl;
       } catch (e) {
         applyApiError(e);
-        return null;
+        return false;
       }
-    },
-    [applyApiError],
-  );
+    }
+    return handleSaveItem({
+      itemId,
+      name: values.name,
+      imageUrl,
+      repairsItemId: values.repairsItemId,
+    });
+  };
 
-  const availableForSlot = Object.values(items)
-    .filter((it) => !draft.some((d) => d.itemId === it.itemId))
-    .sort((a, b) => a.name.localeCompare(b.name));
+  // ------------------------------------------------- picker de ingredientes
+  /** Seções com as entradas ainda elegíveis (sem o alvo e sem as já usadas). */
+  const pickerSections = useMemo(() => {
+    const used = new Set(draft.map((d) => d.itemId));
+    return catalog.sections
+      .map((section) => ({
+        ...section,
+        entries: section.entries.filter((e) => e.id !== selectedTarget && !used.has(e.id)),
+      }))
+      .filter((section) => section.entries.length > 0);
+  }, [catalog, draft, selectedTarget]);
+
+  const toggleSection = (id: CraftSectionId) =>
+    setOpenSections((prev) => ({ ...prev, [id]: !prev[id] }));
 
   // ------------------------------------------------------------------ JSX
   return (
@@ -339,13 +435,21 @@ export function CraftAdminPage() {
           </div>
           <div>
             <h1 className="text-xl font-semibold bg-gradient-to-r from-cyan-300 via-sky-300 to-violet-300 bg-clip-text text-transparent">
-              Painel de Craft
+              Manual de Receitas
             </h1>
             <p className="text-[11px] text-slate-500 font-mono">
-              receitas das ferramentas · craft items · ordem dos ingredientes não importa
+              qualquer item pode ter receita · ingredientes com quantidade · a ordem não importa
             </p>
           </div>
           <div className="ml-auto flex items-center gap-2">
+            <button
+              type="button"
+              className={`${btnCls} bg-cyan-600/90 hover:bg-cyan-500 text-white`}
+              onClick={() => setModal({ kind: 'create' })}
+              disabled={!loaded || tableMissing}
+            >
+              <PlusCircle className="w-3.5 h-3.5" /> Novo item
+            </button>
             <button
               type="button"
               className={`${btnCls} bg-slate-800/80 hover:bg-slate-700/80 border border-slate-700/60`}
@@ -398,61 +502,124 @@ export function CraftAdminPage() {
           </div>
         )}
 
-        <div className="grid grid-cols-1 lg:grid-cols-[minmax(250px,1fr)_minmax(360px,1.5fr)_minmax(300px,1.15fr)] gap-4 items-start">
-          {/* ------------------------------------------------ ferramentas */}
-          <section className="bg-slate-900/70 border border-slate-700/60 rounded-xl p-4">
-            <h2 className="text-[11px] uppercase tracking-widest text-slate-400 font-mono mb-3">
-              Ferramentas <span className="text-slate-600">· pasta crafttools</span>
+        <div className="grid grid-cols-1 lg:grid-cols-[minmax(300px,1.05fr)_minmax(380px,2fr)] gap-4 items-start">
+          {/* ------------------------------------------- itens do jogo */}
+          <section className="bg-slate-900/70 border border-slate-700/60 rounded-xl p-3">
+            <h2 className="text-[11px] uppercase tracking-widest text-slate-400 font-mono mb-2.5 px-1">
+              Itens do jogo <span className="text-slate-600">· selecione para editar a receita</span>
             </h2>
-            {toolFamilies.length === 0 ? (
-              <p className="text-xs text-slate-500 italic">
-                {manifest
-                  ? 'Nenhum PNG na pasta crafttools ainda.'
-                  : 'Carregando manifest de assets…'}
-              </p>
-            ) : (
-              <div className="flex flex-col gap-3">
-                {toolFamilies.map((family) => (
-                  <div key={family.id}>
-                    <p className="text-[10px] font-mono text-slate-500 mb-1.5">
-                      {family.id} <span className="text-slate-600">· {family.variants.length} item(ns)</span>
-                    </p>
-                    <div className="flex flex-col gap-1">
-                      {family.variants.map((v) => {
-                        const assetId = weaponAssetId(family.id, v.id);
-                        const selected = selectedTarget === assetId;
-                        const hasRecipe = recipes[assetId] !== undefined;
-                        const hasDraft = recipeDrafts[assetId] !== undefined;
-                        return (
-                          <button
-                            key={assetId}
-                            type="button"
-                            onClick={() => setSelectedTarget(assetId)}
-                            className={`flex items-center gap-2.5 rounded-lg border px-2 py-1.5 text-left transition-all ${
-                              selected
-                                ? 'border-cyan-400/70 bg-cyan-500/10 ring-1 ring-cyan-400/40'
-                                : 'border-slate-700/50 bg-slate-950/40 hover:border-slate-500/60'
-                            }`}
-                          >
-                            <SpriteThumb url={withBase(v.url)} size={44} />
-                            <span className="min-w-0 flex-1">
-                              <span className="block text-xs text-slate-200 font-mono truncate">{assetId}</span>
-                              <span className="block text-[10px] text-slate-500">
-                                {v.id === 'default' ? 'base' : `variação ${v.id}`}
-                              </span>
-                            </span>
-                            {hasDraft && !hasRecipe && (
-                              <span className="text-[9px] font-mono text-amber-300/90 shrink-0">rascunho</span>
-                            )}
-                            {hasRecipe && <CheckCircle2 className="w-4 h-4 text-cyan-400 shrink-0" />}
-                          </button>
-                        );
-                      })}
-                    </div>
-                  </div>
-                ))}
-              </div>
+            {!manifest && !manifestError && (
+              <p className="text-xs text-slate-500 italic px-1 mb-2">Carregando manifest de assets…</p>
             )}
+            <div className="flex flex-col gap-1.5">
+              {catalog.sections.map((section) => {
+                const open = openSections[section.id] === true;
+                const recipeCount = section.entries.filter((e) => recipes[e.id] !== undefined).length;
+                return (
+                  <div key={section.id} className="rounded-lg border border-slate-700/50 bg-slate-950/40 overflow-hidden">
+                    <button
+                      type="button"
+                      onClick={() => toggleSection(section.id)}
+                      className="w-full flex items-center gap-2 px-2.5 py-2 text-left hover:bg-slate-800/40 transition-colors"
+                    >
+                      <ChevronDown
+                        className={`w-3.5 h-3.5 text-slate-500 transition-transform ${open ? '' : '-rotate-90'}`}
+                      />
+                      <span className="text-xs font-medium text-slate-200">{section.label}</span>
+                      <span className="text-[10px] font-mono text-slate-500">{section.entries.length}</span>
+                      {recipeCount > 0 && (
+                        <span className="ml-auto text-[9px] font-mono px-1.5 py-0.5 rounded bg-cyan-500/10 text-cyan-300 border border-cyan-500/30">
+                          {recipeCount} receita{recipeCount > 1 ? 's' : ''}
+                        </span>
+                      )}
+                    </button>
+                    {open && (
+                      <div className="flex flex-col gap-1 p-1.5 pt-0">
+                        {section.id === 'custom' && (
+                          <button
+                            type="button"
+                            onClick={() => setModal({ kind: 'create' })}
+                            disabled={!loaded || tableMissing}
+                            className="flex items-center gap-2 rounded-lg border border-dashed border-cyan-500/40 bg-cyan-500/[0.04] px-2 py-2 text-xs text-cyan-300 hover:bg-cyan-500/10 transition-colors disabled:opacity-40"
+                          >
+                            <PlusCircle className="w-4 h-4" /> Adicionar item do jogo…
+                          </button>
+                        )}
+                        {section.entries.length === 0 && (
+                          <p className="text-[11px] text-slate-600 italic px-2 py-1.5">
+                            {section.id === 'custom'
+                              ? 'Nenhum item criado ainda.'
+                              : section.id === 'tools' || section.id === 'weapons'
+                                ? manifest
+                                  ? 'Nenhum PNG nessa pasta do gerador.'
+                                  : 'Aguardando manifest…'
+                                : 'Nenhum recurso nesse grupo.'}
+                          </p>
+                        )}
+                        {section.entries.map((entry) => {
+                          const selected = selectedTarget === entry.id;
+                          const hasRecipe = recipes[entry.id] !== undefined;
+                          const hasDraft = recipeDrafts[entry.id] !== undefined;
+                          const customItem = section.id === 'custom' ? items[entry.id] : undefined;
+                          return (
+                            <div
+                              key={entry.id}
+                              className={`flex items-center gap-2 rounded-lg border transition-all ${
+                                selected
+                                  ? 'border-cyan-400/70 bg-cyan-500/10 ring-1 ring-cyan-400/40'
+                                  : 'border-slate-700/50 bg-slate-950/40 hover:border-slate-500/60'
+                              }`}
+                            >
+                              <button
+                                type="button"
+                                onClick={() => setSelectedTarget(entry.id)}
+                                className="flex items-center gap-2.5 flex-1 min-w-0 px-2 py-1.5 text-left"
+                              >
+                                <CatalogThumb thumb={entry.thumb} size={40} />
+                                <span className="min-w-0 flex-1">
+                                  <span className="block text-xs text-slate-200 truncate">{entry.name}</span>
+                                  {entry.detail && (
+                                    <span className="block text-[10px] font-mono text-slate-500 truncate">
+                                      {entry.detail}
+                                    </span>
+                                  )}
+                                </span>
+                                {hasDraft && !hasRecipe && (
+                                  <span className="text-[9px] font-mono text-amber-300/90 shrink-0">rascunho</span>
+                                )}
+                                {hasRecipe && <CheckCircle2 className="w-4 h-4 text-cyan-400 shrink-0" />}
+                              </button>
+                              {customItem && (
+                                <span className="flex items-center gap-0.5 pr-1.5 shrink-0">
+                                  <button
+                                    type="button"
+                                    title="Editar item"
+                                    className="p-1 rounded-md text-slate-400 hover:text-slate-100 hover:bg-slate-700/60 disabled:opacity-40"
+                                    disabled={busy || tableMissing}
+                                    onClick={() => setModal({ kind: 'edit', item: customItem })}
+                                  >
+                                    <Pencil className="w-3.5 h-3.5" />
+                                  </button>
+                                  <button
+                                    type="button"
+                                    title="Excluir item"
+                                    className="p-1 rounded-md text-slate-400 hover:text-rose-300 hover:bg-slate-700/60 disabled:opacity-40"
+                                    disabled={busy || tableMissing}
+                                    onClick={() => void handleDeleteItem(customItem)}
+                                  >
+                                    <Trash2 className="w-3.5 h-3.5" />
+                                  </button>
+                                </span>
+                              )}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
           </section>
 
           {/* ---------------------------------------------------- receita */}
@@ -460,23 +627,20 @@ export function CraftAdminPage() {
             <h2 className="text-[11px] uppercase tracking-widest text-slate-400 font-mono mb-3">
               Receita <span className="text-slate-600">· como o jogador conquista o item</span>
             </h2>
-            {!selectedTool ? (
+            {!selectedEntry ? (
               <div className="py-14 text-center">
                 <Hammer className="w-8 h-8 text-slate-700 mx-auto mb-3" />
                 <p className="text-xs text-slate-500">
-                  Selecione uma ferramenta à esquerda para configurar a combinação.
+                  Selecione qualquer item à esquerda para configurar a combinação.
                 </p>
               </div>
             ) : (
               <>
                 <div className="flex items-center gap-3 mb-4 rounded-lg border border-slate-700/50 bg-slate-950/40 p-2.5">
-                  <SpriteThumb url={selectedTool.url} size={56} />
+                  <CatalogThumb thumb={selectedEntry.thumb} size={56} />
                   <div className="min-w-0 flex-1">
-                    <p className="text-sm font-mono text-slate-100 truncate">{selectedTool.assetId}</p>
-                    <p className="text-[10px] text-slate-500">
-                      família {selectedTool.familyId} ·{' '}
-                      {selectedTool.variantId === 'default' ? 'base' : `variação ${selectedTool.variantId}`}
-                    </p>
+                    <p className="text-sm text-slate-100 truncate">{selectedEntry.name}</p>
+                    <p className="text-[10px] font-mono text-slate-500 truncate">{selectedEntry.id}</p>
                   </div>
                   {dirty ? (
                     <span className="text-[9px] font-mono px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-300 border border-amber-500/30 shrink-0">
@@ -498,8 +662,8 @@ export function CraftAdminPage() {
                   {Array.from({ length: MAX_RECIPE_INGREDIENTS }, (_, slot) => {
                     if (slot < draft.length) {
                       const entry = draft[slot];
-                      const item = items[entry.itemId];
-                      const unknown = item === undefined;
+                      const ingEntry = catalog.byId.get(entry.itemId) ?? null;
+                      const unknown = unknownRefs.some((u) => u.itemId === entry.itemId);
                       return (
                         <div
                           key={`${entry.itemId}-${slot}`}
@@ -518,20 +682,12 @@ export function CraftAdminPage() {
                           >
                             <X className="w-3 h-3" />
                           </button>
-                          {item?.imageUrl ? (
-                            <img
-                              src={item.imageUrl}
-                              alt={item.name}
-                              className="w-9 h-9 object-contain rounded bg-slate-900/80"
-                            />
-                          ) : (
-                            <div className="w-9 h-9 rounded bg-slate-900/80 border border-dashed border-slate-700/60" />
-                          )}
+                          <CatalogThumb thumb={ingEntry?.thumb ?? { kind: 'none' }} size={36} />
                           <p className="text-[10px] text-center leading-tight text-slate-300 truncate w-full">
                             {unknown ? (
                               <span className="text-rose-300">{entry.itemId} (removido)</span>
                             ) : (
-                              item.name
+                              ingEntry?.name ?? entry.itemId
                             )}
                           </p>
                           <div className="flex items-center gap-1">
@@ -581,9 +737,9 @@ export function CraftAdminPage() {
                           key="add-slot"
                           className="rounded-lg border border-dashed border-cyan-500/30 bg-cyan-500/[0.03] p-2 flex items-center justify-center min-h-[104px]"
                         >
-                          {availableForSlot.length === 0 ? (
+                          {pickerSections.length === 0 ? (
                             <p className="text-[10px] text-slate-600 text-center leading-tight">
-                              {Object.keys(items).length === 0 ? 'cadastre craft items →' : 'todos os itens já estão na receita'}
+                              todos os itens já estão na receita
                             </p>
                           ) : (
                             <select
@@ -594,11 +750,15 @@ export function CraftAdminPage() {
                               }}
                               disabled={busy || tableMissing}
                             >
-                              <option value="">+ adicionar item…</option>
-                              {availableForSlot.map((it) => (
-                                <option key={it.itemId} value={it.itemId}>
-                                  {it.name}
-                                </option>
+                              <option value="">+ adicionar ingrediente…</option>
+                              {pickerSections.map((section) => (
+                                <optgroup key={section.id} label={section.label}>
+                                  {section.entries.map((it) => (
+                                    <option key={it.id} value={it.id}>
+                                      {it.name}
+                                    </option>
+                                  ))}
+                                </optgroup>
                               ))}
                             </select>
                           )}
@@ -615,8 +775,8 @@ export function CraftAdminPage() {
                 </div>
 
                 <p className="text-[10px] font-mono text-slate-500 mb-3">
-                  {draft.length}/{MAX_RECIPE_INGREDIENTS} itens · a ordem não importa · quantidade{' '}
-                  {MIN_INGREDIENT_QUANTITY}–{MAX_INGREDIENT_QUANTITY} por item
+                  {draft.length}/{MAX_RECIPE_INGREDIENTS} ingredientes · qualquer item do jogo (menos o
+                  próprio) · quantidade {MIN_INGREDIENT_QUANTITY}–{MAX_INGREDIENT_QUANTITY}
                 </p>
 
                 <div className="flex flex-wrap items-center gap-2">
@@ -657,19 +817,18 @@ export function CraftAdminPage() {
               </>
             )}
           </section>
-
-          {/* ------------------------------------------------ craft items */}
-          <ItemsManager
-            items={items}
-            busy={busy || !loaded}
-            disabled={tableMissing}
-            onSaveItem={handleSaveItem}
-            onDeleteItem={handleDeleteItem}
-            onUploadImage={handleUploadImage}
-            onLocalError={setError}
-          />
         </div>
       </div>
+
+      {modal && (
+        <ItemFormModal
+          mode={modal}
+          catalog={catalog}
+          busy={busy}
+          onClose={() => setModal(null)}
+          onSubmit={handleModalSubmit}
+        />
+      )}
     </div>
   );
 }

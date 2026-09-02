@@ -1,11 +1,27 @@
 /**
  * Craft system — shared shapes/validators (spec: /admin/craft).
  *
- * CRAFT ITEMS are admin-defined materials (ouro, prata, …) with an uploaded
- * icon; CRAFT RECIPES map a craft-tool ITEM (a generator PNG asset id from the
- * `crafttools` category, e.g. "pickaxe1" / "pickaxe1_c2") to the bag of craft
- * items required to obtain it. Order NEVER matters — a recipe is a multiset of
- * {itemId, quantity} entries (max 9 distinct entries, quantity 1..999).
+ * O manual de receitas cobre QUALQUER item do jogo. O id de um item no craft
+ * usa o MESMO identificador que o runtime já usa para aquele item (zero
+ * mapeamento na hora de consultar):
+ *   - gerador (ferramentas/armas): ref `gen:<weapon|crafttools>/<família>/<variação>`
+ *     — igual ao equip_weapon/toolInventory, com a variação SEMPRE explícita
+ *     (ex.: "gen:crafttools/axe/stone", "gen:weapon/sword/default");
+ *   - recursos do Mundo de Coleta: chave crua do inventário de coleta
+ *     ("mineral:pedra", "tree:pinheiro_peao", "herb:heal_herb", "bush",
+ *     "hand_stone", "animal:cow" — ver RESOURCE_KEYS no CollectionShapes);
+ *   - CRAFT ITEMS criados no admin (ex.: "barra-de-ouro"): slug + imagem.
+ *
+ * CRAFT RECIPES: alvo (targetId) + multiset de 1..9 ingredientes
+ * {itemId, quantity 1..999}. Qualquer item pode ser alvo E ingrediente —
+ * nunca de si mesmo. A ordem NUNCA importa.
+ *
+ * Item de REPARO: um craft item pode declarar `repairsItemId` (ref gen: de
+ * arma/ferramenta). A receita DESSE item passa a significar "repara o alvo".
+ *
+ * Consulta rápida para o jogo: missingIngredientsFor/canCraft/
+ * craftableTargetIds operam sobre Record<itemId, quantidade> (o formato dos
+ * inventários) em O(ingredientes) — sem joins nem tradução de ids.
  *
  * Mirrored byte-identical in:
  *   - artifacts/chessworld/src/shared/craft/CraftShapes.ts    (client)
@@ -13,22 +29,51 @@
  *   - artifacts/api-server/src/src/shared/craft/CraftShapes.ts
  * Keep it free of Phaser/DOM/Node dependencies.
  */
+import { RESOURCE_KEYS } from '../collection/CollectionShapes.js';
 
-/** Item ids are lowercase slugs (derived from the display name). */
+/** Craft item ids (itens criados no admin) são slugs minúsculos. */
 export const CRAFT_ITEM_ID_RE = /^[a-z0-9][a-z0-9_-]{0,47}$/;
-/** Recipe targets are generator asset ids (family or family_cN file stem). */
-export const CRAFT_TARGET_ID_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/i;
+/**
+ * Ref gen: de item de mão com variação OBRIGATÓRIA — espelha o WEAPON_REF_RE
+ * do PlayerCharacterShapes (lá a variação é opcional; aqui o id canônico da
+ * receita exige a forma completa para ser único por item).
+ */
+export const CRAFT_GEN_REF_RE =
+  /^gen:(weapon|crafttools)\/([a-z0-9][a-z0-9_-]{0,39})\/([a-z0-9][a-z0-9_-]{0,39})$/;
 export const MAX_CRAFT_ITEM_NAME_LEN = 48;
 export const MAX_CRAFT_IMAGE_URL_LEN = 512;
 export const MAX_RECIPE_INGREDIENTS = 9;
 export const MIN_INGREDIENT_QUANTITY = 1;
 export const MAX_INGREDIENT_QUANTITY = 999;
 
+const RESOURCE_KEY_SET: ReadonlySet<string> = new Set(RESOURCE_KEYS);
+
+/** Classe de um id de item do craft (null = formato desconhecido). */
+export type CraftEntityKind = 'gen' | 'resource' | 'custom';
+
+/**
+ * Classifica um id de item do manual de receitas. Recursos vêm ANTES de
+ * custom: "bush"/"hand_stone" têm cara de slug, mas são chaves de recurso
+ * reservadas (um craft item nunca pode usá-las).
+ */
+export function classifyCraftEntityId(id: unknown): CraftEntityKind | null {
+  if (typeof id !== 'string' || id.length === 0) return null;
+  if (CRAFT_GEN_REF_RE.test(id)) return 'gen';
+  if (RESOURCE_KEY_SET.has(id)) return 'resource';
+  if (CRAFT_ITEM_ID_RE.test(id)) return 'custom';
+  return null;
+}
+
 export interface CraftItemConfig {
   itemId: string;
   name: string;
   /** Public URL of the uploaded icon (Supabase Storage) — null until uploaded. */
   imageUrl: string | null;
+  /**
+   * Item de REPARO: ref gen: da arma/ferramenta que este item repara
+   * (ex.: "gen:crafttools/axe/stone"). null/ausente = item comum.
+   */
+  repairsItemId?: string | null;
 }
 
 export interface CraftIngredient {
@@ -52,7 +97,11 @@ const isRecord = (v: unknown): v is Record<string, unknown> =>
   typeof v === 'object' && v !== null && !Array.isArray(v);
 const isInt = (v: unknown): v is number => typeof v === 'number' && Number.isInteger(v);
 
-/** Derive a stable item id from a display name (client convenience). */
+/**
+ * Derive a stable item id from a display name (client convenience).
+ * Slugs que colidem com chaves de recurso reservadas (ex.: "bush") são
+ * rejeitados aqui mesmo — retorna '' como qualquer nome inválido.
+ */
 export function slugifyCraftItemName(name: string): string {
   const slug = name
     .trim()
@@ -62,15 +111,17 @@ export function slugifyCraftItemName(name: string): string {
     .replace(/[^a-z0-9]+/g, '-')
     .replace(/^-+|-+$/g, '')
     .slice(0, 48);
-  return CRAFT_ITEM_ID_RE.test(slug) ? slug : '';
+  return classifyCraftEntityId(slug) === 'custom' ? slug : '';
 }
 
 export function validateCraftItemConfig(value: unknown): CraftValidation {
   const errors: string[] = [];
   if (!isRecord(value)) return { ok: false, errors: ['config: objeto esperado'] };
   const itemId = value.itemId;
-  if (typeof itemId !== 'string' || !CRAFT_ITEM_ID_RE.test(itemId)) {
-    errors.push('itemId: slug minúsculo (a-z, 0-9, "-", "_"), 1–48 caracteres');
+  if (typeof itemId !== 'string' || classifyCraftEntityId(itemId) !== 'custom') {
+    errors.push(
+      'itemId: slug minúsculo (a-z, 0-9, "-", "_"), 1–48 caracteres, sem colidir com chaves de recurso do jogo',
+    );
   }
   const name = value.name;
   if (typeof name !== 'string' || name.trim().length === 0 || name.trim().length > MAX_CRAFT_ITEM_NAME_LEN) {
@@ -86,9 +137,23 @@ export function validateCraftItemConfig(value: unknown): CraftValidation {
       errors.push(`imageUrl: null ou URL http(s) de até ${MAX_CRAFT_IMAGE_URL_LEN} caracteres`);
     }
   }
+  const repairs = value.repairsItemId;
+  if (repairs !== null && repairs !== undefined) {
+    if (typeof repairs !== 'string' || classifyCraftEntityId(repairs) !== 'gen') {
+      errors.push(
+        'repairsItemId: null ou ref gen: de arma/ferramenta (ex.: "gen:crafttools/axe/stone")',
+      );
+    }
+  }
   return { ok: errors.length === 0, errors };
 }
 
+/**
+ * Valida uma receita. `knownItemIds` (quando passado) é o conjunto de CRAFT
+ * ITEMS existentes — a checagem de existência vale SÓ para ids 'custom':
+ * refs gen: vivem no manifest de assets e chaves de recurso são fixas no
+ * código, nenhum dos dois está no banco.
+ */
 export function validateCraftRecipeConfig(
   value: unknown,
   knownItemIds?: ReadonlySet<string>,
@@ -96,8 +161,9 @@ export function validateCraftRecipeConfig(
   const errors: string[] = [];
   if (!isRecord(value)) return { ok: false, errors: ['config: objeto esperado'] };
   const targetId = value.targetId;
-  if (typeof targetId !== 'string' || !CRAFT_TARGET_ID_RE.test(targetId)) {
-    errors.push('targetId: id de asset inválido');
+  const targetKind = classifyCraftEntityId(targetId);
+  if (targetKind === null) {
+    errors.push('targetId: id de item inválido (ref gen:, chave de recurso ou slug de craft item)');
   }
   const ingredients = value.ingredients;
   if (!Array.isArray(ingredients) || ingredients.length < 1 || ingredients.length > MAX_RECIPE_INGREDIENTS) {
@@ -111,12 +177,16 @@ export function validateCraftRecipeConfig(
       continue;
     }
     const itemId = entry.itemId;
-    if (typeof itemId !== 'string' || !CRAFT_ITEM_ID_RE.test(itemId)) {
-      errors.push(`ingredients[${i}].itemId: slug inválido`);
+    const kind = classifyCraftEntityId(itemId);
+    if (typeof itemId !== 'string' || kind === null) {
+      errors.push(`ingredients[${i}].itemId: id de item inválido`);
     } else {
+      if (itemId === targetId) {
+        errors.push(`ingredients[${i}].itemId: a receita não pode consumir o próprio item`);
+      }
       if (seen.has(itemId)) errors.push(`ingredients[${i}].itemId: repetido ("${itemId}")`);
       seen.add(itemId);
-      if (knownItemIds && !knownItemIds.has(itemId)) {
+      if (kind === 'custom' && knownItemIds && !knownItemIds.has(itemId)) {
         errors.push(`ingredients[${i}].itemId: item desconhecido ("${itemId}")`);
       }
     }
@@ -139,4 +209,46 @@ export function sameIngredientBag(a: CraftIngredient[], b: CraftIngredient[]): b
       .map((e) => `${e.itemId}:${e.quantity}`)
       .join('|');
   return key(a) === key(b);
+}
+
+// ------------------------------------------------- consulta de craftabilidade
+// Formato de inventário: Record<itemId, quantidade> — o mesmo dos stores do
+// cliente (coleta/ferramentas) e de qualquer snapshot vindo do servidor.
+
+export interface MissingIngredient {
+  itemId: string;
+  need: number;
+  have: number;
+}
+
+/** O que falta para craftar `recipe` com o inventário `counts` (O(ingredientes)). */
+export function missingIngredientsFor(
+  recipe: CraftRecipeConfig,
+  counts: Readonly<Record<string, number>>,
+): MissingIngredient[] {
+  const missing: MissingIngredient[] = [];
+  for (const ing of recipe.ingredients) {
+    const have = counts[ing.itemId] ?? 0;
+    if (have < ing.quantity) missing.push({ itemId: ing.itemId, need: ing.quantity, have });
+  }
+  return missing;
+}
+
+export function canCraft(
+  recipe: CraftRecipeConfig,
+  counts: Readonly<Record<string, number>>,
+): boolean {
+  return missingIngredientsFor(recipe, counts).length === 0;
+}
+
+/** Alvos craftáveis com o inventário atual, ordenados (UI estável). */
+export function craftableTargetIds(
+  recipes: Readonly<Record<string, CraftRecipeConfig>>,
+  counts: Readonly<Record<string, number>>,
+): string[] {
+  const out: string[] = [];
+  for (const recipe of Object.values(recipes)) {
+    if (canCraft(recipe, counts)) out.push(recipe.targetId);
+  }
+  return out.sort();
 }
