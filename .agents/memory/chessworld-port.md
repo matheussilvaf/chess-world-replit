@@ -230,3 +230,7 @@ Rotas Express custom do servidor devem ser registradas COM o prefixo `/api` (ex.
 `requireSupabaseAdmin` (auth/supabaseAuth) é o gate correto para rotas de escrita GLOBAIS de admin: allowlist ADMIN_EMAILS, fail-closed em produção, liberado só em development sem a var. Craft e collection já usam. **Pendente:** rigs/routes, rigs/weaponRoutes (×2 routers) e assets/assetCategoryRoutes ainda usam `requireSupabaseAuth` (qualquer logado escreve — buraco em produção). Rotas por-usuário (tournament, playerCharacter, inventory) usam `requireSupabaseAuth` corretamente.
 **Why:** review flagou o craft; endurecer os demais foi deixado fora de escopo do round de receitas.
 **How to apply:** ao tocar qualquer router admin desses, trocar o middleware junto (import + .use), espelhar no api-server e avisar o usuário para definir ADMIN_EMAILS antes de publicar.
+
+## Config de coleta — allowlist no PUT (armadilha)
+- O PUT do admin de coleta monta uma cópia NORMALIZADA campo a campo em collectionRoutes.ts (allowlist). Campo novo nas shapes (ex.: handPower) TEM de entrar também ali, senão o servidor valida mas DESCARTA em silêncio ao salvar.
+- currentSwingState (WorldScene) devolve rects VAZIOS nos frames de windup de armas com perfil autorado; lógica de "início do golpe" no runtime deve rodar ANTES do early-return por rects.length===0.

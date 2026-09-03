@@ -18,6 +18,7 @@ import {
   ANIMAL_SHEET,
   ANIMAL_DIRECTIONS,
   ANIMAL_WANDER,
+  ANIMAL_RESPAWN_PROTECT_MS,
   animalTextureKey,
   animalWalkTextureKey,
   animalDieTextureKey,
@@ -49,6 +50,8 @@ import {
   DEFAULT_RESPAWN_SECONDS,
   DEFAULT_RESOURCE_HP,
   DEFAULT_FLEE_RADIUS,
+  DEFAULT_HAND_POWER,
+  HAND_POWER_RANGE,
   RESOURCE_MIN_LEVEL_RANGE,
   defaultGatherToolFor,
   isGatherToolKind,
@@ -126,11 +129,13 @@ interface ResourceNode {
   broken: boolean;
   /** Quando renasce (scene.time.now em ms); definido ao quebrar. */
   respawnAtMs?: number;
+  /** Animal recém-renascido é intocável até aqui (anti abate duplo). */
+  protectedUntilMs?: number;
   /** Barrinha de HP (aparece ao golpear; some ao quebrar ou por inatividade). */
   hpBar?: Phaser.GameObjects.Graphics;
   /** Instante (scene.time.now) em que a barrinha some sem novos golpes. */
   hpBarUntilMs?: number;
-  /** Throttle da mensagem "Ferramenta muito fraca!" (uma por vez por nó). */
+  /** Throttle dos avisos flutuantes ("Ferramenta muito fraca!" etc.) — um por vez por nó. */
   weakMsgUntilMs?: number;
 }
 
@@ -215,6 +220,8 @@ export class CraftingMapRuntime {
   private playerSwingQuery: (() => PlayerSwingState | null) | null = null;
   /** Último golpe que já conectou — um golpe nunca acerta duas vezes. */
   private lastConsumedSwingId = 0;
+  /** Último golpe cujo INÍCIO já assustou os bichos — um susto por golpe. */
+  private lastScaredSwingId = 0;
 
   /** Injetada pelo WorldScene — o golpe do jogador vem do perfil de hitbox da arma. */
   setPlayerSwingQuery(fn: () => PlayerSwingState | null): void {
@@ -478,7 +485,10 @@ export class CraftingMapRuntime {
     // Golpe iniciado ANTES de (re)entrar no mapa não vale contra nós recém-
     // criados: consome qualquer golpe em andamento na abertura da sessão.
     const inFlight = this.playerSwingQuery?.();
-    if (inFlight) this.lastConsumedSwingId = inFlight.swingId;
+    if (inFlight) {
+      this.lastConsumedSwingId = inFlight.swingId;
+      this.lastScaredSwingId = inFlight.swingId;
+    }
     this.active = true;
     this.placeCollectionContent(tmjData);
     this.startTileAnimations(map);
@@ -710,8 +720,10 @@ export class CraftingMapRuntime {
   private nearestNodeHitBy(rects: Phaser.Geom.Rectangle[], x: number, y: number): ResourceNode | null {
     let best: ResourceNode | null = null;
     let bestDist = Infinity;
+    const now = this.scene.time.now;
     for (const node of this.nodes) {
       if (node.broken || !node.sprite.active) continue;
+      if ((node.protectedUntilMs ?? 0) > now) continue; // recém-renascido: golpe atravessa
       const hurt = this.nodeHurtboxRect(node);
       if (!rects.some((r) => Phaser.Geom.Rectangle.Overlaps(r, hurt))) continue;
       const d = Phaser.Math.Distance.Between(x, y, node.sprite.x, node.sprite.y);
@@ -747,11 +759,43 @@ export class CraftingMapRuntime {
   private pollPlayerSwing(): void {
     if (!this.nodes.length) return;
     const state = this.playerSwingQuery?.();
-    if (!state || state.swingId === this.lastConsumedSwingId || state.rects.length === 0) return;
+    if (!state) return;
+    // COMEÇAR um golpe já assusta vaca/ovelha por perto (uma vez por golpe) —
+    // inclusive nos frames de "windup" sem hitbox autorada: o bicho reage ao
+    // ataque em si, não só ao golpe que conecta.
+    if (state.swingId !== this.lastScaredSwingId) {
+      this.lastScaredSwingId = state.swingId;
+      this.scareNearbyAnimals(state.playerX, state.playerY);
+    }
+    if (state.rects.length === 0) return;
+    if (state.swingId === this.lastConsumedSwingId) return;
     const best = this.swingTargetFor(state);
     if (!best) return;
     this.lastConsumedSwingId = state.swingId;
     this.applyHit(best, state);
+  }
+
+  /** Fuga disparada pelo INÍCIO do golpe: vaca/ovelha num raio do jogador correm. */
+  private scareNearbyAnimals(px: number, py: number): void {
+    for (const ag of this.animals) {
+      if (!ag.sprite.active || ag.dead) continue;
+      if (Phaser.Math.Distance.Between(px, py, ag.sprite.x, ag.sprite.y) > ANIMAL_FLEE.triggerRadius) continue;
+      this.scareAnimal(ag);
+    }
+  }
+
+  /** Assusta vaca/ovelha (galinha nunca foge): âncora no 1º susto, renova o timer. */
+  private scareAnimal(ag: AnimalAgent): void {
+    if (ag.dead || ag.def.id === 'chicken') return;
+    const now = this.scene.time.now;
+    if ((ag.fleeUntilMs ?? 0) <= now) {
+      // 1º susto desta fuga: âncora do raio = onde o animal estava.
+      ag.fleeAnchorX = ag.sprite.x;
+      ag.fleeAnchorY = ag.sprite.y;
+      ag.fleeTangentSign = undefined;
+      ag.animLockUntilMs = 0; // reage virando na hora
+    }
+    ag.fleeUntilMs = now + ANIMAL_FLEE.durationMs; // cada susto renova a fuga
   }
 
   /** Itens por quebra/abate (config do admin; padrão 3 — drops de animal: 1). */
@@ -884,6 +928,32 @@ export class CraftingMapRuntime {
     return Phaser.Math.Clamp(Math.round(raw), RESOURCE_MIN_LEVEL_RANGE.min, RESOURCE_MIN_LEVEL_RANGE.max);
   }
 
+  /** Poder de coleta da MÃO (admin em /admin/mundo-coleta; padrão 1). Nível da mão é sempre 0. */
+  private handPower(): number {
+    const raw = this.worldConfig?.handPower ?? DEFAULT_HAND_POWER;
+    return Phaser.Math.Clamp(Math.round(raw), HAND_POWER_RANGE.min, HAND_POWER_RANGE.max);
+  }
+
+  /**
+   * Ferramenta aceita pelo recurso: a configurada no admin — e, para recursos
+   * "de MÃO", também a ferramenta da FAMÍLIA do tipo (pedra de mão→picareta,
+   * galho→machado, arbusto→facão): quem já está com a ferramenta certa na mão
+   * não precisa guardá-la para coletar a versão menor do recurso.
+   */
+  private toolAllowedFor(node: ResourceNode, used: GatherToolKind | null): boolean {
+    const required = this.requiredToolFor(node.key);
+    if (used === required) return true;
+    if (required === 'hand' && used !== null) {
+      const family: Partial<Record<ResourceNode['kind'], GatherToolKind>> = {
+        hand_stone: 'pickaxe',
+        branch: 'axe',
+        bush: 'machete',
+      };
+      return used === family[node.kind];
+    }
+    return false;
+  }
+
   /** Flash de tinta curto no nó (branco = golpe válido; vermelho = item errado). */
   private flashNode(spr: ResourceNode['sprite'], color: number): void {
     // Phaser 4: fill-tint é setTint + setTintMode (setTintFill não recebe cor).
@@ -897,14 +967,14 @@ export class CraftingMapRuntime {
     });
   }
 
-  /** "Ferramenta muito fraca!" flutuando sobre o nó (throttle por nó). */
-  private showWeakToolMessage(node: ResourceNode): void {
+  /** Aviso flutuante sobre o nó ("Ferramenta muito fraca!", "Utilize a sua arma principal!"…). */
+  private showNodeMessage(node: ResourceNode, message: string): void {
     const now = this.scene.time.now;
-    if ((node.weakMsgUntilMs ?? 0) > now) return;
+    if ((node.weakMsgUntilMs ?? 0) > now) return; // throttle: um aviso por vez por nó
     node.weakMsgUntilMs = now + 1200;
     const hurt = this.nodeHurtboxRect(node);
     const txt = this.scene.add
-      .text(node.sprite.x, hurt.y - 12, 'Ferramenta muito fraca!', {
+      .text(node.sprite.x, hurt.y - 12, message, {
         fontFamily: 'monospace',
         fontSize: '10px',
         color: '#fecaca',
@@ -927,49 +997,56 @@ export class CraftingMapRuntime {
   /**
    * Regras de um golpe/flecha que CONECTOU num nó:
    *  1. Qualquer acerto consome durabilidade da FERRAMENTA usada (item errado
-   *     e nível baixo também — golpe no vento não passa por aqui).
-   *  2. Animais: QUALQUER arma/ferramenta tira HP (sem pareamento nem nível);
-   *     golpe não-letal assusta (vaca/ovelha fogem); HP ≤ 0 → abate: animação
-   *     de morte, drops (carne/couro/lã/pena) e respawn imediato no spawn.
-   *  3. Item errado (inclusive arma comum/flecha): flash VERMELHO e nada mais —
-   *     sem dano, sem barrinha, sem som.
+   *     e nível baixo também — golpe no vento não passa por aqui). Exceção:
+   *     animal protegido pós-respawn — o golpe atravessa sem efeito algum.
+   *  2. Animais: SÓ a arma do personagem (toolKind null — espada/arco etc.) ou
+   *     a MÃO (poder do admin: handPower) tiram HP; sem exigência de nível.
+   *     Ferramenta de coleta NÃO abate: flash vermelho + "Utilize a sua arma
+   *     principal!" (a durabilidade desce mesmo assim). Golpe não-letal assusta
+   *     (vaca/ovelha fogem — o INÍCIO do golpe já assusta, via
+   *     scareNearbyAnimals); HP ≤ 0 → abate: animação de morte, drops
+   *     (carne/couro/lã/pena) e respawn imediato no spawn com janela de
+   *     proteção (anti abate duplo).
+   *  3. Item errado: flash VERMELHO e nada mais — sem dano, sem barrinha, sem
+   *     som. Recurso de MÃO também aceita a ferramenta da família
+   *     (toolAllowedFor): pedra de mão→picareta, galho→machado, arbusto→facão.
    *  4. Ferramenta certa com nível < mínimo: o HP desce normalmente mas TRAVA
    *     num piso (lockedHpFloorFor) — o nó nunca quebra; ao travar, aviso.
    *  5. Ferramenta certa com nível suficiente: fluxo normal (quebra em ≤ 0).
    */
   private applyHit(node: ResourceNode, hit: SwingHit): void {
     const spr = node.sprite;
+    // Animal recém-renascido: intocável (nem durabilidade consome).
+    if (node.kind === 'animal' && (node.protectedUntilMs ?? 0) > this.scene.time.now) return;
     // (1) Durabilidade: −1 por golpe computado num nó (só crafttools do inventário).
     if (hit.toolRef) useToolInventoryStore.getState().consumeDurability(hit.toolRef);
     if (node.kind === 'animal') {
-      // (2) Animais: qualquer arma/ferramenta tira HP (sem pareamento). O HP
-      // vem do admin (resourceHp['animal:<id>']); zerou → abate + drops.
-      this.flashNode(spr, 0xffffff);
       const ag = this.animals.find((a) => a.sprite === node.sprite);
       if (!ag || ag.dead) return;
+      // (2) Ferramenta de coleta não abate: aviso desde o 1º golpe (o bicho
+      // ainda se assusta — apanhar de picareta também espanta).
+      if (hit.toolKind !== null && hit.toolKind !== 'hand') {
+        this.flashNode(spr, 0xff4444);
+        this.showNodeMessage(node, 'Utilize a sua arma principal!');
+        this.scareAnimal(ag);
+        return;
+      }
+      this.flashNode(spr, 0xffffff);
+      // HP do admin (resourceHp['animal:<id>']); a mão bate com handPower.
       if (node.hp < 0) node.hp = this.maxHpFor(node.key);
-      node.hp -= Math.max(1, Math.round(hit.power));
+      const power = hit.toolKind === 'hand' ? this.handPower() : hit.power;
+      node.hp -= Math.max(1, Math.round(power));
       if (node.hp <= 0) {
         this.killAnimal(node, ag);
         return;
       }
       this.showNodeHpBar(node);
-      // Golpe não-letal assusta: vaca/ovelha fogem; galinha só toma o flash.
-      if (ag.def.id !== 'chicken') {
-        const now = this.scene.time.now;
-        if ((ag.fleeUntilMs ?? 0) <= now) {
-          // 1º golpe desta fuga: âncora do raio = onde o animal estava.
-          ag.fleeAnchorX = ag.sprite.x;
-          ag.fleeAnchorY = ag.sprite.y;
-          ag.fleeTangentSign = undefined;
-          ag.animLockUntilMs = 0; // reage virando na hora
-        }
-        ag.fleeUntilMs = now + ANIMAL_FLEE.durationMs; // cada golpe renova a fuga
-      }
+      this.scareAnimal(ag); // golpe não-letal assusta: vaca/ovelha fogem
       return;
     }
     // (3) Item errado: só o flash vermelho — recurso intacto, sem som/barrinha.
-    if (hit.toolKind !== this.requiredToolFor(node.key)) {
+    // (Recurso de MÃO aceita também a ferramenta da família — toolAllowedFor.)
+    if (!this.toolAllowedFor(node, hit.toolKind)) {
       this.flashNode(spr, 0xff4444);
       return;
     }
@@ -980,14 +1057,15 @@ export class CraftingMapRuntime {
     else if (node.kind === 'mineral' || node.kind === 'hand_stone') gatherAudio.play('pickaxe');
     // HP: lazy-init na 1ª pancada (worldConfig já foi carregada em prepare()).
     if (node.hp < 0) node.hp = this.maxHpFor(node.key);
-    const damage = Math.max(1, Math.round(hit.power));
+    // Mão: poder configurável no admin (handPower); ferramenta: poder do item.
+    const damage = Math.max(1, Math.round(hit.toolKind === 'hand' ? this.handPower() : hit.power));
     if (hit.toolLevel < this.minLevelFor(node.key)) {
       // (4) Ferramenta fraca: trava no piso (nunca sobe HP se já estava abaixo).
       const floorHp = Math.min(lockedHpFloorFor(this.maxHpFor(node.key)), node.hp);
       node.hp = Math.max(floorHp, node.hp - damage);
       this.showNodeHpBar(node);
       this.scene.tweens.add({ targets: spr, x: spr.x + 2, duration: 45, yoyo: true, repeat: 1 });
-      if (node.hp <= floorHp) this.showWeakToolMessage(node);
+      if (node.hp <= floorHp) this.showNodeMessage(node, 'Ferramenta muito fraca!');
       return;
     }
     // (5) Fluxo normal.
@@ -1131,6 +1209,7 @@ export class CraftingMapRuntime {
    * no lugar da morte e renasce o animal NA HORA no ponto de spawn original.
    */
   private killAnimal(node: ResourceNode, ag: AnimalAgent): void {
+    if (ag.dead) return; // já abatido — jamais duplicar a morte/drops
     node.broken = true; // sai da mira dos golpes; sem respawnAtMs (respawn imediato)
     ag.dead = true;
     ag.fleeUntilMs = undefined;
@@ -1181,9 +1260,14 @@ export class CraftingMapRuntime {
     node.hp = -1; // relê o HP do admin no próximo golpe
     node.broken = false;
     node.respawnAtMs = undefined;
+    // Janela intocável (anti abate duplo): o respawn é imediato e pertinho de
+    // onde o bicho morreu — sem isso, uma arma forte re-abatia no embalo.
+    node.protectedUntilMs = this.scene.time.now + ANIMAL_RESPAWN_PROTECT_MS;
     spr.play({ key: animalAnimKey(ag.def.id, 'eat', dir), startFrame: Math.floor(Math.random() * ANIMAL_SHEET.frames) });
     spr.setScale(0.7); // pop de nascimento, igual aos outros respawns
+    spr.setAlpha(0.45); // meio transparente enquanto está protegido
     this.scene.tweens.add({ targets: spr, scaleX: 1, scaleY: 1, duration: 180, ease: 'Back.easeOut' });
+    this.scene.tweens.add({ targets: spr, alpha: 1, duration: ANIMAL_RESPAWN_PROTECT_MS, ease: 'Linear' });
   }
 
   private updateDrops(deltaMs: number, playerX?: number, playerY?: number): void {

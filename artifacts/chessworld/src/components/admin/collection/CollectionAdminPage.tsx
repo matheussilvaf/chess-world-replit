@@ -8,9 +8,11 @@ import {
   DEFAULT_ANIMAL_DROP_COUNT,
   DEFAULT_DROP_COUNT,
   DEFAULT_FLEE_RADIUS,
+  DEFAULT_HAND_POWER,
   DEFAULT_RESOURCE_HP,
   DEFAULT_RESPAWN_SECONDS,
   GATHER_TOOL_LABELS,
+  HAND_POWER_RANGE,
   RESOURCE_HP_RANGE,
   RESOURCE_MIN_LEVEL_RANGE,
   FLEE_RADIUS_RANGE,
@@ -308,6 +310,8 @@ export function CollectionAdminPage() {
   const [resourceTool, setResourceTool] = useState<Record<string, GatherToolKind>>(
     Object.fromEntries(COLLECTIBLE_ITEM_KEYS.map((key) => [key, defaultGatherToolFor(key)])),
   );
+  /** Poder de coleta da MÃO (dano por golpe sem ferramenta; o nível da mão é fixo: 0). */
+  const [handPower, setHandPower] = useState<number>(DEFAULT_HAND_POWER);
   const [respawnSeconds, setRespawnSeconds] = useState<Record<string, number>>(
     Object.fromEntries(RESOURCE_KEYS.map((key) => [key, DEFAULT_RESPAWN_SECONDS])),
   );
@@ -419,6 +423,7 @@ export function CollectionAdminPage() {
             config.resourceTool?.[key] ?? defaultGatherToolFor(key),
           ]),
         ));
+        setHandPower(config.handPower ?? DEFAULT_HAND_POWER);
         setRespawnSeconds(Object.fromEntries(
           RESOURCE_KEYS.map((key) => [
             key,
@@ -534,6 +539,7 @@ export function CollectionAdminPage() {
       resourceTool: Object.fromEntries(
         COLLECTIBLE_ITEM_KEYS.map((key) => [key, resourceTool[key] ?? defaultGatherToolFor(key)]),
       ),
+      handPower,
       respawnSeconds: Object.fromEntries(
         RESOURCE_KEYS.map((key) => [key, respawnSeconds[key] ?? DEFAULT_RESPAWN_SECONDS]),
       ),
@@ -580,6 +586,7 @@ export function CollectionAdminPage() {
           response.config.resourceTool?.[key] ?? defaultGatherToolFor(key),
         ]),
       ));
+      setHandPower(response.config.handPower ?? DEFAULT_HAND_POWER);
       setRespawnSeconds(Object.fromEntries(
         RESOURCE_KEYS.map((key) => [
           key,
@@ -728,6 +735,42 @@ export function CollectionAdminPage() {
           <p className="mt-3 text-[11px] text-slate-500">
             Pedras de mão, arbustos, ervas, árvores e animais sempre preenchem todos os seus pontos e não são configuráveis aqui.
           </p>
+        </section>
+
+        <section className="mb-4 rounded-xl border border-slate-700/60 bg-slate-900/70 p-4">
+          <h2 className="text-sm font-semibold text-slate-100">Coleta com a mão</h2>
+          <p className="mb-3 mt-1 text-xs text-slate-500">
+            Dano por golpe SEM ferramenta — vale para recursos configurados como “Mão (sem ferramenta)”
+            e para abater animais. A mão é sempre nível 0: recursos com nível mínimo acima de 0 não saem na mão.
+          </p>
+          <label className="flex max-w-xs items-center gap-3 rounded-lg border border-slate-700/50 bg-slate-950/40 p-2">
+            <span className="min-w-0 flex-1">
+              <span className="mb-1 block text-xs text-slate-300">
+                Poder da mão ({HAND_POWER_RANGE.min}–{HAND_POWER_RANGE.max})
+              </span>
+              <input
+                type="number"
+                min={HAND_POWER_RANGE.min}
+                max={HAND_POWER_RANGE.max}
+                step={1}
+                disabled={busy || tableMissing}
+                value={handPower}
+                onChange={(event) => {
+                  const value = Number(event.target.value);
+                  if (Number.isInteger(value)) {
+                    setHandPower(Math.max(HAND_POWER_RANGE.min, Math.min(HAND_POWER_RANGE.max, value)));
+                  }
+                }}
+                className={inputClass}
+              />
+            </span>
+            <span
+              className="rounded-md border border-slate-700/60 bg-slate-950/70 px-2 py-1 text-[10px] font-mono text-slate-400"
+              title="O nível da mão é fixo — não sobe com nada"
+            >
+              Nível 0 (fixo)
+            </span>
+          </label>
         </section>
 
         <section className="rounded-xl border border-slate-700/60 bg-slate-900/70 p-4">

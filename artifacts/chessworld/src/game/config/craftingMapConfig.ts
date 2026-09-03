@@ -167,7 +167,15 @@ export const ANIMAL_WANDER = { radius: 72, eatMinMs: 2500, eatMaxMs: 7000 } as c
  * padrão = speedMultiplier × passeio. Raio e velocidade têm override por animal
  * no admin (fleeRadius/fleeSpeed da config de coleta; raio padrão nas shapes).
  */
-export const ANIMAL_FLEE = { durationMs: 5000, speedMultiplier: 2.2 } as const;
+/** triggerRadius: COMEÇAR um golpe a até este raio do bicho já dispara a fuga. */
+export const ANIMAL_FLEE = { durationMs: 5000, speedMultiplier: 2.2, triggerRadius: 160 } as const;
+
+/**
+ * Proteção pós-respawn do abate: por este intervalo o bicho recém-renascido
+ * não pode ser mirado nem atingido. Sem isso, o respawn imediato (perto de onde
+ * ele morreu) + uma arma forte = abate duplo sem querer, com drops duplicados.
+ */
+export const ANIMAL_RESPAWN_PROTECT_MS = 1500;
 
 /** Escala dos mini-drops que reusam a própria textura do recurso. */
 export const SELF_DROP_SCALE = { herb: 0.45, bush: 0.45, hand_stone: 0.6, branch: 0.45 } as const;

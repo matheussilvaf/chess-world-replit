@@ -74,6 +74,10 @@ export const DEFAULT_RESPAWN_SECONDS = 60;
 export const DEFAULT_RESOURCE_HP = 30;
 export const RESOURCE_HP_RANGE = { min: 1, max: 99999 } as const;
 
+/** Poder de coleta da MÃO (dano por golpe sem ferramenta). O nível da mão é fixo: 0. */
+export const DEFAULT_HAND_POWER = 1;
+export const HAND_POWER_RANGE = { min: 1, max: 100 } as const;
+
 // ------------------------------------------------- ferramenta certa + nível
 /** Ferramentas de coleta que um recurso pode exigir ('hand' = mão limpa). */
 export const GATHER_TOOL_KINDS = ['pickaxe', 'axe', 'machete', 'scissors', 'hand'] as const;
@@ -97,13 +101,15 @@ export const RESOURCE_MIN_LEVEL_RANGE = { min: 0, max: 6 } as const;
 
 /**
  * Ferramenta padrão por tipo de recurso, quando o admin ainda não escolheu:
- * árvore→machado, minério→picareta, arbusto→facão, erva/pedra de mão/galho→mão.
+ * árvore→machado, minério→picareta, erva/arbusto/pedra de mão/galho→mão.
+ * No gameplay, recursos "de mão" também aceitam a ferramenta da FAMÍLIA
+ * (pedra de mão→picareta, galho→machado, arbusto→facão).
  */
 export function defaultGatherToolFor(resourceKey: string): GatherToolKind {
   if (resourceKey.startsWith('tree:')) return 'axe';
   if (resourceKey.startsWith('mineral:')) return 'pickaxe';
   if (resourceKey.startsWith('herb:')) return 'hand';
-  if (resourceKey === 'bush') return 'machete';
+  if (resourceKey === 'bush') return 'hand';
   if (resourceKey === 'hand_stone') return 'hand';
   if (resourceKey === 'branch') return 'hand';
   // Animais: qualquer arma/ferramenta machuca (abate não usa pareamento).
@@ -163,6 +169,8 @@ export interface CollectionWorldConfig {
   resourceMinLevel?: Record<string, number>;
   /** resourceKey → ferramenta que extrai o recurso (ausente = padrão por tipo). */
   resourceTool?: Record<string, GatherToolKind>;
+  /** Poder de coleta da mão (dano por golpe sem ferramenta; padrão 1). Nível da mão é sempre 0. */
+  handPower?: number;
 }
 
 export interface ValidationResult {
@@ -309,6 +317,15 @@ export function validateCollectionWorldConfig(value: unknown): ValidationResult 
           errors.push(`resourceTool["${k}"]: ferramenta inválida (use ${GATHER_TOOL_KINDS.join(', ')})`);
         }
       }
+    }
+  }
+  if (value.handPower !== undefined) {
+    const hp = value.handPower;
+    if (
+      typeof hp !== 'number' || !Number.isInteger(hp) ||
+      hp < HAND_POWER_RANGE.min || hp > HAND_POWER_RANGE.max
+    ) {
+      errors.push(`handPower: inteiro entre ${HAND_POWER_RANGE.min} e ${HAND_POWER_RANGE.max}`);
     }
   }
   return { ok: errors.length === 0, errors };

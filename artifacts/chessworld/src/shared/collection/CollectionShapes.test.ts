@@ -44,7 +44,7 @@ describe('defaultGatherToolFor (pareamento padrão recurso→ferramenta)', () =>
   it('usa o TIPO do recurso (prefixo da chave)', () => {
     expect(defaultGatherToolFor('tree:oak')).toBe('axe');
     expect(defaultGatherToolFor('mineral:iron')).toBe('pickaxe');
-    expect(defaultGatherToolFor('bush')).toBe('machete');
+    expect(defaultGatherToolFor('bush')).toBe('hand');
     expect(defaultGatherToolFor('hand_stone')).toBe('hand');
     expect(defaultGatherToolFor('herb:mint')).toBe('hand');
     expect(defaultGatherToolFor('animal:cow')).toBe('hand');

@@ -94,6 +94,8 @@ collectionAdminRouter.put('/', async (req: Request, res: Response) => {
         }
       : {}),
     ...(body.resourceTool ? { resourceTool: { ...body.resourceTool } } : {}),
+    // Poder de coleta da MÃO (escalar; ausente = padrão do runtime).
+    ...(body.handPower !== undefined ? { handPower: Math.round(body.handPower) } : {}),
     ...(body.fleeRadius
       ? {
           fleeRadius: Object.fromEntries(
