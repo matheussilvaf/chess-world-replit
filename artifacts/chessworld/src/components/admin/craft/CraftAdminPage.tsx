@@ -66,6 +66,8 @@ import {
   type CraftSectionId,
 } from '../../../lib/craft/craftCatalog';
 import { RigApiError } from '../rig-editor/rigApi';
+import type { StationConfig } from '../../../shared/craft/StationShapes';
+import { stationsApi } from '../stations/stationsApi';
 import { craftApi } from './craftApi';
 import { CatalogThumb } from './CatalogThumb';
 import { ItemFormModal, type ItemFormMode, type ItemFormValues } from './ItemFormModal';
@@ -112,6 +114,31 @@ export function CraftAdminPage() {
   });
   const [modal, setModal] = useState<ItemFormMode | null>(null);
 
+  // Estações de criação (spec: /admin/stations): select de estação por item.
+  const [stationList, setStationList] = useState<StationConfig[]>([]);
+  const [stationMembers, setStationMembers] = useState<Record<string, string>>({});
+  const [stationsReady, setStationsReady] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    stationsApi
+      .list()
+      .then((res) => {
+        if (cancelled) return;
+        setStationList(res.stations ?? []);
+        setStationMembers(res.members ?? {});
+        setStationsReady(!res.tableMissing);
+      })
+      .catch(() => {
+        // Tabelas/rota ausentes não podem quebrar o painel de receitas:
+        // os selects ficam desabilitados com dica no title.
+        if (!cancelled) setStationsReady(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   const applyApiError = useCallback((e: unknown) => {
     if (e instanceof RigApiError) {
       const details = e.details && e.details.length > 0 ? ` — ${e.details.join(', ')}` : '';
@@ -124,6 +151,45 @@ export function CraftAdminPage() {
     }
     setError(e instanceof Error ? e.message : String(e));
   }, []);
+
+  // Trocas de estação são serializadas POR ITEM (fila + sequência): mudanças
+  // rápidas não chegam fora de ordem no servidor, e um erro só reverte AQUELE
+  // item — e só se nenhuma troca mais nova tiver sido feita nele.
+  const memberSeq = useRef<Record<string, number>>({});
+  const memberChain = useRef<Record<string, Promise<void>>>({});
+
+  const handleStationChange = useCallback(
+    (itemId: string, stationId: string | null) => {
+      const seq = (memberSeq.current[itemId] ?? 0) + 1;
+      memberSeq.current[itemId] = seq;
+      let prevValue: string | undefined;
+      setStationMembers((m) => {
+        prevValue = m[itemId];
+        const next = { ...m };
+        if (stationId) next[itemId] = stationId;
+        else delete next[itemId];
+        return next;
+      });
+      const run = async () => {
+        if (memberSeq.current[itemId] !== seq) return; // já superado
+        try {
+          await stationsApi.setMember(itemId, stationId);
+        } catch (e) {
+          if (memberSeq.current[itemId] === seq) {
+            setStationMembers((m) => {
+              const next = { ...m };
+              if (prevValue !== undefined) next[itemId] = prevValue;
+              else delete next[itemId];
+              return next;
+            });
+            applyApiError(e);
+          }
+        }
+      };
+      memberChain.current[itemId] = (memberChain.current[itemId] ?? Promise.resolve()).then(run);
+    },
+    [applyApiError],
+  );
 
   const loadAll = useCallback(async () => {
     setBusy(true);
@@ -638,6 +704,24 @@ export function CraftAdminPage() {
                                 )}
                                 {hasRecipe && <CheckCircle2 className="w-4 h-4 text-cyan-400 shrink-0" />}
                               </button>
+                              <select
+                                value={stationMembers[entry.id] ?? ''}
+                                disabled={!stationsReady}
+                                title={
+                                  stationsReady
+                                    ? 'Estação de criação onde este item aparece'
+                                    : 'Crie as tabelas de estações (painel Stations Controller) para vincular'
+                                }
+                                onChange={(e) => void handleStationChange(entry.id, e.target.value || null)}
+                                className="shrink-0 mr-1.5 max-w-[110px] rounded-md border border-slate-700/60 bg-slate-900 px-1.5 py-1 text-[10px] text-slate-300 focus:outline-none focus:border-cyan-500/60 disabled:opacity-40"
+                              >
+                                <option value="">— sem estação —</option>
+                                {stationList.map((s) => (
+                                  <option key={s.stationId} value={s.stationId}>
+                                    {s.name}
+                                  </option>
+                                ))}
+                              </select>
                               {customItem && (
                                 <span className="flex items-center gap-0.5 pr-1.5 shrink-0">
                                   <button

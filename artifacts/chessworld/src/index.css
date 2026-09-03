@@ -2,6 +2,15 @@
 @tailwind components;
 @tailwind utilities;
 
+/* Scroll sem barra visível (linhas de itens das estações etc.) */
+.no-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+
 @layer components {
   .card {
     @apply bg-slate-900/80 border border-slate-700/50 rounded-xl overflow-hidden;

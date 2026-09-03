@@ -53,10 +53,21 @@ function FrameCrop({
   );
 }
 
-export function CatalogThumb({ thumb, size = 44 }: { thumb: CraftThumb; size?: number }) {
+export function CatalogThumb({
+  thumb,
+  size = 44,
+  bare = false,
+}: {
+  thumb: CraftThumb;
+  size?: number;
+  /** Sem caixa própria (fundo/borda) — para células que já têm fundo. */
+  bare?: boolean;
+}) {
   return (
     <div
-      className="relative overflow-hidden rounded-md bg-slate-800/60 border border-slate-700/50 shrink-0 flex items-center justify-center"
+      className={`relative overflow-hidden shrink-0 flex items-center justify-center ${
+        bare ? '' : 'rounded-md bg-slate-800/60 border border-slate-700/50'
+      }`}
       style={{ width: size, height: size }}
     >
       {thumb.kind === 'sheet96' && (

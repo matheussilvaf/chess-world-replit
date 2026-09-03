@@ -22,6 +22,7 @@ import {
   craftRecipesAdminRouter,
   publicCraftDataHandler,
 } from "./craft/craftRoutes.js";
+import { publicStationsDataHandler, stationsAdminRouter } from "./craft/stationRoutes.js";
 import {
   collectionAdminRouter,
   publicCollectionConfigHandler,
@@ -175,6 +176,11 @@ const config: ConfigOptions = {
     app.get("/api/craft-data", publicCraftDataHandler);
     app.use("/api/admin/craft-items", craftItemsAdminRouter);
     app.use("/api/admin/craft-recipes", craftRecipesAdminRouter);
+
+    // Estações de criação (spec: /admin/stations): abas + layout por estação
+    // e vínculo item→estação; GET público cacheado (painel de estação do jogo).
+    app.get("/api/craft-stations-data", publicStationsDataHandler);
+    app.use("/api/admin/craft-stations", stationsAdminRouter);
 
     // Mundo de Coleta: config única (quantidades de minérios + hurtboxes).
     // GET público cacheado — o runtime do mapa lê ao entrar no mundo.

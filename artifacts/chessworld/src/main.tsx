@@ -33,6 +33,11 @@ const CollectionAdminPage = lazy(() =>
     default: m.CollectionAdminPage,
   })),
 );
+const StationsControllerPage = lazy(() =>
+  import('./components/admin/stations/StationsControllerPage.tsx').then((m) => ({
+    default: m.StationsControllerPage,
+  })),
+);
 const AssetsControllerPage = lazy(() =>
   import('./components/admin/assets/AssetsControllerPage.tsx').then((m) => ({
     default: m.AssetsControllerPage,
@@ -54,6 +59,7 @@ createRoot(document.getElementById('root')!).render(
         <Route path="/admin" element={<AdminPage />} />
         <Route path="/admin/rigs" element={<RigControllerPage />} />
         <Route path="/admin/craft" element={<CraftAdminPage />} />
+        <Route path="/admin/stations" element={<StationsControllerPage />} />
         <Route path="/admin/mundo-coleta" element={<CollectionAdminPage />} />
         <Route path="/admin/assets-controller" element={<AssetsControllerPage />} />
         {/* Old editor URL — kept as a permanent redirect (spec §3) */}
