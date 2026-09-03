@@ -13,3 +13,6 @@ description: gitPush sem provider empurra pro backup interno do Replit, não pro
 ```javascript
 await gitPush({ provider: "github" });
 ```
+
+## Quando `gitPush` não existe no sandbox
+Sem a conexão GitHub anexada ao ambiente o callback nem aparece, e `git push` HTTPS falha (sem token). Caminho que funcionou (set/2026): propor a conexão GitHub (ProposeIntegration) e, com ela anexada, replicar os commits pela API Git Data via `listConnections('github')[0].proxyFetch` dentro de `"use impure"`: blobs (base64) → tree com `base_tree` (deleções com `sha: null`) → commit com autor/data originais → PATCH `git/refs/heads/main`. Conferir que o sha da tree remota == `git rev-parse <commit>^{tree}` (garante conteúdo idêntico). Os SHAs dos commits mudam, então depois `git fetch origin main && git reset --hard origin/main` (working tree limpa; verificar tree igual antes).
