@@ -1020,6 +1020,10 @@ export class CraftingMapRuntime {
     if ((node.weakMsgUntilMs ?? 0) > now) return; // throttle: um aviso por vez por nó
     node.weakMsgUntilMs = now + 1200;
     const hurt = this.nodeHurtboxRect(node);
+    // Contra-escala 1/zoom: o aviso mantém o MESMO tamanho na tela em qualquer
+    // zoom (como os name tags DOM) — sem isso, a 0.5x o texto de 10px virava
+    // ~5px ilegíveis.
+    const camZoom = this.scene.cameras.main.zoom || 1;
     const txt = this.scene.add
       .text(node.sprite.x, hurt.y - 12, message, {
         fontFamily: 'monospace',
@@ -1030,10 +1034,11 @@ export class CraftingMapRuntime {
       })
       .setOrigin(0.5, 1)
       .setDepth(this.depthForY(node.sprite.y) + 3)
-      .setResolution(2);
+      .setResolution(Math.max(2, Math.ceil(window.devicePixelRatio || 1)))
+      .setScale(1 / camZoom);
     this.scene.tweens.add({
       targets: txt,
-      y: txt.y - 14,
+      y: txt.y - 14 / camZoom,
       alpha: 0,
       duration: 1100,
       ease: 'Quad.easeOut',

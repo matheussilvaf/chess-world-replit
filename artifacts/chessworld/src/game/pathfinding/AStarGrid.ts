@@ -120,6 +120,14 @@ export default class AStarGrid {
   private originY: number = 0;
   /** Flat boolean array: true = blocked. Indexed as [y * gridWidth + x] */
   private blocked: Uint8Array = new Uint8Array(0);
+  // Buffers do A* reutilizados entre chamadas — alocar ~1,2MB (5 arrays de
+  // 96k células) a cada findPath gerava rajadas de GC (engasgos) durante o
+  // hold-to-steer, que repete o pathfinding a cada 150ms.
+  private gScore: Float32Array = new Float32Array(0);
+  private fScore: Float32Array = new Float32Array(0);
+  private parentXArr: Int16Array = new Int16Array(0);
+  private parentYArr: Int16Array = new Int16Array(0);
+  private closedArr: Uint8Array = new Uint8Array(0);
 
   constructor(cellSize: number = 16) {
     this.cellSize = cellSize;
@@ -143,6 +151,11 @@ export default class AStarGrid {
     this.gridHeight = Math.ceil(mapHeight / this.cellSize);
     const totalCells = this.gridWidth * this.gridHeight;
     this.blocked = new Uint8Array(totalCells);
+    this.gScore = new Float32Array(totalCells);
+    this.fScore = new Float32Array(totalCells);
+    this.parentXArr = new Int16Array(totalCells);
+    this.parentYArr = new Int16Array(totalCells);
+    this.closedArr = new Uint8Array(totalCells);
 
     const inflatePixels = inflate;
 
@@ -219,15 +232,24 @@ export default class AStarGrid {
     }
 
     // If end is blocked, find nearest unblocked cell
+    let endRedirected = false;
     if (this.isBlocked(endGX, endGY)) {
       const nearest = this.findNearestUnblocked(endGX, endGY);
       if (!nearest) return [];
       endGX = nearest.x;
       endGY = nearest.y;
+      endRedirected = true;
     }
 
     // Trivial case - same cell
     if (startGX === endGX && startGY === endGY) {
+      return [{ x: startX, y: startY }, { x: endX, y: endY }];
+    }
+
+    // Linha de visada direta (caso comum em campo aberto — hold-to-steer):
+    // dispensa o A* e o reset dos buffers. Só quando o destino NÃO foi
+    // realocado (senão devolveríamos um ponto dentro do obstáculo original).
+    if (!endRedirected && this.hasLineOfSight({ x: startGX, y: startGY }, { x: endGX, y: endGY })) {
       return [{ x: startX, y: startY }, { x: endX, y: endY }];
     }
 
@@ -313,13 +335,18 @@ export default class AStarGrid {
     ex: number,
     ey: number
   ): Point[] {
-    // Use flat arrays for node data to avoid object allocation for every cell
-    const totalCells = this.gridWidth * this.gridHeight;
-    const gScore = new Float32Array(totalCells).fill(Infinity);
-    const fScore = new Float32Array(totalCells).fill(Infinity);
-    const parentX = new Int16Array(totalCells).fill(-1);
-    const parentY = new Int16Array(totalCells).fill(-1);
-    const closed = new Uint8Array(totalCells);
+    // Buffers pré-alocados no buildGrid, apenas resetados aqui (fill é um
+    // memset barato; alocar+coletar 1,2MB por chamada não é).
+    const gScore = this.gScore;
+    gScore.fill(Infinity);
+    const fScore = this.fScore;
+    fScore.fill(Infinity);
+    const parentX = this.parentXArr;
+    parentX.fill(-1);
+    const parentY = this.parentYArr;
+    parentY.fill(-1);
+    const closed = this.closedArr;
+    closed.fill(0);
 
     // Lightweight node for heap
     const heap = new BinaryHeap();

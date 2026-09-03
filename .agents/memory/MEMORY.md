@@ -1,4 +1,4 @@
-- [ChessWorld MMO port](chessworld-port.md) — Colyseus/Supabase: stale deploys, espelho server↔api-server, PostgREST traps, combate, admin armas/craft/assets, perf client (zoom snap, rect cache, culling).
+- [ChessWorld MMO port](chessworld-port.md) — Colyseus/Supabase: stale deploys, espelho server↔api-server, PostgREST traps, combate, admin armas/craft/assets, perf client (zoom/filtro, GC do A*, interp remotos, hold).
 - [gitPush provider](gitpush-provider.md) — sempre usar `gitPush({ provider: "github" })`, sem o parâmetro vai pro backup interno.
 - [Same-file edit batching](edit-batching.md) — many Edit calls to one file in one batch can silently drop some; batch small, sed for repeats, grep/tsc-verify after.
 - [pnpm per-package installs](pnpm-installs.md) — instalar dependência de um app: `pnpm --filter @workspace/<pkg> add`; a ferramenta padrão falha com ERR_PNPM_ADDING_TO_ROOT.

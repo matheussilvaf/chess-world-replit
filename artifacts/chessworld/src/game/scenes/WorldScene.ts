@@ -105,6 +105,8 @@ interface RemotePlayer {
   interpolator: RemotePlayerInterpolator;
   direction: Direction8;
   isMoving: boolean;
+  /** Frames consecutivos sem deslocamento visível (histerese walk/idle). */
+  stillFrames: number;
   sessionId: string;
   playerId: string;
   seated: boolean;
@@ -602,12 +604,19 @@ export class WorldScene extends Phaser.Scene {
       }
     }
 
-    // Snap remote players to integer positions too
+    // Remotos: posição interpolada SEM floor em world-space — o floor aqui
+    // quantizava o passo em pixels de MUNDO (a zoom 3x cada passo virava um
+    // salto de 3px na tela). roundPixels já arredonda no espaço da tela ao
+    // desenhar, que é a granularidade certa.
+    const frameDelta = this.game.loop.delta;
     this.otherPlayers.forEach((remote) => {
       if (remote.seated) return;
-      const pos = remote.interpolator.getPosition();
-      remote.container.x = Math.floor(pos.x);
-      remote.container.y = Math.floor(pos.y);
+      const pos = remote.interpolator.getPosition(frameDelta);
+      const moved =
+        Math.abs(pos.x - remote.container.x) + Math.abs(pos.y - remote.container.y) > 0.02;
+      remote.stillFrames = moved ? 0 : Math.min(remote.stillFrames + 1, 999);
+      remote.container.x = pos.x;
+      remote.container.y = pos.y;
     });
 
     // Emit HTML name-tag positions for the React overlay (PlayerNameTags).
@@ -665,6 +674,40 @@ export class WorldScene extends Phaser.Scene {
     this.canvasRectScaleX = canvasEl.width > 0 ? r.width / canvasEl.width : 1;
     this.canvasRectScaleY = canvasEl.height > 0 ? r.height / canvasEl.height : 1;
     this.canvasRectFrame = this.game.loop.frame;
+  }
+
+  /** true = texturas em LINEAR (zoom out): ver applyWorldTextureFilter. */
+  private texFilterLinear = false;
+  /** Nº de texturas na última aplicação (detecta texturas carregadas depois). */
+  private texFilterTexCount = -1;
+
+  /**
+   * Zoom out (< 0.75): NEAREST em minificação vira decimação — metade das
+   * linhas/colunas dos sprites some e as vacas/árvores parecem "ferver".
+   * LINEAR tira a média dos texels (a 0.5x é exatamente um box filter 2x2).
+   * Ao voltar para zoom >= 1, restaura NEAREST (visual pixel art intacto).
+   */
+  private applyWorldTextureFilter(zoom: number) {
+    const wantLinear = zoom < 0.75;
+    // Conta as texturas: mapas/aparências carregados DEPOIS da troca de filtro
+    // (ex.: entrar no mundo de coleta já em zoom out) chegam com NEAREST
+    // explícito — a mudança na contagem força reaplicar o modo atual a tudo.
+    let texCount = 0;
+    for (const _k in this.textures.list) {
+      if (_k) texCount++;
+    }
+    if (wantLinear === this.texFilterLinear && texCount === this.texFilterTexCount) return;
+    this.texFilterLinear = wantLinear;
+    this.texFilterTexCount = texCount;
+    const mode = wantLinear
+      ? Phaser.Textures.FilterMode.LINEAR
+      : Phaser.Textures.FilterMode.NEAREST;
+    const list = this.textures.list as Record<string, Phaser.Textures.Texture>;
+    for (const key in list) {
+      if (key.startsWith('__')) continue; // texturas internas do Phaser
+      const tex = list[key];
+      if (tex && typeof tex.setFilter === 'function') tex.setFilter(mode);
+    }
   }
 
   private drawDebug() {
@@ -1227,6 +1270,15 @@ export class WorldScene extends Phaser.Scene {
     if (last && this.target && Math.hypot(wp.x - last.x, wp.y - last.y) <= HOLD_MOVE_MIN_DELTA_PX) {
       return; // pointer basically didn't move — keep the current path
     }
+    // Zona morta: dedo praticamente em cima do personagem — parar em vez de
+    // navegar "até si mesmo" (gerava flicker anda/para + spam de rede).
+    const holdDx = wp.x - (this.playerBody.position.x - this.playerFeetOffsetX);
+    const holdDy = wp.y - (this.playerBody.position.y - this.playerFeetOffset);
+    if (Math.hypot(holdDx, holdDy) < 20) {
+      if (this.target) this.stopMovement();
+      this.lastHoldTarget = { x: wp.x, y: wp.y };
+      return;
+    }
     this.lastHoldTarget = { x: wp.x, y: wp.y };
     this.navigateTo(wp.x, wp.y, { keepPathOnFail: true });
   }
@@ -1358,6 +1410,7 @@ export class WorldScene extends Phaser.Scene {
     } else if (currentZoom !== this.targetZoom) {
       this.cameras.main.setZoom(this.targetZoom);
     }
+    this.applyWorldTextureFilter(this.cameras.main.zoom);
 
     // Smooth rotation interpolation (for black player 180° flip)
     const currentRot = this.currentCameraRotation;
@@ -1387,7 +1440,10 @@ export class WorldScene extends Phaser.Scene {
       if (remote.hurtUntil > 0) return; // hurt animation owns the sprite
       const walk = movementOrFallback(remote.def, 'walk');
       if (!walk) return;
-      if (remote.isMoving) {
+      // Anda enquanto o flag do servidor OU o deslocamento interpolado indicar
+      // movimento (histerese: sem isso a animação alternava walk/idle nos
+      // degraus de patch e o remoto parecia "gaguejar").
+      if (remote.isMoving || remote.stillFrames < 8) {
         remote.sprite.anims.play(animKeyFor(remote.def.id, walk.movement, this.dirForDef(remote.def, remote.direction)), true);
       } else {
         this.remoteIdle(remote);
@@ -1482,9 +1538,12 @@ export class WorldScene extends Phaser.Scene {
     const tdist = Math.sqrt(tdx * tdx + tdy * tdy);
     if (tdist < 0.1) return;
 
-    // Smoothly decelerate when approaching the final destination
+    // Smoothly decelerate when approaching the final destination.
+    // NÃO durante hold-to-steer: com o dedo perto do personagem a zona de
+    // desaceleração deixava ele lento e, ao virar o polegar para longe, a
+    // volta instantânea ao speed cheio parecia uma "arrancada".
     let speed = this.playerSpeed;
-    if (isLastWaypoint) {
+    if (isLastWaypoint && !this.holdActive) {
       const decelZone = this.playerSpeed * 6;
       if (tdist < decelZone) {
         speed = Math.max(0.4, this.playerSpeed * (tdist / decelZone));
@@ -1776,6 +1835,7 @@ export class WorldScene extends Phaser.Scene {
       interpolator,
       direction,
       isMoving: p.isMoving,
+      stillFrames: 999,
       sessionId,
       playerId: p.id,
       seated: false,

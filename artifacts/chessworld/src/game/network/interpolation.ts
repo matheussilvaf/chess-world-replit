@@ -6,8 +6,18 @@ interface Snapshot {
   timestamp: number;
 }
 
-const INTERPOLATION_DELAY_MS = 70;
-const MAX_BUFFER_SIZE = 10;
+// Atraso de renderização: absorve o jitter de chegada dos patches (30 Hz
+// nominais, mas o transporte agrupa/atrasa pacotes). 120ms ≈ 3-4 intervalos
+// de envio — com 70ms qualquer soluço de rede estourava o buffer e o sprite
+// corria atrás da posição (efeito "borracha"/trancos).
+const INTERPOLATION_DELAY_MS = 120;
+const MAX_BUFFER_SIZE = 12;
+// Constante de tempo (ms) do catch-up exponencial quando não há par de
+// snapshots para interpolar — em TEMPO, não por frame (senão a 30 FPS o
+// alcance fica 2x mais lento que a 60 FPS).
+const CATCHUP_TAU_MS = 90;
+// Acima disso não suaviza: é spawn/teleporte real, não jitter.
+const SNAP_DISTANCE_PX = 160;
 
 export class RemotePlayerInterpolator {
   private buffer: Snapshot[] = [];
@@ -26,23 +36,20 @@ export class RemotePlayerInterpolator {
     }
   }
 
-  getPosition(): { x: number; y: number } {
-    if (this.buffer.length < 2) {
-      if (this.buffer.length === 1) {
-        const target = this.buffer[0];
-        this.currentX = Phaser.Math.Linear(this.currentX, target.x, 0.3);
-        this.currentY = Phaser.Math.Linear(this.currentY, target.y, 0.3);
-      }
-      return { x: this.currentX, y: this.currentY };
-    }
+  /**
+   * Posição para o frame atual. `deltaMs` = duração do último frame,
+   * usado para o catch-up ser estável em qualquer FPS.
+   */
+  getPosition(deltaMs: number): { x: number; y: number } {
+    const n = this.buffer.length;
+    if (n === 0) return { x: this.currentX, y: this.currentY };
 
     const renderTime = Date.now() - INTERPOLATION_DELAY_MS;
 
-    // Find two snapshots to interpolate between
+    // Par de snapshots que envolve o renderTime
     let prev: Snapshot | null = null;
     let next: Snapshot | null = null;
-
-    for (let i = 0; i < this.buffer.length - 1; i++) {
+    for (let i = 0; i < n - 1; i++) {
       if (this.buffer[i].timestamp <= renderTime && this.buffer[i + 1].timestamp >= renderTime) {
         prev = this.buffer[i];
         next = this.buffer[i + 1];
@@ -51,20 +58,27 @@ export class RemotePlayerInterpolator {
     }
 
     if (prev && next) {
-      const elapsed = renderTime - prev.timestamp;
       const duration = next.timestamp - prev.timestamp;
-      const t = duration > 0 ? Math.min(elapsed / duration, 1) : 1;
+      const t = duration > 0 ? Math.min((renderTime - prev.timestamp) / duration, 1) : 1;
       this.currentX = Phaser.Math.Linear(prev.x, next.x, t);
       this.currentY = Phaser.Math.Linear(prev.y, next.y, t);
     } else {
-      // Extrapolate towards latest — catch up fast enough that a burst of
-      // missed patches doesn't leave the sprite visibly dragging behind.
-      const latest = this.buffer[this.buffer.length - 1];
-      this.currentX = Phaser.Math.Linear(this.currentX, latest.x, 0.3);
-      this.currentY = Phaser.Math.Linear(this.currentY, latest.y, 0.3);
+      // Sem par (rajada perdida, jogador parado, buffer recém-criado):
+      // aproxima do último snapshot com meia-vida constante em tempo.
+      const latest = this.buffer[n - 1];
+      const dx = latest.x - this.currentX;
+      const dy = latest.y - this.currentY;
+      if (Math.abs(dx) + Math.abs(dy) > SNAP_DISTANCE_PX) {
+        this.currentX = latest.x;
+        this.currentY = latest.y;
+      } else {
+        const alpha = 1 - Math.exp(-deltaMs / CATCHUP_TAU_MS);
+        this.currentX += dx * alpha;
+        this.currentY += dy * alpha;
+      }
     }
 
-    // Clean old snapshots
+    // Descarta snapshots já consumidos (mantém 2 para o próximo bracket)
     while (this.buffer.length > 2 && this.buffer[1].timestamp < renderTime) {
       this.buffer.shift();
     }
