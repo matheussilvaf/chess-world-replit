@@ -222,6 +222,12 @@ export class CraftingMapRuntime {
   private lastConsumedSwingId = 0;
   /** Último golpe cujo INÍCIO já assustou os bichos — um susto por golpe. */
   private lastScaredSwingId = 0;
+  /** Acumulador do check de respawn — varrer ~450 nós a 60fps é desperdício. */
+  private respawnAccMs = 0;
+  /** Nós com barrinha de HP ativa agora (evita varrer todos os nós por frame). */
+  private nodesWithBar = new Set<ResourceNode>();
+  /** Contador de frames p/ escalonar a IA dos animais fora da tela. */
+  private frameTick = 0;
 
   /** Injetada pelo WorldScene — o golpe do jogador vem do perfil de hitbox da arma. */
   setPlayerSwingQuery(fn: () => PlayerSwingState | null): void {
@@ -501,6 +507,7 @@ export class CraftingMapRuntime {
     this.animals = [];
     for (const n of this.nodes) n.hpBar?.destroy(); // barrinhas são Graphics à parte
     this.nodes = [];
+    this.nodesWithBar.clear();
     for (const d of this.drops) d.sprite.destroy();
     this.drops = [];
     if (this.animEvent) {
@@ -520,12 +527,37 @@ export class CraftingMapRuntime {
     if (!this.active) return;
     this.pollPlayerSwing();
     this.updateDrops(deltaMs, playerX, playerY);
-    this.updateRespawns();
+    // Respawn tem precisão de segundos — checar 4x/s já sobra (era 60x/s).
+    this.respawnAccMs += deltaMs;
+    if (this.respawnAccMs >= 250) {
+      this.respawnAccMs = 0;
+      this.updateRespawns();
+    }
     this.updateNodeHpBars();
     const now = this.scene.time.now;
+    this.frameTick = (this.frameTick + 1) & 0xffff;
+    // Culling leve de IA: bicho fora da tela (folga de 160px) "pensa" a cada
+    // 4 frames com delta 4x — mesmo ritmo de passeio, ~1/4 do custo. Fugindo
+    // nunca é pulado (reage ao jogador em tempo real).
+    const view = this.scene.cameras.main.worldView;
+    const viewL = view.x - 160;
+    const viewR = view.right + 160;
+    const viewT = view.y - 160;
+    const viewB = view.bottom + 160;
+    let slot = 0;
     for (const ag of this.animals) {
+      const mySlot = slot++;
       if (!ag.sprite.active) continue;
       if (ag.dead) continue; // abatido: parado até a animação de morte acabar
+      let effDelta = deltaMs;
+      if (ag.fleeUntilMs === undefined) {
+        const sx = ag.sprite.x;
+        const sy = ag.sprite.y;
+        if (sx < viewL || sx > viewR || sy < viewT || sy > viewB) {
+          if (((this.frameTick + mySlot) & 3) !== 0) continue;
+          effDelta = deltaMs * 4; // compensa os 3 frames pulados
+        }
+      }
       if (ag.fleeUntilMs !== undefined) {
         if (now < ag.fleeUntilMs) {
           this.updateFlee(ag, deltaMs, playerX, playerY);
@@ -539,7 +571,7 @@ export class CraftingMapRuntime {
         continue;
       }
       if (ag.state === 'eat') {
-        ag.timerMs -= deltaMs;
+        ag.timerMs -= effDelta;
         if (ag.timerMs > 0) continue;
         // Destino perto de "casa" que não caia numa colisão do mapa.
         let found = false;
@@ -566,7 +598,7 @@ export class CraftingMapRuntime {
         const dx = ag.targetX - ag.sprite.x;
         const dy = ag.targetY - ag.sprite.y;
         const dist = Math.hypot(dx, dy);
-        const step = (ag.def.speed * deltaMs) / 1000;
+        const step = (ag.def.speed * effDelta) / 1000;
         const arrived = dist <= step || dist === 0;
         const moved = arrived
           ? this.tryMove(ag.sprite, ag.targetX, ag.targetY)
@@ -691,8 +723,14 @@ export class CraftingMapRuntime {
   // golpes em recursos (HP do admin − poder do item; HP ≤ 0 → quebra + drops)
   // ------------------------------------------------------------------
 
-  /** Hurtbox do admin (px do frame fonte, ancorada no pé do sprite) → retângulo no mundo. */
-  private nodeHurtboxRect(node: ResourceNode): Phaser.Geom.Rectangle {
+  /** Retângulos de trabalho — o teste de golpe visita ~450 nós por frame
+   *  durante um golpe; alocar um Rectangle novo por nó era lixo para o GC. */
+  private readonly hitScratchRect = new Phaser.Geom.Rectangle();
+  private readonly barScratchRect = new Phaser.Geom.Rectangle();
+
+  /** Hurtbox do admin (px do frame fonte, ancorada no pé do sprite) → retângulo no mundo.
+   *  Com `out`, reutiliza o retângulo dado (o valor só vale até a próxima chamada). */
+  private nodeHurtboxRect(node: ResourceNode, out?: Phaser.Geom.Rectangle): Phaser.Geom.Rectangle {
     const spr = node.sprite;
     const hb: ResourceHurtbox | undefined = this.worldConfig?.hurtboxes?.[node.key];
     const frameW = spr.frame?.realWidth ?? spr.width;
@@ -703,7 +741,9 @@ export class CraftingMapRuntime {
     const h = (hb?.height ?? frameH) * sy;
     const cx = spr.x + (hb?.offsetX ?? 0) * sx;
     const bottom = spr.y - (hb?.offsetY ?? 0) * sy;
-    return new Phaser.Geom.Rectangle(cx - w / 2, bottom - h, w, h);
+    const rect = out ?? new Phaser.Geom.Rectangle();
+    rect.setTo(cx - w / 2, bottom - h, w, h);
+    return rect;
   }
 
   /**
@@ -724,7 +764,7 @@ export class CraftingMapRuntime {
     for (const node of this.nodes) {
       if (node.broken || !node.sprite.active) continue;
       if ((node.protectedUntilMs ?? 0) > now) continue; // recém-renascido: golpe atravessa
-      const hurt = this.nodeHurtboxRect(node);
+      const hurt = this.nodeHurtboxRect(node, this.hitScratchRect);
       if (!rects.some((r) => Phaser.Geom.Rectangle.Overlaps(r, hurt))) continue;
       const d = Phaser.Math.Distance.Between(x, y, node.sprite.x, node.sprite.y);
       if (d < bestDist) {
@@ -826,6 +866,7 @@ export class CraftingMapRuntime {
     const hurt = this.nodeHurtboxRect(node);
     const gfx = node.hpBar ?? this.scene.add.graphics();
     node.hpBar = gfx;
+    this.nodesWithBar.add(node);
     gfx.clear();
     gfx.setPosition(node.sprite.x - w / 2, hurt.y - 8);
     gfx.fillStyle(0x000000, 0.55);
@@ -842,20 +883,26 @@ export class CraftingMapRuntime {
     node.hpBar?.destroy();
     node.hpBar = undefined;
     node.hpBarUntilMs = undefined;
+    this.nodesWithBar.delete(node);
   }
 
   /** Esconde barrinhas paradas há mais de ~3 s e segue animais em movimento. */
   private updateNodeHpBars(): void {
+    // Só os nós com barrinha ativa (quase sempre 0–2) — não os ~450 do mapa.
+    if (this.nodesWithBar.size === 0) return;
     const now = this.scene.time.now;
-    for (const node of this.nodes) {
-      if (!node.hpBar) continue;
+    for (const node of this.nodesWithBar) {
+      if (!node.hpBar) {
+        this.nodesWithBar.delete(node); // segurança: barra sumiu por outra via
+        continue;
+      }
       if (node.hpBarUntilMs !== undefined && now >= node.hpBarUntilMs) {
         this.hideNodeHpBar(node);
         continue;
       }
       // Animal ferido continua andando/fugindo — a barrinha acompanha o bicho.
       if (node.kind === 'animal' && !node.broken && node.sprite.active) {
-        const hurt = this.nodeHurtboxRect(node);
+        const hurt = this.nodeHurtboxRect(node, this.barScratchRect);
         node.hpBar.setPosition(node.sprite.x - 15, hurt.y - 8); // 15 = metade da barra (w 30)
         node.hpBar.setDepth(this.depthForY(node.sprite.y) + 2);
       }

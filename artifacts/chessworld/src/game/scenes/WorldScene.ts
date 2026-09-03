@@ -232,6 +232,21 @@ export class WorldScene extends Phaser.Scene {
   private targetZoom = MAP_CONFIG.zoom.default;
   private pinchStartDistance = 0;
   private pinchStartZoom = 0;
+  /** Cache do getBoundingClientRect do canvas — layout forçado a 60fps é caro. */
+  private canvasRectLeft = 0;
+  private canvasRectTop = 0;
+  private canvasRectScaleX = 1;
+  private canvasRectScaleY = 1;
+  private canvasRectFrame = -999;
+  /** Nº de tags emitidas no último frame (evita re-emitir lista vazia). */
+  private lastTagCount = 0;
+  /** Debug desligado: gfx já está limpo? (evita clear() por frame à toa) */
+  private debugGfxCleared = false;
+  /** Última pose da câmera — overlays só republicam quando ela muda. */
+  private lastCamPoseX = Number.NaN;
+  private lastCamPoseY = Number.NaN;
+  private lastCamPoseZoom = Number.NaN;
+  private lastCamPoseRot = Number.NaN;
   private isPinching = false;
   private targetRotation = 0;
   private currentCameraRotation = 0;
@@ -422,6 +437,15 @@ export class WorldScene extends Phaser.Scene {
     // final post-physics positions, preventing 1-frame-lag jitter.
     this.events.on('postupdate', this.lateUpdate, this);
 
+    // Resize: invalida o cache do rect do canvas e força a republicação dos
+    // overlays HTML no próximo frame (são interativos — rect velho os desloca).
+    const onScaleResize = () => {
+      this.canvasRectFrame = -999;
+      this.lastCamPoseX = Number.NaN;
+    };
+    this.scale.on('resize', onScaleResize);
+    this.events.once('shutdown', () => this.scale.off('resize', onScaleResize));
+
     // Build pathfinding grid
     this.buildPathfindingGrid(map.widthInPixels, map.heightInPixels);
 
@@ -545,17 +569,38 @@ export class WorldScene extends Phaser.Scene {
     if (this.cameraFollowing) {
       const isMoving = this.target !== null;
       const lerpSpeed = isMoving ? 0.12 : 0.06;
-      this.cameraTargetX += (this.player.x - this.cameraTargetX) * lerpSpeed;
-      this.cameraTargetY += (this.player.y - this.cameraTargetY) * lerpSpeed;
+      const dx = this.player.x - this.cameraTargetX;
+      const dy = this.player.y - this.cameraTargetY;
+      // Zona morta de 1 texel (1/zoom): sem ela o lerp assintótico persegue
+      // frações para sempre e o floor do snap fica alternando ±1px (jitter).
+      const texel = 1 / this.cameras.main.zoom;
+      this.cameraTargetX = Math.abs(dx) < texel ? this.player.x : this.cameraTargetX + dx * lerpSpeed;
+      this.cameraTargetY = Math.abs(dy) < texel ? this.player.y : this.cameraTargetY + dy * lerpSpeed;
     }
 
     // Final pixel-perfect camera snap (last thing before render)
     this.snapCameraToTarget();
 
-    // Publish active table screen rect for HTML overlay
-    this.publishOverlayRect();
-    this.publishTableScreenRects();
-    this.publishTournamentPanelRects();
+    // Publica retângulos de overlay (tabuleiro/mesas/painéis) só quando a
+    // câmera mudou — parado, os rects na tela são idênticos. A cada 10 frames
+    // republica mesmo assim (estados que mudam sem mexer a câmera, ex.: sentar).
+    {
+      const cam = this.cameras.main;
+      const camMoved =
+        cam.scrollX !== this.lastCamPoseX ||
+        cam.scrollY !== this.lastCamPoseY ||
+        cam.zoom !== this.lastCamPoseZoom ||
+        this.currentCameraRotation !== this.lastCamPoseRot;
+      if (camMoved || this.game.loop.frame % 10 === 0) {
+        this.lastCamPoseX = cam.scrollX;
+        this.lastCamPoseY = cam.scrollY;
+        this.lastCamPoseZoom = cam.zoom;
+        this.lastCamPoseRot = this.currentCameraRotation;
+        this.publishOverlayRect();
+        this.publishTableScreenRects();
+        this.publishTournamentPanelRects();
+      }
+    }
 
     // Snap remote players to integer positions too
     this.otherPlayers.forEach((remote) => {
@@ -568,12 +613,18 @@ export class WorldScene extends Phaser.Scene {
     // Emit HTML name-tag positions for the React overlay (PlayerNameTags).
     // We compute container-relative screen coords (no canvasRect offset) so
     // the overlay's absolute-inset-0 positioning maps directly.
-    {
+    if (this.otherPlayers.size === 0) {
+      // Sem remotos: emite lista vazia UMA vez e pula todo o bloco (inclusive
+      // o getBoundingClientRect, que força layout do navegador).
+      if (this.lastTagCount !== 0) {
+        this.lastTagCount = 0;
+        playerTagBus.emit([]);
+      }
+    } else {
       const cam = this.cameras.main;
-      const canvasEl = this.game.canvas;
-      const canvasRect = canvasEl.getBoundingClientRect();
-      const scaleX = canvasRect.width  / canvasEl.width;
-      const scaleY = canvasRect.height / canvasEl.height;
+      this.refreshCanvasRectCache();
+      const scaleX = this.canvasRectScaleX;
+      const scaleY = this.canvasRectScaleY;
       const cx  = cam.scrollX + cam.width  * 0.5;
       const cy  = cam.scrollY + cam.height * 0.5;
       const cos = Math.cos(-this.currentCameraRotation);
@@ -599,13 +650,34 @@ export class WorldScene extends Phaser.Scene {
           y: (ry * zoom + cam.height * 0.5) * scaleY,
         });
       });
+      this.lastTagCount = tags.length;
       playerTagBus.emit(tags);
     }
   }
 
+  /** Atualiza o cache do rect do canvas (~2x/s) — getBoundingClientRect força layout. */
+  private refreshCanvasRectCache(): void {
+    if (this.canvasRectFrame >= 0 && this.game.loop.frame - this.canvasRectFrame <= 30) return;
+    const canvasEl = this.game.canvas;
+    const r = canvasEl.getBoundingClientRect();
+    this.canvasRectLeft = r.left;
+    this.canvasRectTop = r.top;
+    this.canvasRectScaleX = canvasEl.width > 0 ? r.width / canvasEl.width : 1;
+    this.canvasRectScaleY = canvasEl.height > 0 ? r.height / canvasEl.height : 1;
+    this.canvasRectFrame = this.game.loop.frame;
+  }
+
   private drawDebug() {
+    if (!this.showDebugVisuals) {
+      // Desligado: limpa UMA vez e não toca mais no gfx (clear por frame à toa).
+      if (!this.debugGfxCleared) {
+        this.debugGfx.clear();
+        this.debugGfxCleared = true;
+      }
+      return;
+    }
+    this.debugGfxCleared = false;
     this.debugGfx.clear();
-    if (!this.showDebugVisuals) return;
     const bx = this.playerBody.position.x;
     const by = this.playerBody.position.y;
     const radius = this.localDef?.bodyRadius ?? 10;
@@ -670,18 +742,33 @@ export class WorldScene extends Phaser.Scene {
     }
   }
 
-  private setupZoom() {
-    const { min, max, step } = MAP_CONFIG.zoom;
+  /** Zooms "limpos" para pixel art — frações tipo 1.25/1.75 deixam colunas de
+   *  pixels com larguras alternadas na tela (shimmer/jitter ao mover a câmera). */
+  private static readonly ZOOM_LEVELS: number[] = [0.5, 1, 2, 3, 4];
 
-    // Desktop: mouse wheel / trackpad scroll zoom
+  private snapToZoomLevel(zoom: number): number {
+    const levels = WorldScene.ZOOM_LEVELS;
+    let best = levels[0];
+    for (const z of levels) {
+      if (Math.abs(z - zoom) < Math.abs(best - zoom)) best = z;
+    }
+    return best;
+  }
+
+  private nextZoomLevel(zoom: number, direction: 1 | -1): number {
+    const levels = WorldScene.ZOOM_LEVELS;
+    const i = levels.indexOf(this.snapToZoomLevel(zoom));
+    return levels[Math.min(levels.length - 1, Math.max(0, i + direction))];
+  }
+
+  private setupZoom() {
+    const { min, max } = MAP_CONFIG.zoom;
+
+    // Desktop: roda do mouse / trackpad — anda pelos níveis "limpos" de zoom
     this.input.on('wheel', (_pointer: Phaser.Input.Pointer, _gameObjects: any[], _deltaX: number, deltaY: number) => {
       if (this.movementLocked && !this.inMatch) return;
       const direction = deltaY > 0 ? -1 : 1;
-      this.targetZoom = Phaser.Math.Clamp(
-        this.targetZoom + direction * step,
-        min,
-        max
-      );
+      this.targetZoom = this.nextZoomLevel(this.targetZoom, direction);
     });
 
     // Mobile: pinch-to-zoom
@@ -719,8 +806,7 @@ export class WorldScene extends Phaser.Scene {
         if (!this.input.pointer1.isDown || !this.input.pointer2.isDown) {
           this.isPinching = false;
           // Quantize to nearest step to maintain clean zoom values
-          this.targetZoom = Math.round(this.targetZoom / step) * step;
-          this.targetZoom = Phaser.Math.Clamp(this.targetZoom, min, max);
+          this.targetZoom = this.snapToZoomLevel(this.targetZoom);
         }
       }
     });
@@ -1534,6 +1620,11 @@ export class WorldScene extends Phaser.Scene {
     pruneComposedAppearances(this, this.composedDefsInUse());
   }
 
+  /** O sprite remoto desta sessão já existe? (GameCanvas evita re-join por patch) */
+  public hasRemotePlayer(sessionId: string): boolean {
+    return this.otherPlayers.has(sessionId);
+  }
+
   public updateRemotePlayerState(sessionId: string, state: { x: number; y: number; targetX: number; targetY: number; direction: string; isMoving: boolean; characterId?: string; hp?: number; maxHp?: number; appearance?: string; equippedWeapon?: string }) {
     const remote = this.otherPlayers.get(sessionId);
     if (!remote) return;
@@ -1792,7 +1883,7 @@ export class WorldScene extends Phaser.Scene {
     p2: { x: number; y: number },
     phase: 'start' | 'move' | 'end',
   ) {
-    const { min, max, step } = MAP_CONFIG.zoom;
+    const { min, max } = MAP_CONFIG.zoom;
     const dist = Phaser.Math.Distance.Between(p1.x, p1.y, p2.x, p2.y);
     if (phase === 'start') {
       this.isPinching = true;
@@ -1803,8 +1894,7 @@ export class WorldScene extends Phaser.Scene {
       this.targetZoom = Phaser.Math.Clamp(this.pinchStartZoom * scale, min, max);
     } else if (phase === 'end') {
       this.isPinching = false;
-      this.targetZoom = Math.round(this.targetZoom / step) * step;
-      this.targetZoom = Phaser.Math.Clamp(this.targetZoom, min, max);
+      this.targetZoom = this.snapToZoomLevel(this.targetZoom);
     }
   }
 
@@ -1838,10 +1928,10 @@ export class WorldScene extends Phaser.Scene {
       return;
     }
     const cam = this.cameras.main;
-    const canvasEl = this.game.canvas;
-    const canvasRect = canvasEl.getBoundingClientRect();
-    const scaleX = canvasRect.width / canvasEl.width;
-    const scaleY = canvasRect.height / canvasEl.height;
+    this.refreshCanvasRectCache();
+    const canvasRect = { left: this.canvasRectLeft, top: this.canvasRectTop };
+    const scaleX = this.canvasRectScaleX;
+    const scaleY = this.canvasRectScaleY;
 
     const cx = cam.scrollX + cam.width * 0.5;
     const cy = cam.scrollY + cam.height * 0.5;
@@ -1879,10 +1969,10 @@ export class WorldScene extends Phaser.Scene {
       return;
     }
     const cam = this.cameras.main;
-    const canvasEl = this.game.canvas;
-    const canvasRect = canvasEl.getBoundingClientRect();
-    const scaleX = canvasRect.width / canvasEl.width;
-    const scaleY = canvasRect.height / canvasEl.height;
+    this.refreshCanvasRectCache();
+    const canvasRect = { left: this.canvasRectLeft, top: this.canvasRectTop };
+    const scaleX = this.canvasRectScaleX;
+    const scaleY = this.canvasRectScaleY;
     const cx = cam.scrollX + cam.width * 0.5;
     const cy = cam.scrollY + cam.height * 0.5;
     const cos = Math.cos(-this.currentCameraRotation);
@@ -1916,10 +2006,10 @@ export class WorldScene extends Phaser.Scene {
   private publishTableScreenRects() {
     if (!this.chessOverlay || !this.tableRegistry) return;
     const cam = this.cameras.main;
-    const canvasEl = this.game.canvas;
-    const canvasRect = canvasEl.getBoundingClientRect();
-    const scaleX = canvasRect.width / canvasEl.width;
-    const scaleY = canvasRect.height / canvasEl.height;
+    this.refreshCanvasRectCache();
+    const canvasRect = { left: this.canvasRectLeft, top: this.canvasRectTop };
+    const scaleX = this.canvasRectScaleX;
+    const scaleY = this.canvasRectScaleY;
     const cx = cam.scrollX + cam.width * 0.5;
     const cy = cam.scrollY + cam.height * 0.5;
     const cos = Math.cos(-this.currentCameraRotation);
@@ -2029,19 +2119,25 @@ export class WorldScene extends Phaser.Scene {
   }
 
   public setDefaultZoom(zoom: number) {
-    this.defaultZoom = zoom;
+    // Snap para níveis limpos de pixel art — zoom fracionário (ex.: 2.5 vindo
+    // das configurações do admin/banco) gera colunas de pixels com larguras
+    // alternadas (shimmer).
+    const snapped = this.snapToZoomLevel(zoom);
+    this.defaultZoom = snapped;
     if (!this.movementLocked) {
-      this.targetZoom = zoom;
+      this.targetZoom = snapped;
     }
   }
 
   /** Zoom used when the camera focuses a chess board (game mode). */
   public setBoardZoom(zoom: number) {
-    if (zoom === this.boardZoom) return;
-    this.boardZoom = zoom;
+    // Snap para níveis limpos (evita shimmer com valores tipo 2.5 do mobile).
+    const snapped = this.snapToZoomLevel(zoom);
+    if (snapped === this.boardZoom) return;
+    this.boardZoom = snapped;
     // Camera not following = currently focused on a board; apply live.
     if (!this.cameraFollowing) {
-      this.targetZoom = zoom;
+      this.targetZoom = snapped;
     }
   }
 

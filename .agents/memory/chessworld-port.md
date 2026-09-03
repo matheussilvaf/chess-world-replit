@@ -234,3 +234,10 @@ Rotas Express custom do servidor devem ser registradas COM o prefixo `/api` (ex.
 ## Config de coleta — allowlist no PUT (armadilha)
 - O PUT do admin de coleta monta uma cópia NORMALIZADA campo a campo em collectionRoutes.ts (allowlist). Campo novo nas shapes (ex.: handPower) TEM de entrar também ali, senão o servidor valida mas DESCARTA em silêncio ao salvar.
 - currentSwingState (WorldScene) devolve rects VAZIOS nos frames de windup de armas com perfil autorado; lógica de "início do golpe" no runtime deve rodar ANTES do early-return por rects.length===0.
+
+## Desempenho do cliente (convenções do round de otimização, set/2026)
+- Overlays HTML sobre o canvas: NUNCA getBoundingClientRect por frame — usar o cache da WorldScene (refreshCanvasRectCache, TTL 30 frames; resize invalida via canvasRectFrame=-999 + lastCamPoseX=NaN) e o gate de pose da câmera (publica só quando a câmera muda ou a cada 10 frames).
+- TODO zoom passa por snapToZoomLevel (níveis 0.5/1/2/3/4); setDefaultZoom/setBoardZoom já snapam — fracionário (ex.: 2.5 do banco/admin) causa shimmer em pixel art. Empate vai pro nível MENOR (2.5→2, tabuleiro mobile mais afastado por design). Deadzone de 1 texel no lerp da câmera mata o jitter; não voltar a lerp puro.
+- CraftingMapRuntime: respawns por acumulador 250ms; HP bars por Set nodesWithBar; IA fora da worldView+160px pensa 1/4 frames com effDelta*4 — estado novo de IA precisa decidir se pode ser cullado (fuga NUNCA é pulada). Scratch rects (hitScratch/barScratch) não podem escapar da iteração.
+- Modo Economia (30 FPS) = fps.limit no boot do Phaser — só aplica com reload; PerformanceHud lê window.__cwGame.loop.actualFps. GameCanvas: re-join de remoto só se !scene.hasRemotePlayer(sessionId).
+- Fora de escopo conhecido: CollectionInventoryPanel usa store sem seletor (rerender amplo, menor); interest management (rede) fica para escala futura; chunking de mapa é desnecessário (culling de render resolve no tamanho atual).

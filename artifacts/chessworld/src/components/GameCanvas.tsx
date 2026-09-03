@@ -28,6 +28,7 @@ import { AttackButton } from './game/AttackButton';
 import { CharacterCreationModal } from './character-creation/CharacterCreationModal';
 import { EquipmentButton, EquipmentPanel } from './game/EquipmentPanel';
 import { ToolHotbar } from './game/ToolHotbar';
+import { PerformanceHud } from './game/PerformanceHud';
 import { usePlayerCharacterStore } from '../stores/playerCharacterStore';
 
 export function GameCanvas() {
@@ -562,9 +563,14 @@ export function GameCanvas() {
       scene.handlePlayerJoined(joinPayload());
 
       player.onChange(() => {
-        // Jogador que CRIOU o personagem depois de entrar na sala: reoferece
-        // o join com a receita (a cena ignora se o sprite já existe).
-        scene.handlePlayerJoined(joinPayload());
+        // Sprite remoto ainda não existe (ex.: personagem criado depois de
+        // entrar na sala)? Só então re-oferece o join. Com o sprite vivo,
+        // montar o payload em toda mudança (30x/s por jogador em movimento)
+        // era trabalho jogado fora — mudanças de aparência/arma/HP já são
+        // tratadas pelo updateRemotePlayerState abaixo.
+        if (!scene.hasRemotePlayer(sessionId)) {
+          scene.handlePlayerJoined(joinPayload());
+        }
         // If the server cleared this player's board (tournament teleport /
         // teardown) while our sprite still thinks it's seated, unseat and
         // snap BEFORE the regular update — otherwise the seated-skip would
@@ -863,6 +869,7 @@ export function GameCanvas() {
       <ToolHotbar />
       <EquipmentButton />
       <EquipmentPanel />
+      <PerformanceHud />
     </div>
   );
 }
