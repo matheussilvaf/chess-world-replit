@@ -25,6 +25,8 @@ import { resolveGatherStats, resolveWeaponProfileForFamily, resolveWeaponShootSt
 import type { GatherToolKind } from '../../shared/collection/CollectionShapes';
 import { projectilePairedFamily } from '../../lib/character-generator/weaponCatalog';
 import { ArrowProjectiles } from '../world/ArrowProjectiles';
+import { RESOURCE_DROP_ICONS } from '../../lib/collection/resourceCatalog';
+import type { CraftThumb } from '../../lib/craft/craftCatalog';
 import {
   RIG_DIRECTION_BY_ROW,
   composedFrameColumn,
@@ -156,6 +158,9 @@ export class WorldScene extends Phaser.Scene {
   private currentWaypointIndex = 0;
   private arenas: ChessArenaZone[] = [];
   private otherPlayers: Map<string, RemotePlayer> = new Map();
+  /** Server-authoritative ground inventory drops. */
+  private worldDrops = new Map<string, Phaser.GameObjects.Container>();
+  private inventoryPickupSender: ((dropId: string) => void) | null = null;
 
   // Debug graphics
   private debugGfx!: Phaser.GameObjects.Graphics;
@@ -4155,5 +4160,85 @@ export class WorldScene extends Phaser.Scene {
     } else if (this.combatDebugLabel) {
       this.combatDebugLabel.setVisible(false);
     }
+  }
+
+  public setInventoryPickupSender(sender: ((dropId: string) => void) | null) {
+    this.inventoryPickupSender = sender;
+  }
+
+  /** Called from Colyseus MapSchema handlers. It deliberately accepts plain
+   * objects too, so cloud rooms that do not yet expose worldDrops stay safe. */
+  public upsertWorldDrop(drop: { id?: string; itemKey: string; qty: number; x: number; y: number }, mapKey?: string, thumb?: CraftThumb) {
+    const id = drop.id ?? mapKey;
+    if (!id) return;
+    this.removeWorldDrop(id);
+    const container = this.add.container(drop.x, drop.y).setDepth(80);
+    this.worldDrops.set(id, container);
+    const bg = this.add.rectangle(0, 0, 24, 24, 0x17110b, 0.8).setStrokeStyle(1, 0xd69e3a).setInteractive({ useHandCursor: true });
+    const label = this.add.text(0, -19, `${drop.qty}x`, { fontFamily: 'monospace', fontSize: '10px', color: '#ffffff', stroke: '#000000', strokeThickness: 3 }).setOrigin(0.5);
+    container.add([bg, label]);
+    const icon = RESOURCE_DROP_ICONS[drop.itemKey];
+    if (thumb && thumb.kind !== 'none') {
+      this.addDropThumb(container, id, thumb);
+    } else if (thumb?.kind === 'none') {
+      container.add(this.add.text(0, 0, 'Item', { fontSize: '8px', color: '#f7d36a' }).setOrigin(0.5));
+    } else
+    if (icon) {
+      const key = `world-drop:${drop.itemKey}`;
+      const addIcon = () => {
+        if (!this.textures.exists(key) || !container.active) return;
+        const image = this.add.image(0, 0, key).setDisplaySize(20, 20);
+        container.add(image);
+      };
+      if (this.textures.exists(key)) addIcon();
+      else {
+        this.load.image(key, encodeURI(icon));
+        this.load.once(`filecomplete-image-${key}`, addIcon);
+        if (!this.load.isLoading()) this.load.start();
+      }
+    } else container.add(this.add.text(0, 0, 'Item', { fontSize: '8px', color: '#f7d36a' }).setOrigin(0.5));
+    bg.on('pointerdown', (pointer: Phaser.Input.Pointer) => { pointer.event.stopPropagation(); this.inventoryPickupSender?.(id); });
+  }
+
+  private addDropThumb(container: Phaser.GameObjects.Container, dropId: string, thumb: Exclude<CraftThumb, { kind: 'none' }>) {
+    const url = thumb.url;
+    const key = `drop-thumb:${url}:${thumb.kind === 'sheet96' ? thumb.col : thumb.kind === 'frame' ? `${thumb.frameWidth}x${thumb.frameHeight}` : 'image'}`;
+    const add = () => {
+      if (!container.active || this.worldDrops.get(dropId) !== container || !this.textures.exists(key)) return;
+      container.add(this.add.image(0, 0, key).setDisplaySize(20, 20));
+    };
+    if (this.textures.exists(key)) { add(); return; }
+    const image = new Image();
+    image.onload = () => {
+      if (this.textures.exists(key)) { add(); return; }
+      const canvas = this.textures.createCanvas(key, 24, 24);
+      if (!canvas) return;
+      const ctx = canvas.context;
+      ctx.imageSmoothingEnabled = false;
+      const source = thumb.kind === 'sheet96'
+        ? { x: thumb.col * 96, y: 0, w: 96, h: 96 }
+        : thumb.kind === 'frame'
+          ? { x: 0, y: 0, w: thumb.frameWidth, h: thumb.frameHeight }
+          : { x: 0, y: 0, w: image.width, h: image.height };
+      const scale = Math.min(20 / source.w, 20 / source.h);
+      const w = source.w * scale; const h = source.h * scale;
+      ctx.drawImage(image, source.x, source.y, source.w, source.h, (24 - w) / 2, (24 - h) / 2, w, h);
+      canvas.refresh();
+      add();
+    };
+    image.onerror = () => {
+      if (container.active && this.worldDrops.get(dropId) === container) container.add(this.add.text(0, 0, 'Item', { fontSize: '8px', color: '#f7d36a' }).setOrigin(0.5));
+    };
+    image.src = url;
+  }
+
+  public removeWorldDrop(id: string) {
+    const old = this.worldDrops.get(id);
+    if (old) old.destroy();
+    this.worldDrops.delete(id);
+  }
+
+  public clearWorldDrops() {
+    for (const id of this.worldDrops.keys()) this.removeWorldDrop(id);
   }
 }

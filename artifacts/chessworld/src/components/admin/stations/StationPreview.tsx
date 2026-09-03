@@ -94,6 +94,8 @@ export function StationPreview({
   recipes,
   inventory,
   edit,
+  onClose,
+  onCraft,
 }: {
   station: StationConfig;
   activeTabIndex: number;
@@ -102,6 +104,10 @@ export function StationPreview({
   recipes: Readonly<Record<string, CraftRecipeConfig>>;
   inventory: Readonly<Record<string, number>>;
   edit?: StationEditHandlers;
+  /** Provided by the game runtime; admin preview intentionally omits it. */
+  onClose?: () => void;
+  /** Real crafting hook. When omitted the admin keeps its simulated loader. */
+  onCraft?: (targetId: string, quantity: number) => Promise<void>;
 }) {
   const tabs = station.tabs;
   const tabIndex = Math.min(Math.max(activeTabIndex, 0), Math.max(tabs.length - 1, 0));
@@ -168,9 +174,18 @@ export function StationPreview({
     !!selectedRecipe &&
     selectedRecipe.ingredients.every((ing) => (inventory[ing.itemId] ?? 0) >= ing.quantity * qty);
 
-  const startCraft = () => {
+  const startCraft = async () => {
     if (!canCraft || phase !== 'idle') return;
     setPhase('crafting');
+    if (onCraft && selectedId) {
+      try {
+        await onCraft(selectedId, qty);
+        setPhase('done');
+      } catch {
+        setPhase('idle');
+      }
+      return;
+    }
     craftTimer.current = setTimeout(() => {
       craftTimer.current = null;
       setPhase('done');
@@ -213,9 +228,9 @@ export function StationPreview({
       <div className="flex items-center gap-3 px-5 py-4" style={{ backgroundColor: accent }}>
         <HeaderIcon className="w-6 h-6 text-white shrink-0" />
         <h2 className="text-white text-xl font-bold flex-1 truncate">{station.name}</h2>
-        <span className="p-1 rounded-md text-white/85" title="Fechar (funciona no jogo)">
+        <button type="button" onClick={onClose} className="p-1 rounded-md text-white/85 hover:text-white" title="Fechar">
           <X className="w-6 h-6" />
-        </span>
+        </button>
       </div>
 
       {/* Abas */}

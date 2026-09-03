@@ -1,4 +1,4 @@
-import { DoorOpen, Building2, Compass, BarChart3, Landmark } from 'lucide-react';
+import { DoorOpen, Building2, Compass, BarChart3, Landmark, Hammer } from 'lucide-react';
 import { useInteractionStore } from '../../stores/interactionStore';
 
 const CATEGORY_ICONS: Record<string, typeof DoorOpen> = {
@@ -7,6 +7,7 @@ const CATEGORY_ICONS: Record<string, typeof DoorOpen> = {
   portal: Compass,
   village_gateway: Landmark,
   stats_board: BarChart3,
+  station: Hammer,
 };
 
 const CATEGORY_ACTIONS: Record<string, string> = {
@@ -15,15 +16,16 @@ const CATEGORY_ACTIONS: Record<string, string> = {
   portal: 'Use Portal',
   village_gateway: 'Travel',
   stats_board: 'View Stats',
+  station: 'Abrir estação',
 };
 
 export function ProximityButton() {
   const { proximityObject, debugEnabled, confirmAction } = useInteractionStore();
 
-  if (!proximityObject || !debugEnabled) return null;
+  if (!proximityObject || (!debugEnabled && proximityObject.category !== 'station')) return null;
 
   const Icon = CATEGORY_ICONS[proximityObject.category] || Building2;
-  const actionLabel = CATEGORY_ACTIONS[proximityObject.category] || 'Interact';
+  const actionLabel = CATEGORY_ACTIONS[proximityObject.category] || 'Interagir';
   const displayName =
     (proximityObject.properties.buildingId as string) ||
     (proximityObject.properties.houseId as string) ||

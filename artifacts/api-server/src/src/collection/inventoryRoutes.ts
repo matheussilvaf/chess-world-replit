@@ -66,5 +66,20 @@ collectionInventoryRouter.post('/collect', async (req: Request, res: Response) =
     res.status(500).json({ error: result.error ?? 'Falha ao persistir' });
     return;
   }
-  res.json({ items: result.items });
+  // POST /collect historicamente é consumido como snapshot, não como patch:
+  // leia tudo depois do crédito para não fazer o cliente esquecer itens antigos.
+  const snapshot = await getInventory(userId);
+  if (snapshot.error) {
+    res.status(500).json({ error: snapshot.error });
+    return;
+  }
+  if (snapshot.tableMissing) {
+    res.status(503).json({
+      error: 'Tabela collection_inventory ausente no Supabase',
+      tableMissing: true,
+      tableSql: INVENTORY_TABLE_SQL,
+    });
+    return;
+  }
+  res.json({ items: snapshot.items });
 });

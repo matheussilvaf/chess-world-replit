@@ -60,7 +60,6 @@ import {
   type GatherToolKind,
   type ResourceHurtbox,
 } from '../../shared/collection/CollectionShapes';
-import { useToolInventoryStore } from '../../stores/toolInventoryStore';
 import { sweepPath } from './moveSweep';
 import { queueCollect } from '../../stores/collectionInventoryStore';
 import { gatherAudio } from '../audio/gatherAudio';
@@ -1070,8 +1069,6 @@ export class CraftingMapRuntime {
     const spr = node.sprite;
     // Animal recém-renascido: intocável (nem durabilidade consome).
     if (node.kind === 'animal' && (node.protectedUntilMs ?? 0) > this.scene.time.now) return;
-    // (1) Durabilidade: −1 por golpe computado num nó (só crafttools do inventário).
-    if (hit.toolRef) useToolInventoryStore.getState().consumeDurability(hit.toolRef);
     if (node.kind === 'animal') {
       const ag = this.animals.find((a) => a.sprite === node.sprite);
       if (!ag || ag.dead) return;

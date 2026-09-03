@@ -1,0 +1,36 @@
+import { applyInventoryDeltas, getInventory, type InventoryItem } from '../collection/inventoryRepository.js';
+import { mergeStationsWithDefaults, isStationId } from '../shared/craft/StationShapes.js';
+import { listCraftRecipes } from './craftRepository.js';
+import { listStationMembers, listStations } from './stationRepository.js';
+
+export type PlayerCraftResult = { ok: true; items: InventoryItem[] } | { ok: false; message: string };
+
+/** Runs every server-side recipe and inventory check; callers supply only identity and selection. */
+export async function executePlayerCraft(
+  userId: string, stationId: unknown, targetId: unknown, quantity: unknown,
+): Promise<PlayerCraftResult> {
+  if (!isStationId(stationId) || typeof targetId !== 'string' || typeof quantity !== 'number' ||
+    !Number.isInteger(quantity) || quantity < 1 || quantity > 999) {
+    return { ok: false, message: 'stationId, targetId e quantity inteiro 1..999 são obrigatórios' };
+  }
+  const [recipes, stations, members] = await Promise.all([listCraftRecipes(), listStations(), listStationMembers()]);
+  if (recipes.error || stations.error || members.error) {
+    return { ok: false, message: recipes.error ?? stations.error ?? members.error ?? 'Configuração de craft indisponível' };
+  }
+  if (recipes.tableMissing || stations.tableMissing || members.tableMissing) {
+    return { ok: false, message: 'Tabelas de craft ausentes no Supabase' };
+  }
+  const recipe = recipes.records[targetId];
+  const station = mergeStationsWithDefaults(stations.records).find((entry) => entry.stationId === stationId);
+  if (!recipe || members.records[targetId] !== stationId ||
+    !(station?.tabs.some((tab) => tab.rows.some((row) => row.includes(targetId))))) {
+    return { ok: false, message: 'Item não pode ser criado nesta estação' };
+  }
+  const deltas = recipe.ingredients.map((ingredient) => ({ itemKey: ingredient.itemId, qty: -ingredient.quantity * quantity }));
+  deltas.push({ itemKey: targetId, qty: (recipe.outputQuantity ?? 1) * quantity });
+  const changed = await applyInventoryDeltas(userId, deltas);
+  if (!changed.ok) return { ok: false, message: changed.error ?? 'Falha no inventário' };
+  const snapshot = await getInventory(userId);
+  if (snapshot.error || snapshot.tableMissing) return { ok: false, message: snapshot.error ?? 'Inventário indisponível após craft' };
+  return { ok: true, items: snapshot.items };
+}

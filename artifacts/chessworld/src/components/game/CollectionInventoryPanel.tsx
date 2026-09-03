@@ -1,204 +1,95 @@
-import { useState, useEffect, useCallback, useMemo } from 'react';
-import { Backpack, X, Loader2, Copy, Check } from 'lucide-react';
+import { useEffect, useState } from 'react';
+import { Backpack, Minus, Plus, X } from 'lucide-react';
 import { useCollectionInventoryStore } from '../../stores/collectionInventoryStore';
-import { COLLECTIBLE_ITEM_KEYS } from '../../shared/collection/CollectionShapes';
-
-const ICON_MAP: Record<string, string> = {
-  'mineral:pedra': '/assets/CraftingWorld/resources/minerals/drop/drop-stone.png',
-  'mineral:carvao': '/assets/CraftingWorld/resources/minerals/drop/drop-coal.png',
-  'mineral:ferro': '/assets/CraftingWorld/resources/minerals/drop/drop-iron.png',
-  'mineral:cobre': '/assets/CraftingWorld/resources/minerals/drop/drop-copper.png',
-  'mineral:ouro': '/assets/CraftingWorld/resources/minerals/drop/drop-gold.png',
-  'mineral:diamante': '/assets/CraftingWorld/resources/minerals/drop/drop-diamond.png',
-  'mineral:cristal_real': '/assets/CraftingWorld/resources/minerals/drop/drop-cristal-real.png',
-  'tree:pinheiro_peao': '/assets/CraftingWorld/resources/tronco/drop-pinheiro-peao.png',
-  'tree:carvalho_torre': '/assets/CraftingWorld/resources/tronco/drop-carvalho-torre.png',
-  'tree:freixo_cavalo': '/assets/CraftingWorld/resources/tronco/drop-freixo-cavalo.png',
-  'tree:ebano_dama': '/assets/CraftingWorld/resources/tronco/drop-ebano-dama.png',
-  'tree:salgueiro_bispo': '/assets/CraftingWorld/resources/tronco/drop-salgueiro-bispo.png',
-  'herb:heal_herb': '/assets/CraftingWorld/resources/ervas e plantas/heal_herb.png',
-  'herb:red_herb': '/assets/CraftingWorld/resources/ervas e plantas/red_herb.png',
-  'herb:blue_herb': '/assets/CraftingWorld/resources/ervas e plantas/blue_herb.png',
-  'herb:queen_thorn': '/assets/CraftingWorld/resources/ervas e plantas/queen_thorn.png',
-  'herb:horse_root': '/assets/CraftingWorld/resources/ervas e plantas/horse_root.png',
-  'bush': '/assets/CraftingWorld/resources/ervas e plantas/bush.png',
-  'hand_stone': '/assets/CraftingWorld/resources/minerals/stone-hand-collected.png',
-  'branch': '/assets/CraftingWorld/resources/branch/branch.png',
-  'beef': '/assets/CraftingWorld/resources/beef/beef.png',
-  'couro': '/assets/CraftingWorld/resources/couro/couro.png',
-  'wool': '/assets/CraftingWorld/resources/wool/wool.png',
-  'pena': '/assets/CraftingWorld/resources/pena/pena.png',
-};
-
-const TITLE_MAP: Record<string, string> = {
-  'mineral:pedra': 'Pedra',
-  'mineral:carvao': 'Carvão',
-  'mineral:ferro': 'Ferro',
-  'mineral:cobre': 'Cobre',
-  'mineral:ouro': 'Ouro',
-  'mineral:diamante': 'Diamante',
-  'mineral:cristal_real': 'Cristal Real',
-  'tree:pinheiro_peao': 'Tronco de Pinheiro Peão',
-  'tree:carvalho_torre': 'Tronco de Carvalho Torre',
-  'tree:freixo_cavalo': 'Tronco de Freixo Cavalo',
-  'tree:ebano_dama': 'Tronco de Ébano Dama',
-  'tree:salgueiro_bispo': 'Tronco de Salgueiro Bispo',
-  'herb:heal_herb': 'Erva da Cura',
-  'herb:red_herb': 'Erva Vermelha',
-  'herb:blue_herb': 'Erva Azul',
-  'herb:queen_thorn': 'Espinho da Dama',
-  'herb:horse_root': 'Raiz do Cavalo',
-  'bush': 'Arbusto',
-  'hand_stone': 'Pedra Pequena',
-  'branch': 'Galho',
-  'beef': 'Carne',
-  'couro': 'Couro',
-  'wool': 'Lã',
-  'pena': 'Pena',
-};
+import { DEFAULT_INVENTORY_SLOT_COUNT, INVENTORY_COLUMNS } from '../../config/inventoryConfig';
+import { usePanelPlacement } from '../../hooks/usePanelPlacement';
+import { getInventoryBridge } from '../../game/inventory/inventoryBridge';
+import { inventoryEntry, inventoryFallbackName, useInventoryVisualCatalog } from '../../lib/inventory/inventoryVisualCatalog';
+import { InventoryItemName, InventoryItemThumb } from './InventoryItemVisual';
 
 export function CollectionInventoryButton({ onClick }: { onClick: () => void }) {
-  return (
-    <button
-      onClick={onClick}
-      title="Inventário de Coleta"
-      className="relative w-9 h-9 sm:w-10 sm:h-10 rounded-lg bg-slate-900/90 backdrop-blur-sm border border-slate-700/50 flex items-center justify-center text-slate-300 hover:text-white hover:bg-slate-800 transition-all pointer-events-auto"
-    >
-      <Backpack className="w-4 h-4" />
-    </button>
-  );
+  return <button onClick={onClick} title="Inventário de Coleta" className="relative flex h-9 w-9 items-center justify-center rounded-lg border border-slate-700/50 bg-slate-900/90 text-slate-300 transition-all hover:bg-slate-800 hover:text-white sm:h-10 sm:w-10"><Backpack className="h-4 w-4" /></button>;
 }
+
+
+type Drag = { from: number; startX: number; startY: number; x: number; y: number; active: boolean } | null;
+type Draft = { itemKey: string; max: number; qty: number; x: number; y: number; worldX: number; worldY: number } | null;
 
 export function CollectionInventoryPanel({ onClose }: { onClose: () => void }) {
-  const { items, loaded, loading, error, tableMissing, tableSql, refresh } = useCollectionInventoryStore();
-  const [copied, setCopied] = useState(false);
+  const { items, slots, loaded, loading, error, refresh, moveSlot, selectItem } = useCollectionInventoryStore();
+  const placement = usePanelPlacement({ storageKey: 'chessworld:collection-inventory-panel', defaultWidth: 400, defaultHeight: 490, minW: 330, minH: 370 });
+  const [drag, setDrag] = useState<Drag>(null);
+  const [draft, setDraft] = useState<Draft>(null);
+  const catalog = useInventoryVisualCatalog();
 
+  useEffect(() => { void refresh(); }, [refresh]);
   useEffect(() => {
-    refresh();
-  }, [refresh]);
+    const esc = (event: KeyboardEvent) => { if (event.key === 'Escape' && !draft) onClose(); };
+    window.addEventListener('keydown', esc); return () => window.removeEventListener('keydown', esc);
+  }, [draft, onClose]);
 
-  useEffect(() => {
-    const handleEsc = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose();
-    };
-    window.addEventListener('keydown', handleEsc);
-    return () => window.removeEventListener('keydown', handleEsc);
-  }, [onClose]);
-
-  const handleCopy = useCallback(() => {
-    if (tableSql) {
-      navigator.clipboard.writeText(tableSql);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
+  const slotAt = (x: number, y: number) => {
+    const el = document.elementFromPoint(x, y)?.closest('[data-inventory-slot]');
+    const index = Number(el?.getAttribute('data-inventory-slot'));
+    return Number.isInteger(index) && index >= 0 && index < DEFAULT_INVENTORY_SLOT_COUNT ? index : null;
+  };
+  const beginDrag = (event: React.PointerEvent<HTMLButtonElement>, from: number) => {
+    if (!slots[from] || (event.pointerType === 'mouse' && event.button !== 0)) return;
+    event.currentTarget.setPointerCapture(event.pointerId);
+    setDrag({ from, startX: event.clientX, startY: event.clientY, x: event.clientX, y: event.clientY, active: false });
+  };
+  const moveDrag = (event: React.PointerEvent<HTMLButtonElement>) => setDrag((old) => old && ({
+    ...old, x: event.clientX, y: event.clientY,
+    active: old.active || Math.hypot(event.clientX - old.startX, event.clientY - old.startY) > 5,
+  }));
+  const endDrag = (event: React.PointerEvent<HTMLButtonElement>, from: number) => {
+    const current = drag; setDrag(null);
+    if (!current) return;
+    if (!current.active) { selectItem(slots[from]); return; }
+    const target = slotAt(event.clientX, event.clientY);
+    if (target !== null) { moveSlot(current.from, target); return; }
+    const rect = placement.panelRef.current?.getBoundingClientRect();
+    const key = slots[current.from];
+    const bridge = getInventoryBridge();
+    if (key && rect && !rectContains(rect, event.clientX, event.clientY) && bridge) {
+      const world = bridge.screenToWorld(event.clientX, event.clientY);
+      if (world) setDraft({ itemKey: key, max: items[key] ?? 1, qty: 1, x: Math.max(112, Math.min(window.innerWidth - 112, event.clientX)), y: Math.max(92, Math.min(window.innerHeight - 92, event.clientY)), worldX: world.x, worldY: world.y });
     }
-  }, [tableSql]);
+  };
+  const confirmDrop = () => {
+    if (!draft) return;
+    const bridge = getInventoryBridge();
+    if (!bridge) return;
+    bridge.sendDrop({ requestId: crypto.randomUUID(), itemKey: draft.itemKey, qty: draft.qty, x: draft.worldX, y: draft.worldY });
+    setDraft(null);
+  };
+  const hotbarStart = DEFAULT_INVENTORY_SLOT_COUNT - INVENTORY_COLUMNS;
+  useEffect(() => { if (draft) setDraft(d => d ? { ...d, max: items[d.itemKey] ?? 1, qty: Math.min(d.qty, items[d.itemKey] ?? 1) } : null); }, [items, draft?.itemKey]);
 
-  const filledItems = useMemo(() => {
-    return COLLECTIBLE_ITEM_KEYS.filter((key) => (items[key] || 0) > 0).map((key) => ({
-      key,
-      qty: items[key],
-    }));
-  }, [items]);
-
-  const totalSlots = Math.max(20, Math.ceil(filledItems.length / 5) * 5);
-  const slots = Array.from({ length: totalSlots });
-
-  return (
-    <div className="fixed inset-0 z-[60] flex items-center justify-center pointer-events-auto">
-      <div
-        className="absolute inset-0 bg-slate-950/60 backdrop-blur-sm"
-        onClick={onClose}
-      />
-      <div className="relative w-full max-w-md bg-slate-900/95 border border-slate-700/50 rounded-xl shadow-2xl flex flex-col overflow-hidden max-h-[90vh]">
-        <div className="flex items-center justify-between px-4 py-3 border-b border-slate-800 bg-slate-950/50">
-          <h2 className="text-white font-medium">Inventário de Coleta</h2>
-          <button
-            onClick={onClose}
-            className="text-slate-400 hover:text-white transition-colors"
-          >
-            <X className="w-5 h-5" />
-          </button>
-        </div>
-
-        <div className="p-4 overflow-y-auto">
-          {loading && !loaded ? (
-            <div className="flex items-center justify-center py-12">
-              <Loader2 className="w-8 h-8 text-slate-500 animate-spin" />
-            </div>
-          ) : (
-            <div className="flex flex-col gap-4">
-              {tableMissing && (
-                <div className="bg-amber-950/40 border border-amber-900/50 rounded-lg p-3 text-amber-200/90 text-sm">
-                  <p className="font-medium mb-2">A tabela do inventário ainda não foi criada no Supabase.</p>
-                  {tableSql && (
-                    <details className="mt-2">
-                      <summary className="cursor-pointer text-amber-400/80 hover:text-amber-300 select-none">
-                        Ver SQL
-                      </summary>
-                      <div className="mt-2 relative">
-                        <pre className="text-[11px] bg-slate-950/80 p-3 rounded overflow-x-auto text-amber-100/70 border border-amber-900/30">
-                          {tableSql}
-                        </pre>
-                        <button
-                          onClick={handleCopy}
-                          className="absolute top-2 right-2 p-1.5 bg-slate-800 rounded hover:bg-slate-700 text-slate-300 transition-colors"
-                          title="Copiar SQL"
-                        >
-                          {copied ? <Check className="w-4 h-4 text-emerald-400" /> : <Copy className="w-4 h-4" />}
-                        </button>
-                      </div>
-                    </details>
-                  )}
-                </div>
-              )}
-
-              {error && !tableMissing && (
-                <div className="text-red-400 text-sm bg-red-950/30 border border-red-900/30 rounded p-3">
-                  {error}
-                </div>
-              )}
-
-              <div className="grid grid-cols-5 gap-2">
-                {slots.map((_, i) => {
-                  const item = filledItems[i];
-                  return (
-                    <div
-                      key={i}
-                      className="relative w-14 h-14 bg-slate-950 border border-slate-800 rounded-md flex items-center justify-center overflow-hidden group"
-                      title={item ? TITLE_MAP[item.key] || item.key : undefined}
-                    >
-                      {item && (
-                        <>
-                          {item.key === 'hand_stone' ? (
-                            <div
-                              className="w-[32px] h-[32px]"
-                              style={{
-                                backgroundImage: `url("${encodeURI(ICON_MAP[item.key])}")`,
-                                backgroundPosition: '0 0',
-                                imageRendering: 'pixelated',
-                              }}
-                            />
-                          ) : (
-                            <img
-                              src={encodeURI(ICON_MAP[item.key] || '')}
-                              alt={item.key}
-                              className="max-w-[80%] max-h-[80%] object-contain"
-                              style={{ imageRendering: 'pixelated' }}
-                            />
-                          )}
-                          <div className="absolute bottom-0 right-0 bg-slate-950/80 px-1 min-w-[16px] text-center rounded-tl text-[10px] font-bold text-white leading-tight pb-px">
-                            {item.qty}
-                          </div>
-                        </>
-                      )}
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
-          )}
-        </div>
+  return <>
+    <div ref={placement.panelRef} style={placement.style} className="fixed bottom-16 right-3 z-[160] flex w-[400px] max-w-[calc(100vw-16px)] flex-col overflow-hidden rounded-xl border-2 border-[#8a5a2b] bg-[#2b1c10]/98 shadow-2xl">
+      <div {...placement.dragHandleProps} className="flex cursor-move items-center justify-between border-b-2 border-[#8a5a2b] bg-[#3a2817] px-4 py-2.5">
+        <h2 className="text-sm font-bold uppercase tracking-[.2em] text-amber-200">Inventário</h2>
+        <button type="button" onClick={() => !draft && onClose()} title={draft ? 'Conclua ou cancele o descarte antes de fechar' : 'Fechar'} className="text-amber-100/80 hover:text-white"><X className="h-5 w-5" /></button>
+      </div>
+      <div className="p-4">
+        {loading && !loaded ? <p className="py-12 text-center text-amber-100/60">Carregando inventário...</p> : <>
+          {error && <p className="mb-3 rounded border border-red-800 bg-red-950/50 p-2 text-xs text-red-200">{error}</p>}
+          <div className="grid gap-2" style={{ gridTemplateColumns: `repeat(${INVENTORY_COLUMNS}, minmax(0, 1fr))` }}>
+            {slots.map((key, index) => <button key={index} type="button" data-inventory-slot={index} onPointerDown={(e) => beginDrag(e, index)} onPointerMove={moveDrag} onPointerUp={(e) => endDrag(e, index)} onPointerCancel={() => setDrag(null)} title={key ? `${inventoryEntry(catalog, key)?.name ?? inventoryFallbackName(key)} (${items[key]})` : 'Vazio'} className={`relative aspect-square touch-none select-none rounded border-2 bg-black/35 ${index >= hotbarStart ? 'border-amber-500/70 bg-[#4b3018]' : 'border-[#6b4a26]'} ${drag?.active && drag.from === index ? 'opacity-30' : ''}`}>
+              {key && <><InventoryItemThumb itemKey={key} catalog={catalog} /><span className="absolute bottom-0 right-0 rounded-tl bg-black/80 px-1 text-[10px] font-bold text-white">{items[key]}</span></>}
+            </button>)}
+          </div>
+          <p className="mt-3 border-t border-[#6b4a26] pt-2 text-center text-[10px] font-bold uppercase tracking-[.18em] text-amber-200/70">Acesso rápido</p>
+        </>}
       </div>
     </div>
-  );
+    {drag?.active && slots[drag.from] && <div className="pointer-events-none fixed z-[250] h-12 w-12 -translate-x-1/2 -translate-y-1/2 rounded border-2 border-amber-400 bg-[#2b1c10] p-1" style={{ left: drag.x, top: drag.y }}><InventoryItemThumb itemKey={slots[drag.from]!} catalog={catalog} /></div>}
+    {draft && <div className="fixed z-[260] w-56 -translate-x-1/2 rounded-lg border-2 border-[#8a5a2b] bg-[#2b1c10] p-3 text-amber-100 shadow-2xl" style={{ left: draft.x, top: draft.y }}>
+      <div className="mb-2 flex items-center gap-2"><span className="h-8 w-8"><InventoryItemThumb itemKey={draft.itemKey} catalog={catalog} size={32} /></span><p className="text-xs font-bold">Soltar <InventoryItemName itemKey={draft.itemKey} catalog={catalog} /></p></div>
+      <div className="flex items-center gap-2"><button onClick={() => setDraft({ ...draft, qty: Math.max(1, draft.qty - 1) })}><Minus className="h-4 w-4" /></button><input aria-label="Quantidade" type="number" min={1} max={draft.max} value={draft.qty} onChange={(e) => setDraft({ ...draft, qty: Math.max(1, Math.min(draft.max, Number(e.target.value) || 1)) })} className="w-12 rounded bg-black/40 text-center" /><button onClick={() => setDraft({ ...draft, qty: Math.min(draft.max, draft.qty + 1) })}><Plus className="h-4 w-4" /></button><button onClick={() => setDraft({ ...draft, qty: draft.max })} className="text-xs underline">Tudo</button></div>
+      <div className="mt-3 flex gap-2"><button onClick={confirmDrop} className="rounded bg-amber-600 px-2 py-1 text-xs font-bold">Confirmar</button><button onClick={() => setDraft(null)} className="rounded border border-[#8a5a2b] px-2 py-1 text-xs">Cancelar</button></div>
+    </div>}
+  </>;
 }
+function rectContains(rect: DOMRect, x: number, y: number) { return x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom; }

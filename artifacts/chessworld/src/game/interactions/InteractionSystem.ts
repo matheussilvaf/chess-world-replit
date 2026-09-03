@@ -9,6 +9,7 @@ export type InteractionCategory =
   | 'portal'
   | 'village_gateway'
   | 'stats_board'
+  | 'station'
   | 'world_zone';
 
 export type TriggerMode = 'click' | 'proximity';
@@ -83,11 +84,43 @@ export class InteractionSystem {
     this.loadChessTablesInteractions(tmjData);
     this.loadHouseInteractions(tmjData);
     this.loadBuildingInteractions(tmjData);
+    this.loadStationInteractions(tmjData);
     this.loadPortalInteractions(tmjData);
     this.loadVillageInteractions(tmjData);
     this.loadWorldZones(tmjData);
     this.loadCharacterAnchors(tmjData);
     this.createInteractiveZones();
+  }
+
+  /** Crafting maps use a single `interactions` object layer.  Normalize the
+   * historical Portuguese ids so UI code only needs to handle `station`. */
+  private loadStationInteractions(tmjData: any) {
+    const objects = this.findObjectLayer(tmjData.layers, 'interactions');
+    if (!objects) return;
+    const categories: Record<string, string> = {
+      forja: 'forja',
+      fornalha: 'fornalha',
+      estacao_pocoes: 'estacao-de-pocoes',
+      crafting: 'mesa-de-crafting',
+    };
+    for (const obj of objects) {
+      const props = this.getProps(obj);
+      const raw = String(props.stationId ?? props.interaction ?? obj.name ?? '').toLowerCase();
+      const stationId = categories[raw];
+      if (!stationId) continue;
+      this.interactions.push({
+        id: obj.id,
+        name: obj.name || stationId,
+        category: 'station',
+        triggerMode: 'proximity',
+        x: obj.x,
+        y: obj.y,
+        width: obj.width || 32,
+        height: obj.height || 32,
+        properties: { ...props, stationId },
+        interactionRadius: Number(props.interactionRadius) || 64,
+      });
+    }
   }
 
   private findObjectLayer(layers: any[], name: string): any[] | null {

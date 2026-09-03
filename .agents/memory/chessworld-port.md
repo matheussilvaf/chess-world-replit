@@ -130,8 +130,13 @@ The tester's headless browser has no WebGL context; Phaser 4 is WebGL-only (no C
 - Debug visuals (client) mostram caixas SEMPRE que há config salva; `combatBoxesEnabled` ("Ativas no jogo") gateia só o DANO no servidor (dois lados: atacante não agenda, alvo é pulado). Flag `character_switch_enabled` tem cache de 60s no servidor e toggle no /admin.
 - Client must send `set_character` on EVERY join (even for the default character): the server resolves combat hurtboxes from `PlayerState.characterId` and SKIPS targets whose id is empty/unknown — a client that stays silent is unhittable. First announce is always accepted; later switches are gated (prod: `game_settings.character_switch_enabled`).
 - Combat approximations are deliberate: server can't know the remote visual frame, so targets use union-of-hurtboxes (walk-if-moving else idle chain); attack timelines run at 12 fps via room clock.
-- Movement (`move_to`) is client-driven by original design — server only sanitizes (finite numbers, string caps). Full server-side movement is a known open item, NOT a bug to "fix" casually; it would change game feel and the live cloud protocol.
+- Movement (`move_to`) remains client-driven, but the server bounds displacement by elapsed time before position can authorize craft/drop/pickup. Full server-side movement is still out of scope.
+  **Why:** finite-number checks alone let clients teleport into an interaction/drop radius; replacing movement entirely would change game feel and protocol.
+  **How to apply:** keep the movement allowance above normal client speed, reset it after server teleports, and update both together whenever movement speed changes.
 - Any async gap in a message handler (e.g. cooldown set after `await getConfig`) is a burst-bypass: reserve cooldowns/locks synchronously before the first await, re-check seated/left state inside every scheduled callback.
+- Inventory client reconciliation treats server item arrays as complete snapshots, never patches.
+  **Why:** returning only changed rows after a collection erased unrelated tools/custom items from the unified inventory UI.
+  **How to apply:** every successful inventory mutation must reread and return the full user inventory before the client replaces local totals.
 - Characters auto-discovered from `public/assets/characters/character NN - 4/8 directions/<movement>/*.png` by a Vite plugin serving `assets/characters/manifest.json`; combat config JSON (schemaVersion 1) lives in Supabase `character_configs.config` jsonb (user must run the ALTER TABLE — editor shows the SQL banner until then) with legacy origin/body columns kept in sync for the old cloud server.
 
 ## Combat stats (HP/dano) — design decisions

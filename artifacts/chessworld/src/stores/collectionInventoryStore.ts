@@ -11,10 +11,60 @@ import { create } from 'zustand';
 import { fetchInventory, postCollect } from '../lib/collectionInventoryApi';
 import type { RigApiError } from '../components/admin/rig-editor/rigApi';
 import { useAuthStore } from './authStore';
+import { DEFAULT_INVENTORY_SLOT_COUNT } from '../config/inventoryConfig';
+
+const emptySlots = () => Array<string | null>(DEFAULT_INVENTORY_SLOT_COUNT).fill(null);
+const storageKey = (userId: string) => `chessworld:collection-inventory-slots:${userId}`;
+
+function loadSlots(userId: string | null): Array<string | null> {
+  if (!userId) return emptySlots();
+  try {
+    const raw = localStorage.getItem(storageKey(userId));
+    const parsed = raw ? JSON.parse(raw) : null;
+    if (!Array.isArray(parsed)) return emptySlots();
+    const unique = new Set<string>();
+    return Array.from({ length: DEFAULT_INVENTORY_SLOT_COUNT }, (_, index) => {
+      const value = parsed[index];
+      if (typeof value !== 'string' || !value || unique.has(value)) return null;
+      unique.add(value);
+      return value;
+    });
+  } catch {
+    return emptySlots();
+  }
+}
+
+function persistSlots(slots: Array<string | null>) {
+  const userId = useAuthStore.getState().user?.id;
+  if (!userId) return;
+  try { localStorage.setItem(storageKey(userId), JSON.stringify(slots)); } catch { /* unavailable */ }
+}
+
+/** Retains the player's arrangement and fills open slots with newly obtained items. */
+function reconcileSlots(slots: Array<string | null>, items: Record<string, number>) {
+  const available = new Set(Object.entries(items).filter(([, qty]) => qty > 0).map(([key]) => key));
+  const seen = new Set<string>();
+  const next = slots.map((key) => {
+    if (!key || !available.has(key) || seen.has(key)) return null;
+    seen.add(key);
+    return key;
+  });
+  for (const key of available) {
+    if (seen.has(key)) continue;
+    const empty = next.indexOf(null);
+    if (empty === -1) break;
+    next[empty] = key;
+    seen.add(key);
+  }
+  return next;
+}
 
 interface CollectionInventoryState {
   /** itemKey → quantidade total. */
   items: Record<string, number>;
+  /** Fixed ordered grid. null represents an empty slot. */
+  slots: Array<string | null>;
+  selectedItemKey: string | null;
   loaded: boolean;
   loading: boolean;
   error: string | null;
@@ -23,10 +73,16 @@ interface CollectionInventoryState {
   refresh: () => Promise<void>;
   addLocal: (itemKey: string, qty: number) => void;
   applyServerTotals: (items: Array<{ itemKey: string; qty: number }>) => void;
+  moveSlot: (from: number, to: number) => void;
+  selectItem: (itemKey: string | null) => void;
+  hydrateSlots: () => void;
+  setInventoryError: (message: string | null) => void;
 }
 
 export const useCollectionInventoryStore = create<CollectionInventoryState>((set, get) => ({
   items: {},
+  slots: emptySlots(),
+  selectedItemKey: null,
   loaded: false,
   loading: false,
   error: null,
@@ -40,8 +96,11 @@ export const useCollectionInventoryStore = create<CollectionInventoryState>((set
       const res = await fetchInventory();
       const items: Record<string, number> = {};
       for (const it of res.items) items[it.itemKey] = it.qty;
+      const slots = reconcileSlots(loadSlots(useAuthStore.getState().user?.id ?? null), items);
+      persistSlots(slots);
       set({
         items,
+        slots,
         loaded: true,
         loading: false,
         tableMissing: !!res.tableMissing,
@@ -59,14 +118,37 @@ export const useCollectionInventoryStore = create<CollectionInventoryState>((set
   },
 
   addLocal: (itemKey, qty) =>
-    set((s) => ({ items: { ...s.items, [itemKey]: (s.items[itemKey] ?? 0) + qty } })),
+    set((s) => {
+      const items = { ...s.items, [itemKey]: Math.max(0, (s.items[itemKey] ?? 0) + qty) };
+      const slots = reconcileSlots(s.slots, items);
+      persistSlots(slots);
+      return { items, slots };
+    }),
 
   applyServerTotals: (items) =>
     set((s) => {
-      const next = { ...s.items };
-      for (const it of items) next[it.itemKey] = it.qty;
-      return { items: next };
+      const next: Record<string, number> = {};
+      for (const it of items) if (it.qty > 0) next[it.itemKey] = it.qty;
+      const slots = reconcileSlots(s.slots, next);
+      persistSlots(slots);
+      return {
+        items: next,
+        slots,
+        selectedItemKey: s.selectedItemKey && next[s.selectedItemKey] > 0 ? s.selectedItemKey : null,
+      };
     }),
+
+  moveSlot: (from, to) => set((s) => {
+    if (from < 0 || to < 0 || from >= s.slots.length || to >= s.slots.length || from === to) return s;
+    const slots = [...s.slots];
+    [slots[from], slots[to]] = [slots[to], slots[from]];
+    persistSlots(slots);
+    return { slots };
+  }),
+
+  selectItem: (selectedItemKey) => set({ selectedItemKey }),
+  hydrateSlots: () => set((s) => ({ slots: reconcileSlots(loadSlots(useAuthStore.getState().user?.id ?? null), s.items) })),
+  setInventoryError: (error) => set({ error }),
 }));
 
 // --------------------------- fila de coleta (lote) ---------------------------

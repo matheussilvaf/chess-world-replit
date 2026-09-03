@@ -2,6 +2,7 @@ import { Room, Client } from '@colyseus/core';
 import { Chess } from 'chess.js';
 import { nanoid } from 'nanoid';
 import { WorldState } from '../schemas/WorldState.js';
+import { WorldDropState } from '../schemas/WorldDropState.js';
 import { PlayerState } from '../schemas/PlayerState.js';
 import { BoardState } from '../schemas/BoardState.js';
 import { MatchState } from '../schemas/MatchState.js';
@@ -18,6 +19,9 @@ import {
   type PlayerCharacterConfigV1,
 } from '../shared/characters/PlayerCharacterShapes.js';
 import { verifySupabaseToken } from '../auth/supabaseAuth.js';
+import { classifyCraftEntityId } from '../shared/craft/CraftShapes.js';
+import { applyInventoryDeltas, getInventory } from '../collection/inventoryRepository.js';
+import { executePlayerCraft } from '../craft/craftService.js';
 
 interface JoinOptions {
   /** Legado — IGNORADO para identidade (era spoofável). Mantido só por compat. */
@@ -32,6 +36,8 @@ interface JoinOptions {
 }
 
 const activeGames = new Map<string, Chess>();
+type RoomReply = { event: 'inventory_changed' | 'inventory_error' | 'craft_result' | 'craft_error'; payload: Record<string, unknown> };
+interface RoomRequestEntry { kind: string; fingerprint: string; task: Promise<RoomReply>; settled: boolean; }
 
 export class WorldRoom extends Room<WorldState> {
   private readonly TICK_RATE = 20;
@@ -55,6 +61,17 @@ export class WorldRoom extends Room<WorldState> {
   private equipSeq = new Map<string, number>();
   /** Fila de persistência da arma POR JOGADOR: garante a ordem dos writes no DB. */
   private persistQueue = new Map<string, Promise<void>>();
+  /** Per-session idempotent operation cache. */
+  private inventoryRequests = new Map<string, Map<string, RoomRequestEntry>>();
+  private dropLocks = new Map<string, Promise<void>>();
+  /** Last accepted client movement; performance.now is monotonic per process. */
+  private movementGuards = new Map<string, number>();
+  // Client MAP_CONFIG.playerSpeed is 120 px/s. 180 allows normal rounding,
+  // input/network cadence variance and a modest sprint margin without allowing
+  // an instant jump between distant crafting stations.
+  private readonly MAX_PLAYER_SPEED = 180;
+  private readonly MOVEMENT_INITIAL_MARGIN = 64;
+  private readonly WORLD_BOUNDARY = 10_000;
 
   onCreate(options: any) {
     this.setState(new WorldState());
@@ -76,11 +93,18 @@ export class WorldRoom extends Room<WorldState> {
       if (this.combatResolver.isDead(client.sessionId)) return; // corpses don't walk
       // Combat resolves hitboxes from these values — never let NaN/Infinity
       // or non-numeric junk poison authoritative state.
-      if (!Number.isFinite(data?.x) || !Number.isFinite(data?.y)) return;
+       if (!Number.isFinite(data?.x) || !Number.isFinite(data?.y) ||
+         Math.abs(data.x) > this.WORLD_BOUNDARY || Math.abs(data.y) > this.WORLD_BOUNDARY) return;
+       const now = performance.now();
+       const lastAt = this.movementGuards.get(client.sessionId) ?? now;
+       // Cap elapsed credit: a suspended client cannot bank unlimited distance.
+       const allowance = this.MOVEMENT_INITIAL_MARGIN + this.MAX_PLAYER_SPEED * Math.min(2, (now - lastAt) / 1000);
+       if (Math.hypot(data.x - player.x, data.y - player.y) > allowance) return;
       player.x = data.x;
       player.y = data.y;
-      if (Number.isFinite(data.targetX)) player.targetX = data.targetX;
-      if (Number.isFinite(data.targetY)) player.targetY = data.targetY;
+       this.movementGuards.set(client.sessionId, now);
+       if (Number.isFinite(data.targetX) && Math.abs(data.targetX) <= this.WORLD_BOUNDARY) player.targetX = data.targetX;
+       if (Number.isFinite(data.targetY) && Math.abs(data.targetY) <= this.WORLD_BOUNDARY) player.targetY = data.targetY;
       if (typeof data.direction === 'string' && data.direction.length <= 16) player.direction = data.direction;
       player.isMoving = !!data.isMoving;
     });
@@ -569,6 +593,19 @@ export class WorldRoom extends Room<WorldState> {
       void this.combatResolver.handleAttack(client, data);
     });
 
+    this.onMessage('inventory_drop', (client, data) => {
+      const body = data as { requestId?: unknown; itemKey?: unknown; qty?: unknown; x?: unknown; y?: unknown };
+      void this.runRoomRequest(client, 'inventory_drop', body?.requestId, JSON.stringify([body?.itemKey, body?.qty, body?.x, body?.y]), () => this.handleInventoryDrop(client, data));
+    });
+    this.onMessage('inventory_pickup', (client, data) => {
+      const body = data as { requestId?: unknown; dropId?: unknown };
+      void this.runRoomRequest(client, 'inventory_pickup', body?.requestId, JSON.stringify([body?.dropId]), () => this.handleInventoryPickup(client, data));
+    });
+    this.onMessage('craft_item', (client, data) => {
+      const body = data as { requestId?: unknown; stationId?: unknown; targetId?: unknown; quantity?: unknown };
+      void this.runRoomRequest(client, 'craft_item', body?.requestId, JSON.stringify([body?.stationId, body?.targetId, body?.quantity]), () => this.handleCraftItem(client, data));
+    });
+
     // ---- Personagem jogável (aparência composta + arma da classe) ----
     // (o antigo set_character morreu: personagens legados ficam no repo mas
     // fora do jogo — sem troca dinâmica de personagem.)
@@ -603,18 +640,22 @@ export class WorldRoom extends Room<WorldState> {
         void this.persistEquippedWeapon(player.id, null);
         return;
       }
-      // FASE DE TESTE dos itens novos: o cliente pode pedir um item
-      // específico (`ref`), validado pelo FORMATO (gen:weapon/... ou
-      // gen:crafttools/... — ferramentas de coleta). A existência da folha
-      // vem do manifest do cliente nesta fase. Sem ref, comportamento
-      // antigo: a arma padrão da classe.
       const requested =
         typeof data?.ref === 'string' && WEAPON_REF_RE.test(data.ref) ? (data.ref as string) : null;
-      let ref = requested;
-      if (!ref) {
-        const categories = await getAssetCategoriesCached();
-        if (this.equipSeq.get(client.sessionId) !== seq) return; // pedido mais novo venceu
-        ref = findClassWeaponRef(categories, config.classId);
+      const categories = await getAssetCategoriesCached();
+      if (this.equipSeq.get(client.sessionId) !== seq) return;
+      const defaultWeapon = findClassWeaponRef(categories, config.classId);
+      let ref = defaultWeapon;
+      if (requested) {
+        if (requested.startsWith('gen:weapon/')) {
+          if (requested !== defaultWeapon) return;
+          ref = requested;
+        } else if (requested.startsWith('gen:crafttools/')) {
+          const inventory = await getInventory(this.state.players.get(client.sessionId)?.id ?? '');
+          if (this.equipSeq.get(client.sessionId) !== seq || inventory.error || inventory.tableMissing ||
+              !inventory.items.some((item) => item.itemKey === requested && item.qty > 0)) return;
+          ref = requested;
+        } else return;
       }
       if (!ref) return; // classe sem arma liberada no assets-controller
       const player = this.state.players.get(client.sessionId);
@@ -623,6 +664,126 @@ export class WorldRoom extends Room<WorldState> {
       config.equippedWeapon = ref;
       void this.persistEquippedWeapon(player.id, ref);
     });
+  }
+
+  private async inventorySnapshot(userId: string): Promise<RoomReply> {
+    const snapshot = await getInventory(userId);
+    return snapshot.error || snapshot.tableMissing
+      ? { event: 'inventory_error', payload: { message: snapshot.error ?? 'Inventário indisponível' } }
+      : { event: 'inventory_changed', payload: { items: snapshot.items } };
+  }
+
+  private async runRoomRequest(client: Client, kind: string, requestId: unknown, fingerprint: string, operation: () => Promise<RoomReply>): Promise<void> {
+    const errorEvent = kind === 'craft_item' ? 'craft_error' : 'inventory_error';
+    if (typeof requestId !== 'string' || !/^[A-Za-z0-9_-]{1,64}$/.test(requestId)) {
+      client.send(errorEvent, { message: 'requestId inválido' });
+      return;
+    }
+    let cache = this.inventoryRequests.get(client.sessionId);
+    if (!cache) this.inventoryRequests.set(client.sessionId, (cache = new Map()));
+    let entry = cache.get(requestId);
+    if (entry && (entry.kind !== kind || entry.fingerprint !== fingerprint)) {
+      client.send(errorEvent, { requestId, message: 'requestId reutilizado com operação diferente' });
+      return;
+    }
+    if (!entry) {
+      if (cache.size >= 200) {
+        const settledId = [...cache.entries()].find(([, candidate]) => candidate.settled)?.[0];
+        if (!settledId) {
+          client.send(errorEvent, { requestId, message: 'Muitas operações pendentes' });
+          return;
+        }
+        cache.delete(settledId);
+      }
+      const created: RoomRequestEntry = { kind, fingerprint, settled: false, task: Promise.resolve({ event: errorEvent, payload: {} }) };
+      created.task = operation().catch((error): RoomReply => ({
+        event: errorEvent, payload: { message: error instanceof Error ? error.message : 'Falha interna' },
+      })).finally(() => { created.settled = true; });
+      entry = created;
+      cache.set(requestId, created);
+    }
+    const reply = await entry.task;
+    client.send(reply.event, { requestId, ...reply.payload });
+  }
+
+  private async handleCraftItem(client: Client, data: unknown): Promise<RoomReply> {
+    const player = this.state.players.get(client.sessionId);
+    const body = data as { stationId?: unknown; targetId?: unknown; quantity?: unknown };
+    if (!player || player.id.startsWith('anon:')) return { event: 'craft_error', payload: { message: 'Autenticação obrigatória' } };
+    if (!this.region.startsWith('craft:')) return { event: 'craft_error', payload: { message: 'Craft disponível apenas no Mundo de Coleta' } };
+    if (typeof body?.stationId !== 'string' || !this.isNearCraftStation(player.x, player.y, body.stationId)) {
+      return { event: 'craft_error', payload: { message: 'Você precisa estar perto da estação selecionada' } };
+    }
+    const result = await executePlayerCraft(player.id, body.stationId, body.targetId, body.quantity);
+    return result.ok
+      ? { event: 'craft_result', payload: { items: result.items } }
+      : { event: 'craft_error', payload: { message: result.message } };
+  }
+
+  private isNearCraftStation(x: number, y: number, stationId: string): boolean {
+    const rects: Record<string, [number, number, number, number]> = {
+      fornalha: [2298, 2752, 298, 211],
+      'estacao-de-pocoes': [2328.67, 1983.33, 423, 386],
+      'mesa-de-crafting': [3804, 1985, 654, 319],
+      forja: [2392.5, 3075, 332, 123],
+    };
+    const rect = rects[stationId];
+    if (!rect) return false;
+    const [left, top, width, height] = rect;
+    const nearestX = Math.max(left, Math.min(x, left + width));
+    const nearestY = Math.max(top, Math.min(y, top + height));
+    return Math.hypot(x - nearestX, y - nearestY) <= 64;
+  }
+
+  private async handleInventoryDrop(client: Client, data: unknown): Promise<RoomReply> {
+    const player = this.state.players.get(client.sessionId);
+    const body = data as { requestId?: unknown; itemKey?: unknown; qty?: unknown; x?: unknown; y?: unknown };
+    if (!player || player.id.startsWith('anon:')) return { event: 'inventory_error', payload: { message: 'Autenticação obrigatória' } };
+    if (typeof body.itemKey !== 'string' || classifyCraftEntityId(body.itemKey) === null ||
+      typeof body.qty !== 'number' || !Number.isInteger(body.qty) || body.qty < 1 || body.qty > 999 ||
+      typeof body.x !== 'number' || typeof body.y !== 'number' || !Number.isFinite(body.x) || !Number.isFinite(body.y) ||
+      Math.hypot(body.x - player.x, body.y - player.y) > 180) {
+      return { event: 'inventory_error', payload: { message: 'Drop inválido ou distante' } };
+    }
+    const debit = await applyInventoryDeltas(player.id, [{ itemKey: body.itemKey, qty: -body.qty }]);
+    if (!debit.ok) {
+      return { event: 'inventory_error', payload: { message: debit.error ?? 'Saldo insuficiente' } };
+    }
+    const drop = new WorldDropState();
+    drop.id = nanoid();
+    drop.itemKey = body.itemKey;
+    drop.qty = body.qty;
+    drop.x = body.x;
+    drop.y = body.y;
+    this.state.worldDrops.set(drop.id, drop);
+    return this.inventorySnapshot(player.id);
+  }
+
+  private async handleInventoryPickup(client: Client, data: unknown): Promise<RoomReply> {
+    const player = this.state.players.get(client.sessionId);
+    const body = data as { requestId?: unknown; dropId?: unknown };
+    if (!player || player.id.startsWith('anon:')) return { event: 'inventory_error', payload: { message: 'Autenticação obrigatória' } };
+    if (typeof body?.dropId !== 'string' || body.dropId.length > 64) return { event: 'inventory_error', payload: { message: 'dropId inválido' } };
+    const dropId = body.dropId;
+    const previous = this.dropLocks.get(dropId) ?? Promise.resolve();
+    const task = previous.catch(() => undefined).then(async (): Promise<RoomReply> => {
+      const drop = this.state.worldDrops.get(dropId);
+      if (!drop) return { event: 'inventory_error', payload: { message: 'Drop não encontrado' } };
+      if (Math.hypot(drop.x - player.x, drop.y - player.y) > 100) {
+        return { event: 'inventory_error', payload: { message: 'Drop distante demais' } };
+      }
+      // Remove first so all clients observe one claimant; restore exactly if credit fails.
+      this.state.worldDrops.delete(dropId);
+      const credit = await applyInventoryDeltas(player.id, [{ itemKey: drop.itemKey, qty: drop.qty }]);
+      if (!credit.ok) {
+        this.state.worldDrops.set(drop.id, drop);
+        return { event: 'inventory_error', payload: { message: credit.error ?? 'Não foi possível recolher drop' } };
+      }
+      return this.inventorySnapshot(player.id);
+    });
+    const marker = task.then(() => undefined, () => undefined);
+    this.dropLocks.set(dropId, marker);
+    try { return await task; } finally { if (this.dropLocks.get(dropId) === marker) this.dropLocks.delete(dropId); }
   }
 
   /** Carrega o personagem persistido e espelha no estado (last-write-wins). */
@@ -640,9 +801,49 @@ export class WorldRoom extends Room<WorldState> {
         if (result.error) console.warn(`[WorldRoom] load do personagem falhou: ${result.error}`);
         return; // sem personagem criado (id anônimo, tabela ausente, etc.)
       }
-      this.playerCharacters.set(sessionId, result.config);
-      still.appearance = canonicalAppearanceString(result.config.appearance);
-      still.equippedWeapon = result.config.equippedWeapon ?? '';
+      const config = result.config;
+      const persistedWeapon = config.equippedWeapon || null;
+      let equippedWeapon = persistedWeapon;
+      if (persistedWeapon?.startsWith('gen:weapon/')) {
+        try {
+          const categories = await getAssetCategoriesCached();
+          if (this.characterLoadSeq.get(sessionId) !== seq) return;
+          // A ref persistida só é válida se for precisamente a arma padrão da
+          // classe atual; refs de teste/outra classe nunca ressuscitam.
+          if (persistedWeapon !== findClassWeaponRef(categories, config.classId)) equippedWeapon = null;
+        } catch (error) {
+          console.warn(`[WorldRoom] categorias para arma equipada indisponíveis: ${error instanceof Error ? error.message : String(error)}`);
+          equippedWeapon = null;
+        }
+      } else if (persistedWeapon?.startsWith('gen:crafttools/')) {
+        try {
+          const inventory = await getInventory(player.id);
+          if (this.characterLoadSeq.get(sessionId) !== seq) return;
+          if (inventory.error || inventory.tableMissing) {
+            console.warn(`[WorldRoom] inventário para ferramenta equipada indisponível: ${inventory.error ?? 'tabela ausente'}`);
+            equippedWeapon = null;
+          } else if (!inventory.items.some((item) => item.itemKey === persistedWeapon && item.qty > 0)) {
+            equippedWeapon = null;
+          }
+        } catch (error) {
+          console.warn(`[WorldRoom] inventário para ferramenta equipada indisponível: ${error instanceof Error ? error.message : String(error)}`);
+          equippedWeapon = null;
+        }
+      } else if (persistedWeapon !== null) {
+        equippedWeapon = null;
+      }
+      // Both validations can await. Do not publish a load superseded while they
+      // were in flight, nor resurrect state after the player left.
+      if (this.characterLoadSeq.get(sessionId) !== seq) return;
+      const currentPlayer = this.state.players.get(sessionId);
+      if (!currentPlayer) return;
+      if (config.equippedWeapon !== equippedWeapon) {
+        config.equippedWeapon = null;
+        void this.persistEquippedWeapon(currentPlayer.id, null);
+      }
+      this.playerCharacters.set(sessionId, config);
+      currentPlayer.appearance = canonicalAppearanceString(config.appearance);
+      currentPlayer.equippedWeapon = equippedWeapon ?? '';
     } catch (e) {
       console.warn(`[WorldRoom] load do personagem falhou: ${e instanceof Error ? e.message : String(e)}`);
     }
@@ -683,9 +884,16 @@ export class WorldRoom extends Room<WorldState> {
       playerId = verified;
     }
 
-    // Kick existing session for same player (stale connection / reconnect)
+    // Kick existing session for same player (stale connection / reconnect).
+    // Preserve its authoritative position before deleting it; join options are
+    // client input and must never choose a spawn or bypass movement limits.
+    let reconnectPosition: { x: number; y: number } | null = null;
     this.state.players.forEach((existing, existingSessionId) => {
       if (existing.id === playerId && existingSessionId !== client.sessionId) {
+        if (Number.isFinite(existing.x) && Number.isFinite(existing.y) &&
+          Math.abs(existing.x) <= this.WORLD_BOUNDARY && Math.abs(existing.y) <= this.WORLD_BOUNDARY) {
+          reconnectPosition = { x: existing.x, y: existing.y };
+        }
         console.log(`[WorldRoom] Duplicate player ${playerId}, removing stale session: ${existingSessionId}`);
         this.state.voiceParticipants.delete(existingSessionId);
         this.state.players.delete(existingSessionId);
@@ -701,16 +909,21 @@ export class WorldRoom extends Room<WorldState> {
     player.sessionId = client.sessionId;
     player.username = options.username || 'Anonymous';
     player.rating = options.rating || 1200;
-    player.region = options.region || 'default';
-    player.x = options.x || 1273;
-    player.y = options.y || 926;
+    player.region = this.region;
+    const spawn = reconnectPosition ?? (this.region.startsWith('craft:')
+      ? { x: 3256, y: 2246.67 }
+      : { x: 1273, y: 926 });
+    player.x = spawn.x;
+    player.y = spawn.y;
     player.targetX = player.x;
     player.targetY = player.y;
     player.direction = 'down';
     player.isMoving = false;
 
     this.state.players.set(client.sessionId, player);
+    this.movementGuards.set(client.sessionId, performance.now());
     console.log(`[WorldRoom] Player joined: ${player.username} (${client.sessionId}) | total: ${this.state.players.size}`);
+    if (!playerId.startsWith('anon:')) void this.inventorySnapshot(playerId).then((reply) => client.send(reply.event, reply.payload));
 
     // Personagem persistido (aparência/arma) chega de forma assíncrona — o
     // sprite só nasce visível nos outros clientes quando appearance preenche.
@@ -779,6 +992,8 @@ export class WorldRoom extends Room<WorldState> {
     this.characterLoadSeq.delete(client.sessionId);
     this.playerCharacters.delete(client.sessionId);
     this.equipSeq.delete(client.sessionId);
+    this.inventoryRequests.delete(client.sessionId);
+    this.movementGuards.delete(client.sessionId);
     console.log(`[WorldRoom] Player removed: ${username} | remaining: ${this.state.players.size}`);
 
     const affected: [string, MatchState][] = [];
@@ -933,6 +1148,7 @@ export class WorldRoom extends Room<WorldState> {
       const y = Math.round(CENTER_Y + (Math.random() * 2 - 1) * 60);
       player.x = x;
       player.y = y;
+      this.movementGuards.set(sessionId, performance.now());
       player.targetX = x;
       player.targetY = y;
       player.isMoving = false;

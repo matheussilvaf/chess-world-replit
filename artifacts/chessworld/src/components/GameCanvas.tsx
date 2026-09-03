@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { CRAFTING_MAP, CRAFT_REGION_PREFIX } from '../game/config/craftingMapConfig';
 import Phaser from 'phaser';
 import { createPhaserGame, getWorldScene } from '../game/PhaserGame';
@@ -30,12 +30,18 @@ import { EquipmentButton, EquipmentPanel } from './game/EquipmentPanel';
 import { ToolHotbar } from './game/ToolHotbar';
 import { PerformanceHud } from './game/PerformanceHud';
 import { usePlayerCharacterStore } from '../stores/playerCharacterStore';
+import { setInventoryBridge } from '../game/inventory/inventoryBridge';
+import { useCollectionInventoryStore } from '../stores/collectionInventoryStore';
+import { loadInventoryVisualCatalog } from '../lib/inventory/inventoryVisualCatalog';
+import { clearStationCraftBridge, rejectStationCraft, resolveStationCraft, setStationCraftSender } from '../game/stations/stationCraftBridge';
+import { StationGamePanel } from './game/StationGamePanel';
 
 export function GameCanvas() {
   const containerRef = useRef<HTMLDivElement>(null);
   const gameRef = useRef<Phaser.Game | null>(null);
   const sceneReadyRef = useRef(false);
   const attachedRoomIdRef = useRef<string | null>(null);
+  const inventoryListenerCleanupRef = useRef<(() => void) | null>(null);
   const transitionInProgressRef = useRef(false);
   const { setSelectedBoard } = useGameStore();
   const { user, profile } = useAuthStore();
@@ -45,6 +51,7 @@ export function GameCanvas() {
   const liveAppearance = usePlayerCharacterStore((s) => s.liveAppearance);
   const liveWeapon = usePlayerCharacterStore((s) => s.liveWeapon);
   const worldReady = usePlayerCharacterStore((s) => s.worldReady);
+  const [stationId, setStationId] = useState<string | null>(null);
   // Modal obrigatório: usuário logado, resposta do banco chegou e não há
   // personagem. Sem resposta (loaded=false) NÃO abre — evita pedir criação
   // para quem já tem personagem numa falha de rede.
@@ -111,6 +118,10 @@ export function GameCanvas() {
       scene.onInteractionClick = (event) => {
         const interactionStore = useInteractionStore.getState();
         const obj = event.object;
+        if (obj.category === 'station') {
+          setStationId(String(obj.properties.stationId));
+          return;
+        }
 
         if (obj.category === 'chess_table' || obj.category === 'player_seat') {
           if (!user || !profile || !region) return;
@@ -197,6 +208,7 @@ export function GameCanvas() {
       };
       scene.onProximityExit = () => {
         useInteractionStore.getState().setProximityObject(null);
+        setStationId(null);
       };
       scene.onZoneChange = (event) => {
         const store = useInteractionStore.getState();
@@ -223,8 +235,12 @@ export function GameCanvas() {
     return () => {
       cancelled = true;
       attachedRoomIdRef.current = null;
+      inventoryListenerCleanupRef.current?.();
+      inventoryListenerCleanupRef.current = null;
       sceneReadyRef.current = false;
       usePlayerCharacterStore.getState().reset();
+      setInventoryBridge(null);
+      clearStationCraftBridge();
       if (gameRef.current) {
         gameRef.current.destroy(true);
         gameRef.current = null;
@@ -501,6 +517,11 @@ export function GameCanvas() {
 
   function attachListeners(scene: WorldScene, room: Room<any>) {
     if (attachedRoomIdRef.current === room.roomId) return;
+    inventoryListenerCleanupRef.current?.();
+    inventoryListenerCleanupRef.current = null;
+    scene.clearWorldDrops();
+    setInventoryBridge(null);
+    clearStationCraftBridge();
     attachedRoomIdRef.current = room.roomId;
 
     const state = room.state;
@@ -513,6 +534,54 @@ export function GameCanvas() {
     scene.setAttackSender((payload) => {
       room.send('attack', payload);
     });
+    scene.setInventoryPickupSender((dropId) => room.send('inventory_pickup', { requestId: crypto.randomUUID(), dropId }));
+    setInventoryBridge({
+      screenToWorld: (clientX, clientY) => {
+        const canvas = gameRef.current?.canvas;
+        if (!canvas) return null;
+        const rect = canvas.getBoundingClientRect();
+        const point = scene.cameras.main.getWorldPoint(clientX - rect.left, clientY - rect.top);
+        return { x: point.x, y: point.y };
+      },
+      sendDrop: (request) => room.send('inventory_drop', request),
+    });
+    setStationCraftSender((payload) => room.send('craft_item', payload));
+    const removeCraftResult = room.onMessage('craft_result', (data: { requestId: string; items: Array<{ itemKey: string; qty: number }> }) => {
+      resolveStationCraft(data.requestId, { items: data.items });
+    });
+    const removeCraftError = room.onMessage('craft_error', (data: { requestId?: string; message?: string }) => {
+      rejectStationCraft(data.requestId, data.message ?? 'Não foi possível criar o item.');
+    });
+    const removeInventoryChanged = room.onMessage('inventory_changed', (data: { items?: Array<{ itemKey: string; qty: number }> }) => {
+      if (Array.isArray(data.items)) useCollectionInventoryStore.getState().applyServerTotals(data.items);
+    });
+    const removeInventoryError = room.onMessage('inventory_error', (data: { message?: string }) => {
+      useCollectionInventoryStore.getState().setInventoryError(data.message ?? 'Não foi possível alterar o inventário.');
+    });
+    // Older cloud deployments do not have this MapSchema yet.
+    const drops = state.worldDrops;
+    let detachDrops: (() => void) | undefined;
+    if (drops && typeof drops.onAdd === 'function') {
+      drops.onAdd((drop: any, id: string) => {
+        const render = () => {
+          const data = { id, itemKey: drop.itemKey, qty: drop.qty, x: drop.x, y: drop.y };
+          void loadInventoryVisualCatalog().then(catalog => scene.upsertWorldDrop(data, undefined, catalog.byId.get(data.itemKey)?.thumb)).catch(() => scene.upsertWorldDrop(data));
+        };
+        render();
+        drop.onChange?.(render);
+      });
+      drops.onRemove((_: any, id: string) => scene.removeWorldDrop(id));
+      detachDrops = () => scene.clearWorldDrops();
+    }
+    inventoryListenerCleanupRef.current = () => {
+      if (typeof removeInventoryChanged === 'function') removeInventoryChanged();
+      if (typeof removeInventoryError === 'function') removeInventoryError();
+      if (typeof removeCraftResult === 'function') removeCraftResult();
+      if (typeof removeCraftError === 'function') removeCraftError();
+      detachDrops?.();
+      setInventoryBridge(null);
+      clearStationCraftBridge();
+    };
     // Personagem do jogador: equipar/desequipar arma + aviso de "receita
     // salva" (depois da criação, o servidor recarrega do banco e publica).
     usePlayerCharacterStore.getState().setSenders(
@@ -869,6 +938,7 @@ export function GameCanvas() {
       <ToolHotbar />
       <EquipmentButton />
       <EquipmentPanel />
+      {stationId && <StationGamePanel stationId={stationId} onClose={() => setStationId(null)} />}
       <PerformanceHud />
     </div>
   );
