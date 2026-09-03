@@ -23,6 +23,11 @@ const ICON_MAP: Record<string, string> = {
   'herb:horse_root': '/assets/CraftingWorld/resources/ervas e plantas/horse_root.png',
   'bush': '/assets/CraftingWorld/resources/ervas e plantas/bush.png',
   'hand_stone': '/assets/CraftingWorld/resources/minerals/stone-hand-collected.png',
+  'branch': '/assets/CraftingWorld/resources/branch/branch.png',
+  'beef': '/assets/CraftingWorld/resources/beef/beef.png',
+  'couro': '/assets/CraftingWorld/resources/couro/couro.png',
+  'wool': '/assets/CraftingWorld/resources/wool/wool.png',
+  'pena': '/assets/CraftingWorld/resources/pena/pena.png',
 };
 
 const TITLE_MAP: Record<string, string> = {
@@ -45,6 +50,11 @@ const TITLE_MAP: Record<string, string> = {
   'herb:horse_root': 'Raiz do Cavalo',
   'bush': 'Arbusto',
   'hand_stone': 'Pedra Pequena',
+  'branch': 'Galho',
+  'beef': 'Carne',
+  'couro': 'Couro',
+  'wool': 'Lã',
+  'pena': 'Pena',
 };
 
 export function CollectionInventoryButton({ onClick }: { onClick: () => void }) {

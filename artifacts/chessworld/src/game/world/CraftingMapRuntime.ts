@@ -12,6 +12,7 @@ import {
   mineralTextureKey,
   HAND_STONE,
   BUSH,
+  BRANCH,
   craftDepthForY,
   ANIMALS,
   ANIMAL_SHEET,
@@ -19,7 +20,11 @@ import {
   ANIMAL_WANDER,
   animalTextureKey,
   animalWalkTextureKey,
+  animalDieTextureKey,
   animalAnimKey,
+  ANIMAL_DROP_ITEMS,
+  animalDropTextureKey,
+  animalDropUrl,
   HERBS,
   herbTextureKey,
   herbUrl,
@@ -38,6 +43,8 @@ import {
 import { getTextureKeyForTileset } from '../config/worldAssets';
 import { loadCollectionWorldConfig } from '../config/collectionConfigLoader';
 import {
+  ANIMAL_DROP_ITEM_KEYS,
+  DEFAULT_ANIMAL_DROP_COUNT,
   DEFAULT_DROP_COUNT,
   DEFAULT_RESPAWN_SECONDS,
   DEFAULT_RESOURCE_HP,
@@ -103,14 +110,16 @@ interface AnimalAgent {
   fleeTangentSign?: 1 | -1;
   /** Animação só pode trocar depois deste timestamp (anti-flicker de frames). */
   animLockUntilMs?: number;
+  /** Abatido: update() ignora o bicho enquanto a animação de morte toca. */
+  dead?: boolean;
 }
 
 /** Nó de recurso golpeável: HP (admin) − poder do item por golpe → quebra/coleta. */
 interface ResourceNode {
   sprite: Phaser.GameObjects.Image | Phaser.GameObjects.Sprite;
-  /** Chave de hurtbox do admin: mineral:<id> | tree:<tipo> | herb:<id> | bush | hand_stone | animal:<id>. */
+  /** Chave de hurtbox do admin: mineral:<id> | tree:<tipo> | herb:<id> | bush | hand_stone | branch | animal:<id>. */
   key: string;
-  kind: 'mineral' | 'tree' | 'herb' | 'bush' | 'hand_stone' | 'animal';
+  kind: 'mineral' | 'tree' | 'herb' | 'bush' | 'hand_stone' | 'branch' | 'animal';
   id: string;
   /** HP restante; -1 = ainda não inicializado (lê a config no 1º golpe). */
   hp: number;
@@ -325,6 +334,9 @@ export class CraftingMapRuntime {
       if (!scene.textures.exists(BUSH.textureKey)) {
         scene.load.image(BUSH.textureKey, encodeURI(BUSH.url));
       }
+      if (!scene.textures.exists(BRANCH.textureKey)) {
+        scene.load.image(BRANCH.textureKey, encodeURI(BRANCH.url));
+      }
       for (const h of HERBS) {
         if (!scene.textures.exists(herbTextureKey(h.id))) {
           scene.load.image(herbTextureKey(h.id), encodeURI(herbUrl(h.file)));
@@ -338,6 +350,9 @@ export class CraftingMapRuntime {
         if (!scene.textures.exists(animalWalkTextureKey(a.id))) {
           scene.load.spritesheet(animalWalkTextureKey(a.id), encodeURI(`${RESOURCES_BASE}animais/${a.walkFile}`), size);
         }
+        if (!scene.textures.exists(animalDieTextureKey(a.id))) {
+          scene.load.spritesheet(animalDieTextureKey(a.id), encodeURI(`${RESOURCES_BASE}animais/${a.dieFile}`), size);
+        }
       }
 
       // Drops (mini-itens que pulam do nó quebrado): minérios 32×32, troncos 64×64.
@@ -349,6 +364,12 @@ export class CraftingMapRuntime {
       for (const t of TREE_TYPES) {
         if (!scene.textures.exists(treeDropTextureKey(t))) {
           scene.load.image(treeDropTextureKey(t), encodeURI(treeDropUrl(t)));
+        }
+      }
+      // Itens de abate (drops dos animais): imagens únicas 40×40.
+      for (const d of ANIMAL_DROP_ITEMS) {
+        if (!scene.textures.exists(animalDropTextureKey(d.key))) {
+          scene.load.image(animalDropTextureKey(d.key), encodeURI(animalDropUrl(d.file)));
         }
       }
     });
@@ -400,16 +421,26 @@ export class CraftingMapRuntime {
     if (scene.textures.exists(BUSH.textureKey)) {
       scene.textures.get(BUSH.textureKey).setFilter(Phaser.Textures.FilterMode.NEAREST);
     }
+    if (scene.textures.exists(BRANCH.textureKey)) {
+      scene.textures.get(BRANCH.textureKey).setFilter(Phaser.Textures.FilterMode.NEAREST);
+    }
+    for (const d of ANIMAL_DROP_ITEMS) {
+      if (scene.textures.exists(animalDropTextureKey(d.key))) {
+        scene.textures.get(animalDropTextureKey(d.key)).setFilter(Phaser.Textures.FilterMode.NEAREST);
+      }
+    }
     for (const h of HERBS) {
       if (scene.textures.exists(herbTextureKey(h.id))) {
         scene.textures.get(herbTextureKey(h.id)).setFilter(Phaser.Textures.FilterMode.NEAREST);
       }
     }
     // Animais: cada sheet tem 4 linhas de 7 frames — uma animação por direção.
+    // eat/walk repetem em loop; die toca UMA vez (abate) e congela no fim.
     for (const a of ANIMALS) {
-      const sheets: Array<['eat' | 'walk', string, number]> = [
+      const sheets: Array<['eat' | 'walk' | 'die', string, number]> = [
         ['eat', animalTextureKey(a.id), ANIMAL_SHEET.eatFrameRate],
         ['walk', animalWalkTextureKey(a.id), ANIMAL_SHEET.walkFrameRate],
+        ['die', animalDieTextureKey(a.id), ANIMAL_SHEET.dieFrameRate],
       ];
       for (const [action, key, frameRate] of sheets) {
         if (!scene.textures.exists(key)) continue;
@@ -424,7 +455,7 @@ export class CraftingMapRuntime {
                 end: row * ANIMAL_SHEET.columns + ANIMAL_SHEET.frames - 1,
               }),
               frameRate,
-              repeat: -1,
+              repeat: action === 'die' ? 0 : -1,
             });
           }
         });
@@ -484,6 +515,7 @@ export class CraftingMapRuntime {
     const now = this.scene.time.now;
     for (const ag of this.animals) {
       if (!ag.sprite.active) continue;
+      if (ag.dead) continue; // abatido: parado até a animação de morte acabar
       if (ag.fleeUntilMs !== undefined) {
         if (now < ag.fleeUntilMs) {
           this.updateFlee(ag, deltaMs, playerX, playerY);
@@ -722,9 +754,10 @@ export class CraftingMapRuntime {
     this.applyHit(best, state);
   }
 
-  /** Itens por quebra (config do admin ou padrão 3). */
+  /** Itens por quebra/abate (config do admin; padrão 3 — drops de animal: 1). */
   private dropCountFor(key: string): number {
-    return this.worldConfig?.dropCounts?.[key] ?? DEFAULT_DROP_COUNT;
+    const fallback = ANIMAL_DROP_ITEM_KEYS.includes(key) ? DEFAULT_ANIMAL_DROP_COUNT : DEFAULT_DROP_COUNT;
+    return this.worldConfig?.dropCounts?.[key] ?? fallback;
   }
 
   /** Segundos até renascer (config do admin ou padrão 60). */
@@ -767,12 +800,20 @@ export class CraftingMapRuntime {
     node.hpBarUntilMs = undefined;
   }
 
-  /** Esconde barrinhas de HP paradas há mais de ~3 s (chamado no update). */
+  /** Esconde barrinhas paradas há mais de ~3 s e segue animais em movimento. */
   private updateNodeHpBars(): void {
     const now = this.scene.time.now;
     for (const node of this.nodes) {
-      if (node.hpBar && node.hpBarUntilMs !== undefined && now >= node.hpBarUntilMs) {
+      if (!node.hpBar) continue;
+      if (node.hpBarUntilMs !== undefined && now >= node.hpBarUntilMs) {
         this.hideNodeHpBar(node);
+        continue;
+      }
+      // Animal ferido continua andando/fugindo — a barrinha acompanha o bicho.
+      if (node.kind === 'animal' && !node.broken && node.sprite.active) {
+        const hurt = this.nodeHurtboxRect(node);
+        node.hpBar.setPosition(node.sprite.x - 15, hurt.y - 8); // 15 = metade da barra (w 30)
+        node.hpBar.setDepth(this.depthForY(node.sprite.y) + 2);
       }
     }
   }
@@ -887,7 +928,9 @@ export class CraftingMapRuntime {
    * Regras de um golpe/flecha que CONECTOU num nó:
    *  1. Qualquer acerto consome durabilidade da FERRAMENTA usada (item errado
    *     e nível baixo também — golpe no vento não passa por aqui).
-   *  2. Animais: flash + fuga, como antes (ferramenta/nível não se aplicam).
+   *  2. Animais: QUALQUER arma/ferramenta tira HP (sem pareamento nem nível);
+   *     golpe não-letal assusta (vaca/ovelha fogem); HP ≤ 0 → abate: animação
+   *     de morte, drops (carne/couro/lã/pena) e respawn imediato no spawn.
    *  3. Item errado (inclusive arma comum/flecha): flash VERMELHO e nada mais —
    *     sem dano, sem barrinha, sem som.
    *  4. Ferramenta certa com nível < mínimo: o HP desce normalmente mas TRAVA
@@ -899,11 +942,20 @@ export class CraftingMapRuntime {
     // (1) Durabilidade: −1 por golpe computado num nó (só crafttools do inventário).
     if (hit.toolRef) useToolInventoryStore.getState().consumeDurability(hit.toolRef);
     if (node.kind === 'animal') {
-      // (2) Animais ainda não morrem (a morte será especificada depois).
-      // Vaca/ovelha fogem em raio limitado; galinha só toma o flash.
+      // (2) Animais: qualquer arma/ferramenta tira HP (sem pareamento). O HP
+      // vem do admin (resourceHp['animal:<id>']); zerou → abate + drops.
       this.flashNode(spr, 0xffffff);
       const ag = this.animals.find((a) => a.sprite === node.sprite);
-      if (ag && ag.def.id !== 'chicken') {
+      if (!ag || ag.dead) return;
+      if (node.hp < 0) node.hp = this.maxHpFor(node.key);
+      node.hp -= Math.max(1, Math.round(hit.power));
+      if (node.hp <= 0) {
+        this.killAnimal(node, ag);
+        return;
+      }
+      this.showNodeHpBar(node);
+      // Golpe não-letal assusta: vaca/ovelha fogem; galinha só toma o flash.
+      if (ag.def.id !== 'chicken') {
         const now = this.scene.time.now;
         if ((ag.fleeUntilMs ?? 0) <= now) {
           // 1º golpe desta fuga: âncora do raio = onde o animal estava.
@@ -995,7 +1047,6 @@ export class CraftingMapRuntime {
    * para nunca nascerem uns por cima dos outros; o imã do updateDrops() coleta.
    */
   private spawnDrops(node: ResourceNode, x: number, y: number): void {
-    const scene = this.scene;
     let textureKey: string;
     let frame: number | undefined;
     let scale = 1;
@@ -1014,19 +1065,36 @@ export class CraftingMapRuntime {
         textureKey = BUSH.textureKey;
         scale = SELF_DROP_SCALE.bush;
         break;
+      case 'branch':
+        textureKey = BRANCH.textureKey;
+        scale = SELF_DROP_SCALE.branch;
+        break;
       case 'hand_stone':
         textureKey = HAND_STONE.textureKey;
         frame = 0; // sheet de 10 frames — o drop usa só o primeiro
         scale = SELF_DROP_SCALE.hand_stone;
         break;
       default:
-        return; // animais não dropam (ainda)
+        return; // nó de animal não usa este caminho — abate usa spawnAnimalDrops()
     }
+    this.spawnDropItems(node.key, textureKey, x, y, this.dropCountFor(node.key), scale, frame);
+  }
+
+  /** Loop comum dos drops: pop em leque + registro no imã do updateDrops(). */
+  private spawnDropItems(
+    itemKey: string,
+    textureKey: string,
+    x: number,
+    y: number,
+    count: number,
+    scale: number,
+    frame?: number,
+  ): void {
+    const scene = this.scene;
     if (!scene.textures.exists(textureKey)) {
       console.warn(`[CraftingMap] textura de drop ausente: ${textureKey}`);
       return;
     }
-    const count = this.dropCountFor(node.key);
     if (count <= 0) return;
     const baseAng = Math.random() * Math.PI * 2;
     const sector = (Math.PI * 2) / count;
@@ -1040,7 +1108,7 @@ export class CraftingMapRuntime {
       spr.setOrigin(0.5, 0.5);
       spr.setDepth(this.depthForY(y) + 1);
       spr.setScale(0);
-      const item: DropItem = { sprite: spr, state: 'pop', itemKey: node.key };
+      const item: DropItem = { sprite: spr, state: 'pop', itemKey };
       this.drops.push(item);
       scene.tweens.add({
         targets: spr,
@@ -1055,6 +1123,67 @@ export class CraftingMapRuntime {
         },
       });
     }
+  }
+
+  /**
+   * Abate: trava o bicho, toca a animação de morte na direção atual e, ao
+   * terminar, solta os drops (vaca: carne+couro; ovelha: lã; galinha: pena)
+   * no lugar da morte e renasce o animal NA HORA no ponto de spawn original.
+   */
+  private killAnimal(node: ResourceNode, ag: AnimalAgent): void {
+    node.broken = true; // sai da mira dos golpes; sem respawnAtMs (respawn imediato)
+    ag.dead = true;
+    ag.fleeUntilMs = undefined;
+    this.hideNodeHpBar(node);
+    const spr = ag.sprite;
+    const dropX = spr.x;
+    const dropY = spr.y;
+    const finish = () => {
+      if (!spr.active) return; // teardown no meio da animação
+      this.spawnAnimalDrops(ag.def, dropX, dropY);
+      this.respawnAnimal(node, ag);
+    };
+    const dieKey = animalAnimKey(ag.def.id, 'die', ag.dir);
+    if (this.scene.anims.exists(dieKey)) {
+      spr.play(dieKey);
+      spr.once(Phaser.Animations.Events.ANIMATION_COMPLETE, finish);
+    } else {
+      finish(); // dying.png ausente — pula direto para drops + respawn
+    }
+  }
+
+  /** Drops do abate no chão da morte (quantidade por item vem do admin; padrão 1). */
+  private spawnAnimalDrops(def: AnimalDef, x: number, y: number): void {
+    for (const itemKey of def.drops) {
+      const item = ANIMAL_DROP_ITEMS.find((d) => d.key === itemKey);
+      if (!item) continue;
+      this.spawnDropItems(itemKey, animalDropTextureKey(item.key), x, y, this.dropCountFor(itemKey), 1);
+    }
+  }
+
+  /** Renasce no ponto de spawn original (homeX/Y nunca mudam), cheio e comendo. */
+  private respawnAnimal(node: ResourceNode, ag: AnimalAgent): void {
+    const spr = ag.sprite;
+    spr.setPosition(ag.homeX, ag.homeY);
+    spr.setDepth(this.depthForY(ag.homeY));
+    const dir = ANIMAL_DIRECTIONS[Math.floor(Math.random() * ANIMAL_DIRECTIONS.length)];
+    ag.dead = false;
+    ag.state = 'eat';
+    ag.dir = dir;
+    ag.timerMs = ANIMAL_WANDER.eatMinMs + Math.random() * (ANIMAL_WANDER.eatMaxMs - ANIMAL_WANDER.eatMinMs);
+    ag.targetX = ag.homeX;
+    ag.targetY = ag.homeY;
+    ag.fleeUntilMs = undefined;
+    ag.fleeAnchorX = undefined;
+    ag.fleeAnchorY = undefined;
+    ag.fleeTangentSign = undefined;
+    ag.animLockUntilMs = 0;
+    node.hp = -1; // relê o HP do admin no próximo golpe
+    node.broken = false;
+    node.respawnAtMs = undefined;
+    spr.play({ key: animalAnimKey(ag.def.id, 'eat', dir), startFrame: Math.floor(Math.random() * ANIMAL_SHEET.frames) });
+    spr.setScale(0.7); // pop de nascimento, igual aos outros respawns
+    this.scene.tweens.add({ targets: spr, scaleX: 1, scaleY: 1, duration: 180, ease: 'Back.easeOut' });
   }
 
   private updateDrops(deltaMs: number, playerX?: number, playerY?: number): void {
@@ -1357,6 +1486,13 @@ export class CraftingMapRuntime {
       if (img) this.nodes.push({ sprite: img, key: 'bush', kind: 'bush', id: 'bush', hp: -1, broken: false });
     }
 
+    // Galhos caídos (branches_spawns). Enquanto branch.png não existir no
+    // projeto, place() devolve null e os pontos ficam vazios (aviso no console).
+    for (const obj of this.findObjects(tmj, BRANCH.layer)) {
+      const img = place(obj.x, obj.y, BRANCH.textureKey);
+      if (img) this.nodes.push({ sprite: img, key: 'branch', kind: 'branch', id: 'branch', hp: -1, broken: false });
+    }
+
     // Ervas e plantas (erva-da-cura, erva vermelha, erva azul, espinho da dama, raiz do cavalo).
     for (const h of HERBS) {
       for (const obj of this.findObjects(tmj, h.layer)) {
@@ -1388,7 +1524,7 @@ export class CraftingMapRuntime {
           targetX: obj.x,
           targetY: obj.y,
         });
-        // Animais também recebem golpes (só reagem — morte será especificada depois).
+        // Animais também são nós: golpes tiram HP (admin) e o abate dropa itens.
         this.nodes.push({ sprite: spr, key: `animal:${a.id}`, kind: 'animal', id: a.id, hp: -1, broken: false });
       }
     }

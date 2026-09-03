@@ -13003,7 +13003,7 @@
                         }],
                  "opacity":1,
                  "type":"objectgroup",
-                 "visible":false,
+                 "visible":true,
                  "x":0,
                  "y":0
                 }, 
@@ -16566,7 +16566,7 @@
                         }],
                  "opacity":1,
                  "type":"objectgroup",
-                 "visible":false,
+                 "visible":true,
                  "x":0,
                  "y":0
                 }, 
@@ -19553,7 +19553,7 @@
                         }],
                  "opacity":1,
                  "type":"objectgroup",
-                 "visible":false,
+                 "visible":true,
                  "x":0,
                  "y":0
                 }, 
@@ -19830,7 +19830,7 @@
                         }],
                  "opacity":1,
                  "type":"objectgroup",
-                 "visible":false,
+                 "visible":true,
                  "x":0,
                  "y":0
                 }, 
@@ -20369,7 +20369,7 @@
                         }],
                  "opacity":1,
                  "type":"objectgroup",
-                 "visible":false,
+                 "visible":true,
                  "x":0,
                  "y":0
                 }, 
@@ -20764,7 +20764,642 @@
                         }],
                  "opacity":1,
                  "type":"objectgroup",
-                 "visible":false,
+                 "visible":true,
+                 "x":0,
+                 "y":0
+                }, 
+                {
+                 "draworder":"topdown",
+                 "id":140,
+                 "name":"branches_spawns",
+                 "objects":[
+                        {
+                         "height":0,
+                         "id":1124,
+                         "name":"",
+                         "opacity":1,
+                         "point":true,
+                         "properties":[
+                                {
+                                 "name":"id",
+                                 "type":"int",
+                                 "value":1
+                                }, 
+                                {
+                                 "name":"type",
+                                 "type":"string",
+                                 "value":"branch"
+                                }],
+                         "rotation":0,
+                         "type":"",
+                         "visible":true,
+                         "width":0,
+                         "x":3364,
+                         "y":3890
+                        }, 
+                        {
+                         "height":0,
+                         "id":1125,
+                         "name":"",
+                         "opacity":1,
+                         "point":true,
+                         "properties":[
+                                {
+                                 "name":"id",
+                                 "type":"int",
+                                 "value":2
+                                }, 
+                                {
+                                 "name":"type",
+                                 "type":"string",
+                                 "value":"branch"
+                                }],
+                         "rotation":0,
+                         "type":"",
+                         "visible":true,
+                         "width":0,
+                         "x":3344,
+                         "y":4030
+                        }, 
+                        {
+                         "height":0,
+                         "id":1126,
+                         "name":"",
+                         "opacity":1,
+                         "point":true,
+                         "properties":[
+                                {
+                                 "name":"id",
+                                 "type":"int",
+                                 "value":3
+                                }, 
+                                {
+                                 "name":"type",
+                                 "type":"string",
+                                 "value":"branch"
+                                }],
+                         "rotation":0,
+                         "type":"",
+                         "visible":true,
+                         "width":0,
+                         "x":3448,
+                         "y":4284
+                        }, 
+                        {
+                         "height":0,
+                         "id":1127,
+                         "name":"",
+                         "opacity":1,
+                         "point":true,
+                         "properties":[
+                                {
+                                 "name":"id",
+                                 "type":"int",
+                                 "value":4
+                                }, 
+                                {
+                                 "name":"type",
+                                 "type":"string",
+                                 "value":"branch"
+                                }],
+                         "rotation":0,
+                         "type":"",
+                         "visible":true,
+                         "width":0,
+                         "x":3213.33333333333,
+                         "y":4386
+                        }, 
+                        {
+                         "height":0,
+                         "id":1128,
+                         "name":"",
+                         "opacity":1,
+                         "point":true,
+                         "properties":[
+                                {
+                                 "name":"id",
+                                 "type":"int",
+                                 "value":5
+                                }, 
+                                {
+                                 "name":"type",
+                                 "type":"string",
+                                 "value":"branch"
+                                }],
+                         "rotation":0,
+                         "type":"",
+                         "visible":true,
+                         "width":0,
+                         "x":3458,
+                         "y":3985.33333333333
+                        }, 
+                        {
+                         "height":0,
+                         "id":1129,
+                         "name":"",
+                         "opacity":1,
+                         "point":true,
+                         "properties":[
+                                {
+                                 "name":"id",
+                                 "type":"int",
+                                 "value":6
+                                }, 
+                                {
+                                 "name":"type",
+                                 "type":"string",
+                                 "value":"branch"
+                                }],
+                         "rotation":0,
+                         "type":"",
+                         "visible":true,
+                         "width":0,
+                         "x":2709.33333333333,
+                         "y":3749.33333333333
+                        }, 
+                        {
+                         "height":0,
+                         "id":1130,
+                         "name":"",
+                         "opacity":1,
+                         "point":true,
+                         "properties":[
+                                {
+                                 "name":"id",
+                                 "type":"int",
+                                 "value":7
+                                }, 
+                                {
+                                 "name":"type",
+                                 "type":"string",
+                                 "value":"branch"
+                                }],
+                         "rotation":0,
+                         "type":"",
+                         "visible":true,
+                         "width":0,
+                         "x":3502.66666666667,
+                         "y":3633.33333333333
+                        }, 
+                        {
+                         "height":0,
+                         "id":1131,
+                         "name":"",
+                         "opacity":1,
+                         "point":true,
+                         "properties":[
+                                {
+                                 "name":"id",
+                                 "type":"int",
+                                 "value":8
+                                }, 
+                                {
+                                 "name":"type",
+                                 "type":"string",
+                                 "value":"branch"
+                                }],
+                         "rotation":0,
+                         "type":"",
+                         "visible":true,
+                         "width":0,
+                         "x":2670.66666666667,
+                         "y":4854.66666666667
+                        }, 
+                        {
+                         "height":0,
+                         "id":1132,
+                         "name":"",
+                         "opacity":1,
+                         "point":true,
+                         "properties":[
+                                {
+                                 "name":"id",
+                                 "type":"int",
+                                 "value":9
+                                }, 
+                                {
+                                 "name":"type",
+                                 "type":"string",
+                                 "value":"branch"
+                                }],
+                         "rotation":0,
+                         "type":"",
+                         "visible":true,
+                         "width":0,
+                         "x":2689.33333333333,
+                         "y":4174.66666666667
+                        }, 
+                        {
+                         "height":0,
+                         "id":1133,
+                         "name":"",
+                         "opacity":1,
+                         "point":true,
+                         "properties":[
+                                {
+                                 "name":"id",
+                                 "type":"int",
+                                 "value":10
+                                }, 
+                                {
+                                 "name":"type",
+                                 "type":"string",
+                                 "value":"branch"
+                                }],
+                         "rotation":0,
+                         "type":"",
+                         "visible":true,
+                         "width":0,
+                         "x":2632,
+                         "y":3902.66666666667
+                        }, 
+                        {
+                         "height":0,
+                         "id":1134,
+                         "name":"",
+                         "opacity":1,
+                         "point":true,
+                         "properties":[
+                                {
+                                 "name":"id",
+                                 "type":"int",
+                                 "value":11
+                                }, 
+                                {
+                                 "name":"type",
+                                 "type":"string",
+                                 "value":"branch"
+                                }],
+                         "rotation":0,
+                         "type":"",
+                         "visible":true,
+                         "width":0,
+                         "x":3942.66666666667,
+                         "y":4113.33333333333
+                        }, 
+                        {
+                         "height":0,
+                         "id":1135,
+                         "name":"",
+                         "opacity":1,
+                         "point":true,
+                         "properties":[
+                                {
+                                 "name":"id",
+                                 "type":"int",
+                                 "value":12
+                                }, 
+                                {
+                                 "name":"type",
+                                 "type":"string",
+                                 "value":"branch"
+                                }],
+                         "rotation":0,
+                         "type":"",
+                         "visible":true,
+                         "width":0,
+                         "x":3876,
+                         "y":4285.33333333333
+                        }, 
+                        {
+                         "height":0,
+                         "id":1136,
+                         "name":"",
+                         "opacity":1,
+                         "point":true,
+                         "properties":[
+                                {
+                                 "name":"id",
+                                 "type":"int",
+                                 "value":13
+                                }, 
+                                {
+                                 "name":"type",
+                                 "type":"string",
+                                 "value":"branch"
+                                }],
+                         "rotation":0,
+                         "type":"",
+                         "visible":true,
+                         "width":0,
+                         "x":4221.33333333333,
+                         "y":4436
+                        }, 
+                        {
+                         "height":0,
+                         "id":1137,
+                         "name":"",
+                         "opacity":1,
+                         "point":true,
+                         "properties":[
+                                {
+                                 "name":"id",
+                                 "type":"int",
+                                 "value":14
+                                }, 
+                                {
+                                 "name":"type",
+                                 "type":"string",
+                                 "value":"branch"
+                                }],
+                         "rotation":0,
+                         "type":"",
+                         "visible":true,
+                         "width":0,
+                         "x":1272.72727272727,
+                         "y":3912.12121212121
+                        }, 
+                        {
+                         "height":0,
+                         "id":1138,
+                         "name":"",
+                         "opacity":1,
+                         "point":true,
+                         "properties":[
+                                {
+                                 "name":"id",
+                                 "type":"int",
+                                 "value":15
+                                }, 
+                                {
+                                 "name":"type",
+                                 "type":"string",
+                                 "value":"branch"
+                                }],
+                         "rotation":0,
+                         "type":"",
+                         "visible":true,
+                         "width":0,
+                         "x":1636.36363636364,
+                         "y":3103.0303030303
+                        }, 
+                        {
+                         "height":0,
+                         "id":1139,
+                         "name":"",
+                         "opacity":1,
+                         "point":true,
+                         "properties":[
+                                {
+                                 "name":"id",
+                                 "type":"int",
+                                 "value":16
+                                }, 
+                                {
+                                 "name":"type",
+                                 "type":"string",
+                                 "value":"branch"
+                                }],
+                         "rotation":0,
+                         "type":"",
+                         "visible":true,
+                         "width":0,
+                         "x":872.727272727273,
+                         "y":3163.63636363636
+                        }, 
+                        {
+                         "height":0,
+                         "id":1140,
+                         "name":"",
+                         "opacity":1,
+                         "point":true,
+                         "properties":[
+                                {
+                                 "name":"id",
+                                 "type":"int",
+                                 "value":17
+                                }, 
+                                {
+                                 "name":"type",
+                                 "type":"string",
+                                 "value":"branch"
+                                }],
+                         "rotation":0,
+                         "type":"",
+                         "visible":true,
+                         "width":0,
+                         "x":1636.36363636364,
+                         "y":4087.87878787879
+                        }, 
+                        {
+                         "height":0,
+                         "id":1141,
+                         "name":"",
+                         "opacity":1,
+                         "point":true,
+                         "properties":[
+                                {
+                                 "name":"id",
+                                 "type":"int",
+                                 "value":18
+                                }, 
+                                {
+                                 "name":"type",
+                                 "type":"string",
+                                 "value":"branch"
+                                }],
+                         "rotation":0,
+                         "type":"",
+                         "visible":true,
+                         "width":0,
+                         "x":878.787878787879,
+                         "y":4257.57575757576
+                        }, 
+                        {
+                         "height":0,
+                         "id":1142,
+                         "name":"",
+                         "opacity":1,
+                         "point":true,
+                         "properties":[
+                                {
+                                 "name":"id",
+                                 "type":"int",
+                                 "value":19
+                                }, 
+                                {
+                                 "name":"type",
+                                 "type":"string",
+                                 "value":"branch"
+                                }],
+                         "rotation":0,
+                         "type":"",
+                         "visible":true,
+                         "width":0,
+                         "x":672.727272727273,
+                         "y":3430.30303030303
+                        }, 
+                        {
+                         "height":0,
+                         "id":1143,
+                         "name":"",
+                         "opacity":1,
+                         "point":true,
+                         "properties":[
+                                {
+                                 "name":"id",
+                                 "type":"int",
+                                 "value":20
+                                }, 
+                                {
+                                 "name":"type",
+                                 "type":"string",
+                                 "value":"branch"
+                                }],
+                         "rotation":0,
+                         "type":"",
+                         "visible":true,
+                         "width":0,
+                         "x":1818.18181818182,
+                         "y":3496.9696969697
+                        }, 
+                        {
+                         "height":0,
+                         "id":1144,
+                         "name":"",
+                         "opacity":1,
+                         "point":true,
+                         "properties":[
+                                {
+                                 "name":"id",
+                                 "type":"int",
+                                 "value":21
+                                }, 
+                                {
+                                 "name":"type",
+                                 "type":"string",
+                                 "value":"branch"
+                                }],
+                         "rotation":0,
+                         "type":"",
+                         "visible":true,
+                         "width":0,
+                         "x":5478.78787878788,
+                         "y":4212.12121212121
+                        }, 
+                        {
+                         "height":0,
+                         "id":1145,
+                         "name":"",
+                         "opacity":1,
+                         "point":true,
+                         "properties":[
+                                {
+                                 "name":"id",
+                                 "type":"int",
+                                 "value":22
+                                }, 
+                                {
+                                 "name":"type",
+                                 "type":"string",
+                                 "value":"branch"
+                                }],
+                         "rotation":0,
+                         "type":"",
+                         "visible":true,
+                         "width":0,
+                         "x":5303.0303030303,
+                         "y":4663.63636363636
+                        }, 
+                        {
+                         "height":0,
+                         "id":1146,
+                         "name":"",
+                         "opacity":1,
+                         "point":true,
+                         "properties":[
+                                {
+                                 "name":"id",
+                                 "type":"int",
+                                 "value":23
+                                }, 
+                                {
+                                 "name":"type",
+                                 "type":"string",
+                                 "value":"branch"
+                                }],
+                         "rotation":0,
+                         "type":"",
+                         "visible":true,
+                         "width":0,
+                         "x":5769.69696969697,
+                         "y":4084.84848484848
+                        }, 
+                        {
+                         "height":0,
+                         "id":1147,
+                         "name":"",
+                         "opacity":1,
+                         "point":true,
+                         "properties":[
+                                {
+                                 "name":"id",
+                                 "type":"int",
+                                 "value":24
+                                }, 
+                                {
+                                 "name":"type",
+                                 "type":"string",
+                                 "value":"branch"
+                                }],
+                         "rotation":0,
+                         "type":"",
+                         "visible":true,
+                         "width":0,
+                         "x":5606.06060606061,
+                         "y":3160.60606060606
+                        }, 
+                        {
+                         "height":0,
+                         "id":1148,
+                         "name":"",
+                         "opacity":1,
+                         "point":true,
+                         "properties":[
+                                {
+                                 "name":"id",
+                                 "type":"int",
+                                 "value":25
+                                }, 
+                                {
+                                 "name":"type",
+                                 "type":"string",
+                                 "value":"branch"
+                                }],
+                         "rotation":0,
+                         "type":"",
+                         "visible":true,
+                         "width":0,
+                         "x":5393.93939393939,
+                         "y":3524.24242424242
+                        }, 
+                        {
+                         "height":0,
+                         "id":1149,
+                         "name":"",
+                         "opacity":1,
+                         "point":true,
+                         "properties":[
+                                {
+                                 "name":"id",
+                                 "type":"int",
+                                 "value":26
+                                }, 
+                                {
+                                 "name":"type",
+                                 "type":"string",
+                                 "value":"branch"
+                                }],
+                         "rotation":0,
+                         "type":"",
+                         "visible":true,
+                         "width":0,
+                         "x":5651.51515151515,
+                         "y":4336.36363636364
+                        }],
+                 "opacity":1,
+                 "type":"objectgroup",
+                 "visible":true,
                  "x":0,
                  "y":0
                 }, 
@@ -21159,7 +21794,7 @@
                         }],
                  "opacity":1,
                  "type":"objectgroup",
-                 "visible":false,
+                 "visible":true,
                  "x":0,
                  "y":0
                 }, 
@@ -21626,7 +22261,7 @@
                         }],
                  "opacity":1,
                  "type":"objectgroup",
-                 "visible":false,
+                 "visible":true,
                  "x":0,
                  "y":0
                 }, 
@@ -21829,7 +22464,7 @@
                         }],
                  "opacity":1,
                  "type":"objectgroup",
-                 "visible":false,
+                 "visible":true,
                  "x":0,
                  "y":0
                 }, 
@@ -22416,7 +23051,7 @@
                         }],
                  "opacity":1,
                  "type":"objectgroup",
-                 "visible":false,
+                 "visible":true,
                  "x":0,
                  "y":0
                 }, 
@@ -22595,7 +23230,7 @@
                         }],
                  "opacity":1,
                  "type":"objectgroup",
-                 "visible":false,
+                 "visible":true,
                  "x":0,
                  "y":0
                 }, 
@@ -22798,7 +23433,7 @@
                         }],
                  "opacity":1,
                  "type":"objectgroup",
-                 "visible":false,
+                 "visible":true,
                  "x":0,
                  "y":0
                 }, 
@@ -23337,7 +23972,7 @@
                         }],
                  "opacity":1,
                  "type":"objectgroup",
-                 "visible":false,
+                 "visible":true,
                  "x":0,
                  "y":0
                 }, 
@@ -23468,7 +24103,7 @@
                         }],
                  "opacity":1,
                  "type":"objectgroup",
-                 "visible":false,
+                 "visible":true,
                  "x":0,
                  "y":0
                 }, 
@@ -24346,7 +24981,7 @@
                         }],
                  "opacity":1,
                  "type":"objectgroup",
-                 "visible":false,
+                 "visible":true,
                  "x":0,
                  "y":0
                 }, 
@@ -24418,7 +25053,7 @@
                         }],
                  "opacity":1,
                  "type":"objectgroup",
-                 "visible":false,
+                 "visible":true,
                  "x":0,
                  "y":0
                 }],
@@ -24429,8 +25064,8 @@
          "x":0,
          "y":0
         }],
- "nextlayerid":140,
- "nextobjectid":1116,
+ "nextlayerid":141,
+ "nextobjectid":1150,
  "orientation":"orthogonal",
  "renderorder":"right-down",
  "tiledversion":"1.12.2",

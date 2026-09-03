@@ -9,7 +9,9 @@
  * craftingMapConfig, inclua o rótulo aqui e a chave no CollectionShapes.
  */
 import {
+  ANIMAL_DROP_ITEMS,
   ANIMALS,
+  BRANCH,
   BUSH,
   HAND_STONE,
   HERBS,
@@ -18,11 +20,12 @@ import {
   RESOURCES_BASE,
   TREE_SHEET,
   TREE_TYPES,
+  animalDropUrl,
   herbUrl,
   treeSheetUrl,
 } from '../../game/config/craftingMapConfig';
 
-export type ResourceGroup = 'Minerais' | 'Árvores' | 'Ervas' | 'Outros' | 'Animais';
+export type ResourceGroup = 'Minerais' | 'Árvores' | 'Ervas' | 'Outros' | 'Animais' | 'Drops de animais';
 
 export const RESOURCE_GROUPS: readonly ResourceGroup[] = [
   'Minerais',
@@ -30,6 +33,7 @@ export const RESOURCE_GROUPS: readonly ResourceGroup[] = [
   'Ervas',
   'Outros',
   'Animais',
+  'Drops de animais',
 ];
 
 export interface ResourceDefinition {
@@ -63,6 +67,11 @@ export const RESOURCE_LABELS: Record<string, string> = {
   horse_root: 'Raiz de cavalo',
   bush: 'Arbusto',
   hand_stone: 'Pedra de mão',
+  branch: 'Galho',
+  beef: 'Carne',
+  couro: 'Couro',
+  wool: 'Lã',
+  pena: 'Pena',
   cow: 'Vaca',
   sheep: 'Ovelha',
   chicken: 'Galinha',
@@ -112,6 +121,15 @@ export const RESOURCE_DEFINITIONS: ResourceDefinition[] = [
     frameWidth: HAND_STONE.frameWidth,
     frameHeight: HAND_STONE.frameHeight,
   },
+  {
+    key: 'branch',
+    label: RESOURCE_LABELS.branch,
+    group: 'Outros',
+    url: BRANCH.url,
+    frameWidth: 1,
+    frameHeight: 1,
+    naturalImage: true,
+  },
   ...ANIMALS.map((animal) => ({
     key: `animal:${animal.id}`,
     label: RESOURCE_LABELS[animal.id],
@@ -119,6 +137,16 @@ export const RESOURCE_DEFINITIONS: ResourceDefinition[] = [
     url: `${RESOURCES_BASE}animais/${animal.file}`,
     frameWidth: animal.frameSize,
     frameHeight: animal.frameSize,
+  })),
+  // Itens de abate — só existem como drop (não são nós do mapa).
+  ...ANIMAL_DROP_ITEMS.map((item) => ({
+    key: item.key,
+    label: RESOURCE_LABELS[item.key],
+    group: 'Drops de animais' as const,
+    url: animalDropUrl(item.file),
+    frameWidth: 1,
+    frameHeight: 1,
+    naturalImage: true,
   })),
 ];
 
@@ -149,4 +177,9 @@ export const RESOURCE_DROP_ICONS: Record<string, string> = {
   'herb:queen_thorn': `${RESOURCES_BASE}ervas e plantas/queen_thorn.png`,
   'herb:horse_root': `${RESOURCES_BASE}ervas e plantas/horse_root.png`,
   bush: BUSH.url,
+  branch: BRANCH.url,
+  beef: `${RESOURCES_BASE}beef/beef.png`,
+  couro: `${RESOURCES_BASE}couro/couro.png`,
+  wool: `${RESOURCES_BASE}wool/wool.png`,
+  pena: `${RESOURCES_BASE}pena/pena.png`,
 };

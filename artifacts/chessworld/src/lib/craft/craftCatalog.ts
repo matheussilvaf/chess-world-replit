@@ -24,6 +24,7 @@ export type CraftSectionId =
   | 'ervas'
   | 'outros'
   | 'animais'
+  | 'drops_animais'
   | 'custom';
 
 /** Como desenhar a miniatura de uma entrada. */
@@ -90,6 +91,7 @@ const GROUP_SECTIONS: Record<ResourceGroup, { id: CraftSectionId; label: string 
   Ervas: { id: 'ervas', label: 'Ervas e plantas' },
   Outros: { id: 'outros', label: 'Outros' },
   Animais: { id: 'animais', label: 'Animais' },
+  'Drops de animais': { id: 'drops_animais', label: 'Drops de animais' },
 };
 
 const withBase = (url: string) => `${import.meta.env.BASE_URL}${url.replace(/^\//, '')}`;

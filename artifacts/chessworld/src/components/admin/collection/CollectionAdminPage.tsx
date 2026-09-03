@@ -2,8 +2,10 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { ArrowLeft, Copy, Loader2, Minus, Plus, RefreshCw, RotateCcw, Save, Sprout } from 'lucide-react';
 import {
+  ANIMAL_DROP_ITEM_KEYS,
   COLLECTIBLE_ITEM_KEYS,
   COLLECTION_CONFIG_ID,
+  DEFAULT_ANIMAL_DROP_COUNT,
   DEFAULT_DROP_COUNT,
   DEFAULT_FLEE_RADIUS,
   DEFAULT_RESOURCE_HP,
@@ -31,6 +33,7 @@ import {
 } from '../../../game/config/craftingMapConfig';
 import {
   RESOURCE_DEFINITIONS,
+  RESOURCE_GROUPS,
   RESOURCE_LABELS,
   type ResourceDefinition,
 } from '../../../lib/collection/resourceCatalog';
@@ -48,6 +51,10 @@ const defaultFleeSpeed = (key: string): number => {
   const def = ANIMALS.find((animal) => animal.id === id);
   return Math.round((def?.speed ?? 22) * ANIMAL_FLEE.speedMultiplier);
 };
+
+/** Drops padrão: nós comuns soltam 3; drops de abate (carne/couro/lã/pena) soltam 1. */
+const defaultDropCountFor = (key: string): number =>
+  ANIMAL_DROP_ITEM_KEYS.includes(key) ? DEFAULT_ANIMAL_DROP_COUNT : DEFAULT_DROP_COUNT;
 
 const fullFrame = (width: number, height: number): ResourceHurtbox => ({
   offsetX: 0,
@@ -287,11 +294,11 @@ export function CollectionAdminPage() {
   /** Apenas overrides customizados; chave ausente significa frame inteiro. */
   const [hurtboxes, setHurtboxes] = useState<Record<string, ResourceHurtbox>>({});
   const [dropCounts, setDropCounts] = useState<Record<string, number>>(
-    Object.fromEntries(COLLECTIBLE_ITEM_KEYS.map((key) => [key, DEFAULT_DROP_COUNT])),
+    Object.fromEntries(COLLECTIBLE_ITEM_KEYS.map((key) => [key, defaultDropCountFor(key)])),
   );
-  /** HP dos recursos golpeáveis (animais fora — eles fogem, não quebram). */
+  /** HP dos golpeáveis — inclui animal:<id> (HP de abate do bicho). */
   const [resourceHp, setResourceHp] = useState<Record<string, number>>(
-    Object.fromEntries(COLLECTIBLE_ITEM_KEYS.map((key) => [key, DEFAULT_RESOURCE_HP])),
+    Object.fromEntries(RESOURCE_KEYS.map((key) => [key, DEFAULT_RESOURCE_HP])),
   );
   /** Nível mínimo da ferramenta por recurso (0 = qualquer nível extrai). */
   const [resourceMinLevel, setResourceMinLevel] = useState<Record<string, number>>(
@@ -391,11 +398,11 @@ export function CollectionAdminPage() {
         setDropCounts(Object.fromEntries(
           COLLECTIBLE_ITEM_KEYS.map((key) => [
             key,
-            config.dropCounts?.[key] ?? DEFAULT_DROP_COUNT,
+            config.dropCounts?.[key] ?? defaultDropCountFor(key),
           ]),
         ));
         setResourceHp(Object.fromEntries(
-          COLLECTIBLE_ITEM_KEYS.map((key) => [
+          RESOURCE_KEYS.map((key) => [
             key,
             config.resourceHp?.[key] ?? DEFAULT_RESOURCE_HP,
           ]),
@@ -433,10 +440,10 @@ export function CollectionAdminPage() {
       } else {
         setHurtboxes({});
         setDropCounts(Object.fromEntries(
-          COLLECTIBLE_ITEM_KEYS.map((key) => [key, DEFAULT_DROP_COUNT]),
+          COLLECTIBLE_ITEM_KEYS.map((key) => [key, defaultDropCountFor(key)]),
         ));
         setResourceHp(Object.fromEntries(
-          COLLECTIBLE_ITEM_KEYS.map((key) => [key, DEFAULT_RESOURCE_HP]),
+          RESOURCE_KEYS.map((key) => [key, DEFAULT_RESOURCE_HP]),
         ));
         setResourceMinLevel(Object.fromEntries(
           COLLECTIBLE_ITEM_KEYS.map((key) => [key, 0]),
@@ -516,10 +523,10 @@ export function CollectionAdminPage() {
         }),
       ),
       dropCounts: Object.fromEntries(
-        COLLECTIBLE_ITEM_KEYS.map((key) => [key, dropCounts[key] ?? DEFAULT_DROP_COUNT]),
+        COLLECTIBLE_ITEM_KEYS.map((key) => [key, dropCounts[key] ?? defaultDropCountFor(key)]),
       ),
       resourceHp: Object.fromEntries(
-        COLLECTIBLE_ITEM_KEYS.map((key) => [key, resourceHp[key] ?? DEFAULT_RESOURCE_HP]),
+        RESOURCE_KEYS.map((key) => [key, resourceHp[key] ?? DEFAULT_RESOURCE_HP]),
       ),
       resourceMinLevel: Object.fromEntries(
         COLLECTIBLE_ITEM_KEYS.map((key) => [key, resourceMinLevel[key] ?? 0]),
@@ -552,11 +559,11 @@ export function CollectionAdminPage() {
       setDropCounts(Object.fromEntries(
         COLLECTIBLE_ITEM_KEYS.map((key) => [
           key,
-          response.config.dropCounts?.[key] ?? DEFAULT_DROP_COUNT,
+          response.config.dropCounts?.[key] ?? defaultDropCountFor(key),
         ]),
       ));
       setResourceHp(Object.fromEntries(
-        COLLECTIBLE_ITEM_KEYS.map((key) => [
+        RESOURCE_KEYS.map((key) => [
           key,
           response.config.resourceHp?.[key] ?? DEFAULT_RESOURCE_HP,
         ]),
@@ -728,11 +735,51 @@ export function CollectionAdminPage() {
           <p className="mb-5 mt-1 text-xs text-slate-500">
             Clique e arraste sobre cada imagem para desenhar a área atingível. Use o zoom para ganhar precisão.
           </p>
-          {(['Minerais', 'Árvores', 'Ervas', 'Outros', 'Animais'] as const).map((group) => (
+          {RESOURCE_GROUPS.map((group) => (
             <div key={group} className="mb-6 last:mb-0">
               <h3 className="mb-2 font-mono text-[11px] uppercase tracking-widest text-slate-400">{group}</h3>
               <div className="grid grid-cols-1 gap-3 xl:grid-cols-2">
                 {resources.filter((resource) => resource.group === group).map((resource) => {
+                  // Drops de abate (carne/couro/lã/pena): não são nós do mapa —
+                  // sem hurtbox/HP/ferramenta/respawn; só a quantidade por abate.
+                  if (ANIMAL_DROP_ITEM_KEYS.includes(resource.key)) {
+                    return (
+                      <div key={resource.key} className="flex items-center gap-3 rounded-lg border border-slate-700/50 bg-slate-950/40 p-3">
+                        <span className="relative h-14 w-14 shrink-0 overflow-hidden rounded-md bg-slate-900">
+                          <img
+                            src={encodeURI(resource.url)}
+                            alt=""
+                            className="absolute left-1/2 top-1/2 max-h-12 max-w-12 -translate-x-1/2 -translate-y-1/2 [image-rendering:pixelated]"
+                          />
+                        </span>
+                        <div className="min-w-0 flex-1">
+                          <span className="block text-xs font-medium text-slate-200">{resource.label}</span>
+                          <span className="mb-1.5 block truncate font-mono text-[9px] text-slate-600">{resource.key}</span>
+                          <label className="block max-w-[180px] text-[10px] text-slate-500">
+                            Itens por abate
+                            <input
+                              type="number"
+                              min={0}
+                              max={20}
+                              step={1}
+                              disabled={busy || tableMissing}
+                              value={dropCounts[resource.key] ?? defaultDropCountFor(resource.key)}
+                              onChange={(event) => {
+                                const value = Number(event.target.value);
+                                if (Number.isInteger(value)) {
+                                  setDropCounts((current) => ({
+                                    ...current,
+                                    [resource.key]: Math.max(0, Math.min(20, value)),
+                                  }));
+                                }
+                              }}
+                              className={`${inputClass} mt-0.5`}
+                            />
+                          </label>
+                        </div>
+                      </div>
+                    );
+                  }
                   const customHurtbox = hurtboxes[resource.key];
                   const hurtbox = customHurtbox ?? fullFrame(resource.frameWidth, resource.frameHeight);
                   return (
@@ -882,22 +929,49 @@ export function CollectionAdminPage() {
                               </label>
                             </>
                           )}
-                          <label className={`text-[10px] text-slate-500 ${resource.key.startsWith('animal:') ? 'col-span-2' : ''}`}>
-                            Renascer após
-                            <select
-                              disabled={busy || tableMissing}
-                              value={respawnSeconds[resource.key] ?? DEFAULT_RESPAWN_SECONDS}
-                              onChange={(event) => setRespawnSeconds((current) => ({
-                                ...current,
-                                [resource.key]: Number(event.target.value),
-                              }))}
-                              className={`${inputClass} mt-0.5`}
-                            >
-                              {RESPAWN_OPTIONS_SECONDS.map((seconds) => (
-                                <option key={seconds} value={seconds}>{respawnLabel(seconds)}</option>
-                              ))}
-                            </select>
-                          </label>
+                          {resource.key.startsWith('animal:') ? (
+                            <label className="col-span-2 text-[10px] text-slate-500" title="HP zerado → animação de morte, drops e respawn imediato no ponto de spawn">
+                              HP do animal (abate)
+                              <input
+                                type="number"
+                                min={RESOURCE_HP_RANGE.min}
+                                max={RESOURCE_HP_RANGE.max}
+                                step={1}
+                                disabled={busy || tableMissing}
+                                value={resourceHp[resource.key] ?? DEFAULT_RESOURCE_HP}
+                                onChange={(event) => {
+                                  const value = Number(event.target.value);
+                                  if (Number.isInteger(value)) {
+                                    setResourceHp((current) => ({
+                                      ...current,
+                                      [resource.key]: Math.max(
+                                        RESOURCE_HP_RANGE.min,
+                                        Math.min(RESOURCE_HP_RANGE.max, value),
+                                      ),
+                                    }));
+                                  }
+                                }}
+                                className={`${inputClass} mt-0.5`}
+                              />
+                            </label>
+                          ) : (
+                            <label className="text-[10px] text-slate-500">
+                              Renascer após
+                              <select
+                                disabled={busy || tableMissing}
+                                value={respawnSeconds[resource.key] ?? DEFAULT_RESPAWN_SECONDS}
+                                onChange={(event) => setRespawnSeconds((current) => ({
+                                  ...current,
+                                  [resource.key]: Number(event.target.value),
+                                }))}
+                                className={`${inputClass} mt-0.5`}
+                              >
+                                {RESPAWN_OPTIONS_SECONDS.map((seconds) => (
+                                  <option key={seconds} value={seconds}>{respawnLabel(seconds)}</option>
+                                ))}
+                              </select>
+                            </label>
+                          )}
                           {FLEEING_ANIMAL_KEYS.includes(resource.key) && (
                             <>
                               <label className="text-[10px] text-slate-500">

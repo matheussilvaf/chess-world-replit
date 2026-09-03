@@ -77,6 +77,13 @@ export const BUSH = {
   url: `${RESOURCES_BASE}ervas e plantas/bush.png`,
 } as const;
 
+/** Galho caído: imagem única nos insert points de branches_spawns (coleta com a mão). */
+export const BRANCH = {
+  textureKey: 'craft-branch',
+  url: `${RESOURCES_BASE}branch/branch.png`,
+  layer: 'branches_spawns',
+} as const;
+
 /** Ervas e plantas: imagem única nos insert points da object layer homônima. */
 export interface HerbDef {
   id: string;
@@ -100,10 +107,10 @@ export const herbUrl = (file: string) => `${RESOURCES_BASE}ervas e plantas/${fil
 /**
  * Animais: sheets 7×4 de frames quadrados — 7 frames por linha, e as linhas
  * são as direções na ordem do pack: 0=sul, 1=leste, 2=oeste, 3=norte.
- * O sheet "eating" é o visual inicial; walking.png anima o passeio.
- * (dying.png existe nas pastas, mas a morte será especificada depois.)
+ * O sheet "eating" é o visual inicial; walking.png anima o passeio e
+ * dying.png (mesmas dimensões) toca UMA vez no abate (HP zerado).
  */
-export const ANIMAL_SHEET = { columns: 7, rows: 4, frames: 7, eatFrameRate: 6, walkFrameRate: 8 } as const;
+export const ANIMAL_SHEET = { columns: 7, rows: 4, frames: 7, eatFrameRate: 6, walkFrameRate: 8, dieFrameRate: 8 } as const;
 export const ANIMAL_DIRECTIONS = ['south', 'east', 'west', 'north'] as const;
 export type AnimalDirection = (typeof ANIMAL_DIRECTIONS)[number];
 
@@ -115,17 +122,42 @@ export interface AnimalDef {
   file: string;
   /** Sheet de caminhada dentro de resources/animais/ */
   walkFile: string;
+  /** Sheet da morte (toca uma vez no abate) dentro de resources/animais/ */
+  dieFile: string;
   /** Lado do frame quadrado nos sheets. */
   frameSize: number;
   /** Velocidade do passeio (px/s). */
   speed: number;
+  /** Itens (chaves de ANIMAL_DROP_ITEMS) que caem no chão quando o bicho morre. */
+  drops: readonly string[];
 }
 
 export const ANIMALS: AnimalDef[] = [
-  { id: 'cow', layer: 'cows', file: 'cow/coweating.png', walkFile: 'cow/walking.png', frameSize: 140, speed: 22 },
-  { id: 'sheep', layer: 'sheeps', file: 'sheep/sheepeating.png', walkFile: 'sheep/walking.png', frameSize: 116, speed: 24 },
-  { id: 'chicken', layer: 'chickens', file: 'chicken/chickeneating.png', walkFile: 'chicken/walking.png', frameSize: 44, speed: 28 },
+  { id: 'cow', layer: 'cows', file: 'cow/coweating.png', walkFile: 'cow/walking.png', dieFile: 'cow/dying.png', frameSize: 140, speed: 22, drops: ['beef', 'couro'] },
+  { id: 'sheep', layer: 'sheeps', file: 'sheep/sheepeating.png', walkFile: 'sheep/walking.png', dieFile: 'sheep/dying.png', frameSize: 116, speed: 24, drops: ['wool'] },
+  { id: 'chicken', layer: 'chickens', file: 'chicken/chickeneating.png', walkFile: 'chicken/walking.png', dieFile: 'chicken/dying.png', frameSize: 44, speed: 28, drops: ['pena'] },
 ];
+
+/**
+ * Itens de abate (drops dos animais): imagens únicas 40×40 em resources/<pasta>/.
+ * As chaves são as mesmas de RESOURCE_KEYS/inventário — vaca solta beef+couro,
+ * ovelha solta wool, galinha solta pena (AnimalDef.drops).
+ */
+export interface AnimalDropDef {
+  key: string;
+  /** Caminho dentro de resources/ */
+  file: string;
+}
+
+export const ANIMAL_DROP_ITEMS: AnimalDropDef[] = [
+  { key: 'beef', file: 'beef/beef.png' },
+  { key: 'couro', file: 'couro/couro.png' },
+  { key: 'wool', file: 'wool/wool.png' },
+  { key: 'pena', file: 'pena/pena.png' },
+];
+
+export const animalDropTextureKey = (key: string) => `craft-animal-drop-${key}`;
+export const animalDropUrl = (file: string) => `${RESOURCES_BASE}${file}`;
 
 /** Passeio: raio máximo em torno do ponto de spawn e duração das pausas comendo. */
 export const ANIMAL_WANDER = { radius: 72, eatMinMs: 2500, eatMaxMs: 7000 } as const;
@@ -138,11 +170,12 @@ export const ANIMAL_WANDER = { radius: 72, eatMinMs: 2500, eatMaxMs: 7000 } as c
 export const ANIMAL_FLEE = { durationMs: 5000, speedMultiplier: 2.2 } as const;
 
 /** Escala dos mini-drops que reusam a própria textura do recurso. */
-export const SELF_DROP_SCALE = { herb: 0.45, bush: 0.45, hand_stone: 0.6 } as const;
+export const SELF_DROP_SCALE = { herb: 0.45, bush: 0.45, hand_stone: 0.6, branch: 0.45 } as const;
 
 export const animalTextureKey = (id: string) => `craft-animal-${id}`;
 export const animalWalkTextureKey = (id: string) => `craft-animal-walk-${id}`;
-export const animalAnimKey = (id: string, action: 'eat' | 'walk', dir: AnimalDirection) =>
+export const animalDieTextureKey = (id: string) => `craft-animal-die-${id}`;
+export const animalAnimKey = (id: string, action: 'eat' | 'walk' | 'die', dir: AnimalDirection) =>
   `craft-animal-${action}-${dir}-${id}`;
 
 /** Drops: mini-itens que pulam do nó quebrado e são atraídos pelo jogador (imã). */

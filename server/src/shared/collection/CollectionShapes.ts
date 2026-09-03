@@ -36,15 +36,30 @@ export const RESOURCE_KEYS: readonly string[] = [
   'herb:horse_root',
   'bush',
   'hand_stone',
+  'branch',
+  'beef',
+  'couro',
+  'wool',
+  'pena',
   'animal:cow',
   'animal:sheep',
   'animal:chicken',
 ];
 
-/** Itens que entram no inventário (tudo menos animais — morte ainda não definida). */
+/** Itens que entram no inventário (tudo menos os nós de animal — o que entra é o drop do abate). */
 export const COLLECTIBLE_ITEM_KEYS: readonly string[] = RESOURCE_KEYS.filter(
   (k) => !k.startsWith('animal:'),
 );
+
+/**
+ * Itens que SÓ existem como drop do abate de animais (não são nós do mapa):
+ * vaca → beef + couro; ovelha → wool; galinha → pena. No admin eles têm
+ * apenas "itens por abate" (dropCounts); HP/ferramenta/respawn não se aplicam.
+ */
+export const ANIMAL_DROP_ITEM_KEYS: readonly string[] = ['beef', 'couro', 'wool', 'pena'];
+
+/** Drops de abate: quantidade padrão por animal abatido (1 — o admin pode subir). */
+export const DEFAULT_ANIMAL_DROP_COUNT = 1;
 
 /** Opções do select "tempo de renascimento" (em segundos). */
 export const RESPAWN_OPTIONS_SECONDS: readonly number[] = [
@@ -82,7 +97,7 @@ export const RESOURCE_MIN_LEVEL_RANGE = { min: 0, max: 6 } as const;
 
 /**
  * Ferramenta padrão por tipo de recurso, quando o admin ainda não escolheu:
- * árvore→machado, minério→picareta, arbusto→facão, erva/pedra de mão→mão.
+ * árvore→machado, minério→picareta, arbusto→facão, erva/pedra de mão/galho→mão.
  */
 export function defaultGatherToolFor(resourceKey: string): GatherToolKind {
   if (resourceKey.startsWith('tree:')) return 'axe';
@@ -90,7 +105,10 @@ export function defaultGatherToolFor(resourceKey: string): GatherToolKind {
   if (resourceKey.startsWith('herb:')) return 'hand';
   if (resourceKey === 'bush') return 'machete';
   if (resourceKey === 'hand_stone') return 'hand';
-  return 'hand'; // animais/desconhecidos — irrelevante (animais não quebram)
+  if (resourceKey === 'branch') return 'hand';
+  // Animais: qualquer arma/ferramenta machuca (abate não usa pareamento).
+  // Drops de abate (beef/couro/wool/pena): nunca são nós — valor irrelevante.
+  return 'hand';
 }
 
 /**
@@ -125,9 +143,13 @@ export interface CollectionWorldConfig {
   configId: typeof COLLECTION_CONFIG_ID;
   /** mineralId → quantidade no mapa (0 = não aparece). */
   mineralCounts: Record<string, number>;
-  /** resourceKey → hurtbox. Chaves: mineral:<id>, tree:<tipo>, herb:<id>, bush, hand_stone, animal:<id>. */
+  /** resourceKey → hurtbox. Chaves: mineral:<id>, tree:<tipo>, herb:<id>, bush, hand_stone, branch, animal:<id>. */
   hurtboxes: Record<string, ResourceHurtbox>;
-  /** resourceKey → itens dropados ao quebrar (padrão 3). Opcional p/ configs antigas. */
+  /**
+   * resourceKey → itens dropados ao quebrar (padrão 3). Para os drops de abate
+   * (beef/couro/wool/pena) é a quantidade por animal abatido (padrão 1).
+   * Opcional p/ configs antigas.
+   */
   dropCounts?: Record<string, number>;
   /** resourceKey → segundos até renascer (padrão 60). Opcional p/ configs antigas. */
   respawnSeconds?: Record<string, number>;
@@ -135,7 +157,7 @@ export interface CollectionWorldConfig {
   fleeRadius?: Record<string, number>;
   /** animal:<id> → velocidade de fuga em px/s (padrão: 2.2× o passeio do bicho). */
   fleeSpeed?: Record<string, number>;
-  /** resourceKey → HP total do nó (padrão 30). Animais não usam (não morrem). */
+  /** resourceKey → HP total do nó (padrão 30). animal:<id> = HP de abate do bicho. */
   resourceHp?: Record<string, number>;
   /** resourceKey → nível mínimo da ferramenta (0..6; ausente = 0). */
   resourceMinLevel?: Record<string, number>;
