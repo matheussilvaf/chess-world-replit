@@ -448,6 +448,15 @@ export class WorldScene extends Phaser.Scene {
     this.scale.on('resize', onScaleResize);
     this.events.once('shutdown', () => this.scale.off('resize', onScaleResize));
 
+    // Mapas/aparências carregados em runtime chegam com filtro NEAREST
+    // explícito — marca para reaplicar o modo de zoom atual no frame seguinte
+    // (depois que o carregamento e os setFilter dele terminarem).
+    const onLoaderDone = () => {
+      this.texFilterDirty = true;
+    };
+    this.load.on('complete', onLoaderDone);
+    this.events.once('shutdown', () => this.load.off('complete', onLoaderDone));
+
     // Build pathfinding grid
     this.buildPathfindingGrid(map.widthInPixels, map.heightInPixels);
 
@@ -678,8 +687,8 @@ export class WorldScene extends Phaser.Scene {
 
   /** true = texturas em LINEAR (zoom out): ver applyWorldTextureFilter. */
   private texFilterLinear = false;
-  /** Nº de texturas na última aplicação (detecta texturas carregadas depois). */
-  private texFilterTexCount = -1;
+  /** Reaplicar o filtro no próximo frame (setado quando o loader termina). */
+  private texFilterDirty = false;
 
   /**
    * Zoom out (< 0.75): NEAREST em minificação vira decimação — metade das
@@ -689,16 +698,13 @@ export class WorldScene extends Phaser.Scene {
    */
   private applyWorldTextureFilter(zoom: number) {
     const wantLinear = zoom < 0.75;
-    // Conta as texturas: mapas/aparências carregados DEPOIS da troca de filtro
-    // (ex.: entrar no mundo de coleta já em zoom out) chegam com NEAREST
-    // explícito — a mudança na contagem força reaplicar o modo atual a tudo.
-    let texCount = 0;
-    for (const _k in this.textures.list) {
-      if (_k) texCount++;
-    }
-    if (wantLinear === this.texFilterLinear && texCount === this.texFilterTexCount) return;
+    // Só reaplica ao cruzar o limiar de zoom OU quando o loader terminou um
+    // carregamento (texFilterDirty). NUNCA por contagem de texturas: textos de
+    // aviso/dano criam e destroem texturas o tempo todo em combate, e varrer
+    // ~300 texturas com chamadas de GPU a cada golpe derrubava o FPS.
+    if (wantLinear === this.texFilterLinear && !this.texFilterDirty) return;
+    this.texFilterDirty = false;
     this.texFilterLinear = wantLinear;
-    this.texFilterTexCount = texCount;
     const mode = wantLinear
       ? Phaser.Textures.FilterMode.LINEAR
       : Phaser.Textures.FilterMode.NEAREST;
@@ -1261,7 +1267,11 @@ export class WorldScene extends Phaser.Scene {
       if (!heldLong && !draggedFar) return;
       this.holdActive = true;
     }
-    if (now - this.lastHoldRepath < HOLD_MOVE_REPATH_MS) return;
+    // Sem caminho ativo (chegou no ponto intermediário do steering), espera
+    // bem menos que os 150ms — mas nunca zero: repath por FRAME rumo a um
+    // alvo inalcançável seria um A* falho (~20ms) a cada 16ms = congelamento.
+    const repathWait = this.target ? HOLD_MOVE_REPATH_MS : 75;
+    if (now - this.lastHoldRepath < repathWait) return;
     const wp = this.cameras.main.getWorldPoint(pointer.x, pointer.y);
     // Hovering an interactive object mid-hold: keep the current path.
     if (this.interactionSystem?.hitTestPointer(wp.x, wp.y)) return;
@@ -1272,15 +1282,29 @@ export class WorldScene extends Phaser.Scene {
     }
     // Zona morta: dedo praticamente em cima do personagem — parar em vez de
     // navegar "até si mesmo" (gerava flicker anda/para + spam de rede).
-    const holdDx = wp.x - (this.playerBody.position.x - this.playerFeetOffsetX);
-    const holdDy = wp.y - (this.playerBody.position.y - this.playerFeetOffset);
-    if (Math.hypot(holdDx, holdDy) < 20) {
+    const px = this.playerBody.position.x - this.playerFeetOffsetX;
+    const py = this.playerBody.position.y - this.playerFeetOffset;
+    const holdDx = wp.x - px;
+    const holdDy = wp.y - py;
+    const holdDist = Math.hypot(holdDx, holdDy);
+    if (holdDist < 20) {
       if (this.target) this.stopMovement();
       this.lastHoldTarget = { x: wp.x, y: wp.y };
       return;
     }
     this.lastHoldTarget = { x: wp.x, y: wp.y };
-    this.navigateTo(wp.x, wp.y, { keepPathOnFail: true });
+    // Steering: segurar/arrastar é DIREÇÃO, não destino. Limita o alvo a
+    // ~240px à frente — rota curta mantém o A* barato. Rota longa recalculada
+    // a cada 150ms custava 10-30ms no celular → engasgo → passo de
+    // compensação da física = o "pique" ao arrastar.
+    let tx = wp.x;
+    let ty = wp.y;
+    if (holdDist > 240) {
+      const k = 240 / holdDist;
+      tx = px + holdDx * k;
+      ty = py + holdDy * k;
+    }
+    this.navigateTo(tx, ty, { keepPathOnFail: true });
   }
 
   private setupInteractives(_map: Phaser.Tilemaps.Tilemap, mapKey?: string) {
