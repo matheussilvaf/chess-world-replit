@@ -4,6 +4,7 @@ import {
   classifyCraftEntityId,
   craftableTargetIds,
   missingIngredientsFor,
+  recipeOutputQuantity,
   sameIngredientBag,
   slugifyCraftItemName,
   validateCraftItemConfig,
@@ -168,6 +169,35 @@ describe('craftabilidade', () => {
     expect(canCraft(recipes['barra-de-ouro'], counts)).toBe(false);
     expect(craftableTargetIds(recipes, counts)).toEqual(['gen:crafttools/axe/stone']);
     expect(craftableTargetIds(recipes, {})).toEqual([]);
+  });
+});
+
+describe('outputQuantity — quantidade produzida pela receita', () => {
+  const base = {
+    targetId: 'barra-de-ouro',
+    ingredients: [{ itemId: 'mineral:ouro', quantity: 5 }],
+  };
+
+  it('aceita ausente (legado = 1) e inteiro 1..999', () => {
+    expect(validateCraftRecipeConfig(base).ok).toBe(true);
+    expect(validateCraftRecipeConfig({ ...base, outputQuantity: 1 }).ok).toBe(true);
+    expect(validateCraftRecipeConfig({ ...base, outputQuantity: 4 }).ok).toBe(true);
+    expect(validateCraftRecipeConfig({ ...base, outputQuantity: 999 }).ok).toBe(true);
+  });
+
+  it('rejeita zero, negativo, fração, acima do teto e não-número', () => {
+    for (const bad of [0, -1, 1.5, 1000, '2', null]) {
+      const res = validateCraftRecipeConfig({ ...base, outputQuantity: bad });
+      expect(res.ok).toBe(false);
+      expect(res.errors.join(' ')).toContain('outputQuantity');
+    }
+  });
+
+  it('recipeOutputQuantity aplica o padrão 1', () => {
+    expect(recipeOutputQuantity({ ...base })).toBe(1);
+    expect(recipeOutputQuantity({ ...base, outputQuantity: 4 })).toBe(4);
+    expect(recipeOutputQuantity(undefined)).toBe(1);
+    expect(recipeOutputQuantity(null)).toBe(1);
   });
 });
 

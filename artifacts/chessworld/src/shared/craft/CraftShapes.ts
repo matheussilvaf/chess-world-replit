@@ -14,7 +14,9 @@
  *
  * CRAFT RECIPES: alvo (targetId) + multiset de 1..9 ingredientes
  * {itemId, quantity 1..999}. Qualquer item pode ser alvo E ingrediente —
- * nunca de si mesmo. A ordem NUNCA importa.
+ * nunca de si mesmo. A ordem NUNCA importa. Cada execução da receita produz
+ * `outputQuantity` unidades do alvo (inteiro 1..999; ausente = 1, caso das
+ * receitas salvas antes do campo existir).
  *
  * Item de REPARO: um craft item pode declarar `repairsItemId` (ref gen: de
  * arma/ferramenta). A receita DESSE item passa a significar "repara o alvo".
@@ -45,6 +47,8 @@ export const MAX_CRAFT_IMAGE_URL_LEN = 512;
 export const MAX_RECIPE_INGREDIENTS = 9;
 export const MIN_INGREDIENT_QUANTITY = 1;
 export const MAX_INGREDIENT_QUANTITY = 999;
+export const MIN_OUTPUT_QUANTITY = 1;
+export const MAX_OUTPUT_QUANTITY = 999;
 
 const RESOURCE_KEY_SET: ReadonlySet<string> = new Set(RESOURCE_KEYS);
 
@@ -86,6 +90,11 @@ export interface CraftRecipeConfig {
   targetId: string;
   /** 1..9 entries, unique itemIds; order is irrelevant by design. */
   ingredients: CraftIngredient[];
+  /**
+   * Unidades do alvo produzidas por execução da receita — inteiro 1..999.
+   * Ausente = 1 (receitas antigas); o servidor sempre grava o valor explícito.
+   */
+  outputQuantity?: number;
 }
 
 export interface CraftValidation {
@@ -197,6 +206,14 @@ export function validateCraftRecipeConfig(
       );
     }
   }
+  const output = value.outputQuantity;
+  if (output !== undefined) {
+    if (!isInt(output) || output < MIN_OUTPUT_QUANTITY || output > MAX_OUTPUT_QUANTITY) {
+      errors.push(
+        `outputQuantity: inteiro ${MIN_OUTPUT_QUANTITY}–${MAX_OUTPUT_QUANTITY} (ausente = 1)`,
+      );
+    }
+  }
   return { ok: errors.length === 0, errors };
 }
 
@@ -209,6 +226,11 @@ export function sameIngredientBag(a: CraftIngredient[], b: CraftIngredient[]): b
       .map((e) => `${e.itemId}:${e.quantity}`)
       .join('|');
   return key(a) === key(b);
+}
+
+/** Unidades do alvo produzidas por execução da receita (ausente/legado = 1). */
+export function recipeOutputQuantity(recipe: CraftRecipeConfig | null | undefined): number {
+  return recipe?.outputQuantity ?? 1;
 }
 
 // ------------------------------------------------- consulta de craftabilidade

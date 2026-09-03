@@ -7,6 +7,8 @@
  * Coluna 2: receita do item selecionado — QUALQUER item pode ter receita e
  *           qualquer item (menos o próprio) pode ser ingrediente. Até 9
  *           ingredientes com quantidade (1..999); a ordem NUNCA importa.
+ *           O contador "produz" define quantas unidades do alvo saem por
+ *           craft (1..999, padrão 1 — igual às receitas antigas).
  *
  * Ids canônicos (ver CraftShapes): ferramentas/armas usam a MESMA ref do
  * equipamento (gen:crafttools/axe/stone), recursos usam a chave crua do
@@ -46,9 +48,12 @@ import {
 } from '../../../shared/combat/WeaponShapes';
 import {
   MAX_INGREDIENT_QUANTITY,
+  MAX_OUTPUT_QUANTITY,
   MAX_RECIPE_INGREDIENTS,
   MIN_INGREDIENT_QUANTITY,
+  MIN_OUTPUT_QUANTITY,
   classifyCraftEntityId,
+  recipeOutputQuantity,
   sameIngredientBag,
   slugifyCraftItemName,
   type CraftIngredient,
@@ -97,6 +102,8 @@ export function CraftAdminPage() {
   const [selectedTarget, setSelectedTarget] = useState<string | null>(null);
   /** Rascunhos por alvo — nada persiste até "Salvar receita". */
   const [recipeDrafts, setRecipeDrafts] = useState<Record<string, CraftIngredient[]>>({});
+  /** Rascunho da quantidade PRODUZIDA por alvo (só quando difere do salvo). */
+  const [outputDrafts, setOutputDrafts] = useState<Record<string, number>>({});
   /** Texto cru dos inputs de quantidade (digitação livre, commit só de nº válido). */
   const [rawQty, setRawQty] = useState<Record<string, string>>({});
   /** Acordeão da coluna esquerda (ferramentas abertas por padrão). */
@@ -134,6 +141,7 @@ export function CraftAdminPage() {
       }
       // Recarga = fonte da verdade nova → rascunhos antigos morrem aqui.
       setRecipeDrafts({});
+      setOutputDrafts({});
       setRawQty({});
     } catch (e) {
       applyApiError(e);
@@ -202,6 +210,8 @@ export function CraftAdminPage() {
           const res = await craftApi.recipes.save({
             targetId: newId,
             ingredients: recipes[oldId].ingredients,
+            // Nunca perder a quantidade produzida na migração (ausente = 1).
+            outputQuantity: recipeOutputQuantity(recipes[oldId]),
           });
           await craftApi.recipes.remove(oldId);
           delete next[oldId];
@@ -218,15 +228,21 @@ export function CraftAdminPage() {
   const selectedEntry: CraftCatalogEntry | null = selectedTarget
     ? (catalog.byId.get(selectedTarget) ?? null)
     : null;
-  const persisted = selectedTarget ? (recipes[selectedTarget]?.ingredients ?? null) : null;
+  const persistedRecipe = selectedTarget ? (recipes[selectedTarget] ?? null) : null;
+  const persisted = persistedRecipe?.ingredients ?? null;
   const draft: CraftIngredient[] = selectedTarget
     ? (recipeDrafts[selectedTarget] ?? persisted ?? [])
     : [];
-  const dirty = selectedTarget
+  /** Quantidade produzida: baseline = receita salva (legado = 1) ou 1 sem receita. */
+  const baselineOutput = recipeOutputQuantity(persistedRecipe);
+  const draftOutput = selectedTarget ? (outputDrafts[selectedTarget] ?? baselineOutput) : 1;
+  const outputDirty = selectedTarget ? outputDrafts[selectedTarget] !== undefined : false;
+  const ingredientsDirty = selectedTarget
     ? persisted
       ? !sameIngredientBag(draft, persisted)
       : draft.length > 0
     : false;
+  const dirty = ingredientsDirty || outputDirty;
   /** Refs mortas: só ids fora de qualquer classe ou craft items excluídos. */
   const unknownRefs = draft.filter((i) => {
     const kind = classifyCraftEntityId(i.itemId);
@@ -239,6 +255,11 @@ export function CraftAdminPage() {
 
   const clearDraftFor = (targetId: string) => {
     setRecipeDrafts((prev) => {
+      const next = { ...prev };
+      delete next[targetId];
+      return next;
+    });
+    setOutputDrafts((prev) => {
       const next = { ...prev };
       delete next[targetId];
       return next;
@@ -294,6 +315,28 @@ export function CraftAdminPage() {
     );
   };
 
+  /** Chave sentinela no rawQty para o input da quantidade produzida (nunca é itemId). */
+  const OUTPUT_RAW_KEY = '__output__';
+
+  const setOutputDraft = (value: number) => {
+    if (!selectedTarget) return;
+    const v = Math.max(MIN_OUTPUT_QUANTITY, Math.min(MAX_OUTPUT_QUANTITY, value));
+    setOutputDrafts((prev) => {
+      const next = { ...prev };
+      // Igual ao salvo (ou ao padrão 1) = sem rascunho — o "não salvo" some sozinho.
+      if (v === baselineOutput) delete next[selectedTarget];
+      else next[selectedTarget] = v;
+      return next;
+    });
+  };
+
+  const commitOutputQty = (raw: string) => {
+    if (raw.trim() === '') return;
+    const v = Number(raw);
+    if (!Number.isFinite(v) || !Number.isInteger(v)) return;
+    setOutputDraft(v);
+  };
+
   const qtyKey = (itemId: string) => `${selectedTarget}:${itemId}`;
 
   const handleSaveRecipe = async () => {
@@ -301,7 +344,11 @@ export function CraftAdminPage() {
     setBusy(true);
     setError(null);
     try {
-      const res = await craftApi.recipes.save({ targetId: selectedTarget, ingredients: draft });
+      const res = await craftApi.recipes.save({
+        targetId: selectedTarget,
+        ingredients: draft,
+        outputQuantity: draftOutput,
+      });
       setRecipes((prev) => ({ ...prev, [selectedTarget]: res.recipe }));
       clearDraftFor(selectedTarget);
     } catch (e) {
@@ -559,7 +606,9 @@ export function CraftAdminPage() {
                         {section.entries.map((entry) => {
                           const selected = selectedTarget === entry.id;
                           const hasRecipe = recipes[entry.id] !== undefined;
-                          const hasDraft = recipeDrafts[entry.id] !== undefined;
+                          const hasDraft =
+                            recipeDrafts[entry.id] !== undefined ||
+                            outputDrafts[entry.id] !== undefined;
                           const customItem = section.id === 'custom' ? items[entry.id] : undefined;
                           return (
                             <div
@@ -641,6 +690,48 @@ export function CraftAdminPage() {
                   <div className="min-w-0 flex-1">
                     <p className="text-sm text-slate-100 truncate">{selectedEntry.name}</p>
                     <p className="text-[10px] font-mono text-slate-500 truncate">{selectedEntry.id}</p>
+                  </div>
+                  <div
+                    className="flex items-center gap-1 shrink-0 rounded-lg border border-slate-700/50 bg-slate-900/60 px-2 py-1.5"
+                    title="Quantas unidades deste item a receita produz por craft"
+                  >
+                    <span className="text-[10px] font-mono text-slate-500">produz</span>
+                    <button
+                      type="button"
+                      className="p-0.5 rounded bg-slate-800/90 border border-slate-700/60 text-slate-300 hover:bg-slate-700 disabled:opacity-40"
+                      onClick={() => setOutputDraft(draftOutput - 1)}
+                      disabled={busy || tableMissing || draftOutput <= MIN_OUTPUT_QUANTITY}
+                    >
+                      <Minus className="w-3 h-3" />
+                    </button>
+                    <input
+                      type="number"
+                      min={MIN_OUTPUT_QUANTITY}
+                      max={MAX_OUTPUT_QUANTITY}
+                      value={rawQty[qtyKey(OUTPUT_RAW_KEY)] ?? String(draftOutput)}
+                      onChange={(e) => {
+                        const raw = e.target.value;
+                        setRawQty((prev) => ({ ...prev, [qtyKey(OUTPUT_RAW_KEY)]: raw }));
+                        commitOutputQty(raw);
+                      }}
+                      onBlur={() =>
+                        setRawQty((prev) => {
+                          const next = { ...prev };
+                          delete next[qtyKey(OUTPUT_RAW_KEY)];
+                          return next;
+                        })
+                      }
+                      className="w-12 text-center bg-slate-900/80 border border-slate-700/70 rounded px-1 py-0.5 text-xs font-mono focus:outline-none focus:border-cyan-500/60"
+                      disabled={busy || tableMissing}
+                    />
+                    <button
+                      type="button"
+                      className="p-0.5 rounded bg-slate-800/90 border border-slate-700/60 text-slate-300 hover:bg-slate-700 disabled:opacity-40"
+                      onClick={() => setOutputDraft(draftOutput + 1)}
+                      disabled={busy || tableMissing || draftOutput >= MAX_OUTPUT_QUANTITY}
+                    >
+                      <Plus className="w-3 h-3" />
+                    </button>
                   </div>
                   {dirty ? (
                     <span className="text-[9px] font-mono px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-300 border border-amber-500/30 shrink-0">
