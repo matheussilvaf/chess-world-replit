@@ -22,7 +22,7 @@ import { composedDefIdFor, ensureAppearanceDef, getGeneratorManifest, pruneCompo
 import { COMPOSED_SHEET, parseWeaponRef } from '../../shared/characters/PlayerCharacterShapes';
 import { loadRigConfig } from '../rigs/rigLoader';
 import { resolveGatherStats, resolveWeaponProfileForFamily, resolveWeaponShootStats, type GatherToolStats } from '../rigs/weaponLoader';
-import type { GatherToolKind } from '../../shared/collection/CollectionShapes';
+import { INVENTORY_DROP_MAX_DISTANCE, type GatherToolKind } from '../../shared/collection/CollectionShapes';
 import { projectilePairedFamily } from '../../lib/character-generator/weaponCatalog';
 import { ArrowProjectiles } from '../world/ArrowProjectiles';
 import { RESOURCE_DROP_ICONS } from '../../lib/collection/resourceCatalog';
@@ -160,6 +160,9 @@ export class WorldScene extends Phaser.Scene {
   private otherPlayers: Map<string, RemotePlayer> = new Map();
   /** Server-authoritative ground inventory drops. */
   private worldDrops = new Map<string, Phaser.GameObjects.Container>();
+  /** Feedback do fluxo de soltar item: anel de alcance (segue o jogador) + marcador do ponto. */
+  private dropRadiusRing: Phaser.GameObjects.Graphics | null = null;
+  private dropMarker: Phaser.GameObjects.Container | null = null;
   private inventoryPickupSender: ((dropId: string) => void) | null = null;
 
   // Debug graphics
@@ -1412,6 +1415,7 @@ export class WorldScene extends Phaser.Scene {
 
   update(_time: number = 0, delta: number = 16.7) {
     if (!this.player || !this.playerBody) return;
+    if (this.dropRadiusRing) this.dropRadiusRing.setPosition(this.player.x, this.player.y);
 
     // Mundo de Coleta: profundidade por Y — player passa atrás/na frente de árvores etc.
     if (this.craftingRuntime.active) {
@@ -4240,5 +4244,50 @@ export class WorldScene extends Phaser.Scene {
 
   public clearWorldDrops() {
     for (const id of this.worldDrops.keys()) this.removeWorldDrop(id);
+    this.setDropRadiusVisible(false);
+    this.setDropMarker(null);
+  }
+
+  /** Posição do sprite do jogador local — a mesma referência que o servidor usa para o alcance. */
+  public getPlayerSpritePosition(): { x: number; y: number } {
+    if (this.player) return { x: this.player.x, y: this.player.y };
+    return this.getPlayerPosition();
+  }
+
+  /** Anel tracejado com o alcance máximo do drop; acompanha o jogador no update(). */
+  public setDropRadiusVisible(visible: boolean) {
+    if (!visible) {
+      this.dropRadiusRing?.destroy();
+      this.dropRadiusRing = null;
+      return;
+    }
+    if (this.dropRadiusRing || !this.player) return;
+    const ring = this.add.graphics().setDepth(79);
+    const radius = INVENTORY_DROP_MAX_DISTANCE;
+    ring.fillStyle(0xf7d36a, 0.06);
+    ring.fillCircle(0, 0, radius);
+    ring.lineStyle(2, 0xf7d36a, 0.85);
+    const segments = 48;
+    for (let i = 0; i < segments; i += 2) {
+      const a0 = (i / segments) * Math.PI * 2;
+      const a1 = ((i + 1) / segments) * Math.PI * 2;
+      ring.beginPath();
+      ring.arc(0, 0, radius, a0, a1, false);
+      ring.strokePath();
+    }
+    ring.setPosition(this.player.x, this.player.y);
+    this.dropRadiusRing = ring;
+  }
+
+  public setDropMarker(point: { x: number; y: number } | null) {
+    this.dropMarker?.destroy();
+    this.dropMarker = null;
+    if (!point) return;
+    const marker = this.add.container(point.x, point.y).setDepth(81);
+    const halo = this.add.circle(0, 0, 14, 0xf7d36a, 0.22).setStrokeStyle(2, 0xf7d36a, 0.95);
+    const dot = this.add.circle(0, 0, 3, 0xfff3c4, 1);
+    marker.add([halo, dot]);
+    this.tweens.add({ targets: halo, scaleX: 1.35, scaleY: 1.35, alpha: 0.35, duration: 700, yoyo: true, repeat: -1, ease: 'Sine.easeInOut' });
+    this.dropMarker = marker;
   }
 }

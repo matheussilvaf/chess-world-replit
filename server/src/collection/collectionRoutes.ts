@@ -96,6 +96,8 @@ collectionAdminRouter.put('/', async (req: Request, res: Response) => {
     ...(body.resourceTool ? { resourceTool: { ...body.resourceTool } } : {}),
     // Poder de coleta da MÃO (escalar; ausente = padrão do runtime).
     ...(body.handPower !== undefined ? { handPower: Math.round(body.handPower) } : {}),
+    // Total de slots do inventário (múltiplo de colunas; validado acima).
+    ...(body.inventorySlots !== undefined ? { inventorySlots: Math.round(body.inventorySlots) } : {}),
     ...(body.fleeRadius
       ? {
           fleeRadius: Object.fromEntries(

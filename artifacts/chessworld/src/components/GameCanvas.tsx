@@ -26,12 +26,14 @@ import type { Room } from 'colyseus.js';
 import { PlayerNameTags } from './game/PlayerNameTags';
 import { AttackButton } from './game/AttackButton';
 import { CharacterCreationModal } from './character-creation/CharacterCreationModal';
-import { EquipmentButton, EquipmentPanel } from './game/EquipmentPanel';
 import { ToolHotbar } from './game/ToolHotbar';
+import { CollectionInventoryPanel } from './game/CollectionInventoryPanel';
+import { InventoryDropPlacement } from './game/inventory/InventoryDropPlacement';
 import { PerformanceHud } from './game/PerformanceHud';
 import { usePlayerCharacterStore } from '../stores/playerCharacterStore';
 import { setInventoryBridge } from '../game/inventory/inventoryBridge';
 import { useCollectionInventoryStore } from '../stores/collectionInventoryStore';
+import { useInventoryUiStore } from '../stores/inventoryUiStore';
 import { loadInventoryVisualCatalog } from '../lib/inventory/inventoryVisualCatalog';
 import { clearStationCraftBridge, rejectStationCraft, resolveStationCraft, setStationCraftSender } from '../game/stations/stationCraftBridge';
 import { StationGamePanel } from './game/StationGamePanel';
@@ -52,6 +54,8 @@ export function GameCanvas() {
   const liveWeapon = usePlayerCharacterStore((s) => s.liveWeapon);
   const worldReady = usePlayerCharacterStore((s) => s.worldReady);
   const [stationId, setStationId] = useState<string | null>(null);
+  const inventoryOpen = useInventoryUiStore((s) => s.open);
+  const dropPlacementActive = useInventoryUiStore((s) => !!s.placement);
   // Modal obrigatório: usuário logado, resposta do banco chegou e não há
   // personagem. Sem resposta (loaded=false) NÃO abre — evita pedir criação
   // para quem já tem personagem numa falha de rede.
@@ -535,14 +539,38 @@ export function GameCanvas() {
       room.send('attack', payload);
     });
     scene.setInventoryPickupSender((dropId) => room.send('inventory_pickup', { requestId: crypto.randomUUID(), dropId }));
+    // CSS px ↔ px do canvas: o backing store pode ser maior que o rect (DPR/escala),
+    // mesma correção que o WorldScene aplica nos overlays HTML.
+    const canvasFrame = () => {
+      const canvas = gameRef.current?.canvas;
+      if (!canvas) return null;
+      const rect = canvas.getBoundingClientRect();
+      return {
+        rect,
+        scaleX: canvas.width > 0 ? rect.width / canvas.width : 1,
+        scaleY: canvas.height > 0 ? rect.height / canvas.height : 1,
+      };
+    };
     setInventoryBridge({
       screenToWorld: (clientX, clientY) => {
-        const canvas = gameRef.current?.canvas;
-        if (!canvas) return null;
-        const rect = canvas.getBoundingClientRect();
-        const point = scene.cameras.main.getWorldPoint(clientX - rect.left, clientY - rect.top);
+        const frame = canvasFrame();
+        if (!frame) return null;
+        const point = scene.cameras.main.getWorldPoint(
+          (clientX - frame.rect.left) / frame.scaleX,
+          (clientY - frame.rect.top) / frame.scaleY,
+        );
         return { x: point.x, y: point.y };
       },
+      worldToScreen: (x, y) => {
+        const frame = canvasFrame();
+        if (!frame) return null;
+        // Inverso exato de getWorldPoint: a mesma matriz combinada da câmera (scroll+zoom+origem).
+        const point = scene.cameras.main.matrixCombined.transformPoint(x, y);
+        return { x: frame.rect.left + point.x * frame.scaleX, y: frame.rect.top + point.y * frame.scaleY };
+      },
+      getPlayerPosition: () => scene.getPlayerSpritePosition(),
+      setDropRadiusVisible: (visible) => scene.setDropRadiusVisible(visible),
+      setDropMarker: (point) => scene.setDropMarker(point),
       sendDrop: (request) => room.send('inventory_drop', request),
     });
     setStationCraftSender((payload) => room.send('craft_item', payload));
@@ -552,11 +580,19 @@ export function GameCanvas() {
     const removeCraftError = room.onMessage('craft_error', (data: { requestId?: string; message?: string }) => {
       rejectStationCraft(data.requestId, data.message ?? 'Não foi possível criar o item.');
     });
-    const removeInventoryChanged = room.onMessage('inventory_changed', (data: { items?: Array<{ itemKey: string; qty: number }> }) => {
+    const removeInventoryChanged = room.onMessage('inventory_changed', (data: { requestId?: string; items?: Array<{ itemKey: string; qty: number }> }) => {
       if (Array.isArray(data.items)) useCollectionInventoryStore.getState().applyServerTotals(data.items);
+      useInventoryUiStore.getState().resolvePlacement(data.requestId, { ok: true });
     });
-    const removeInventoryError = room.onMessage('inventory_error', (data: { message?: string }) => {
-      useCollectionInventoryStore.getState().setInventoryError(data.message ?? 'Não foi possível alterar o inventário.');
+    const removeInventoryError = room.onMessage('inventory_error', (data: { requestId?: string; message?: string }) => {
+      const message = data.message ?? 'Não foi possível alterar o inventário.';
+      // Recusa do drop em andamento aparece no próprio popover; o resto vai para o aviso da hotbar.
+      if (!useInventoryUiStore.getState().resolvePlacement(data.requestId, { ok: false, message })) {
+        useCollectionInventoryStore.getState().setInventoryError(message);
+      }
+    });
+    const removeEquipError = room.onMessage('equip_error', (data: { message?: string }) => {
+      usePlayerCharacterStore.getState().setEquipError(data.message ?? 'Não foi possível equipar.');
     });
     // Older cloud deployments do not have this MapSchema yet.
     const drops = state.worldDrops;
@@ -576,6 +612,9 @@ export function GameCanvas() {
     inventoryListenerCleanupRef.current = () => {
       if (typeof removeInventoryChanged === 'function') removeInventoryChanged();
       if (typeof removeInventoryError === 'function') removeInventoryError();
+      if (typeof removeEquipError === 'function') removeEquipError();
+      // Troca de sala/mundo no meio de um drop: a ponte muda, o fluxo é abandonado.
+      useInventoryUiStore.getState().finishPlacement();
       if (typeof removeCraftResult === 'function') removeCraftResult();
       if (typeof removeCraftError === 'function') removeCraftError();
       detachDrops?.();
@@ -936,8 +975,8 @@ export function GameCanvas() {
       {/* Personagem do jogador: criação obrigatória + equipamento */}
       {showCreation && <CharacterCreationModal />}
       <ToolHotbar />
-      <EquipmentButton />
-      <EquipmentPanel />
+      {inventoryOpen && <CollectionInventoryPanel />}
+      {dropPlacementActive && <InventoryDropPlacement />}
       {stationId && <StationGamePanel stationId={stationId} onClose={() => setStationId(null)} />}
       <PerformanceHud />
     </div>

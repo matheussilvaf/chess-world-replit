@@ -20,6 +20,7 @@ import {
 } from '../shared/characters/PlayerCharacterShapes.js';
 import { verifySupabaseToken } from '../auth/supabaseAuth.js';
 import { classifyCraftEntityId } from '../shared/craft/CraftShapes.js';
+import { INVENTORY_DROP_MAX_DISTANCE, INVENTORY_PICKUP_MAX_DISTANCE } from '../shared/collection/CollectionShapes.js';
 import { applyInventoryDeltas, getInventory } from '../collection/inventoryRepository.js';
 import { executePlayerCraft } from '../craft/craftService.js';
 
@@ -616,10 +617,13 @@ export class WorldRoom extends Room<WorldState> {
       void this.refreshPlayerCharacter(client.sessionId);
     });
 
-    // Equipa/desequipa a arma padrão da classe. O servidor decide QUAL arma
-    // (subcategoria da classe em default-weapons) — o cliente só diz se quer.
+    // Equipa/desequipa o item de mão. Sem `ref` (ou com ref de arma) o
+    // servidor decide QUAL arma — a padrão da classe em default-weapons; uma
+    // ref de ferramenta só equipa se estiver no inventário do jogador.
+    // Rejeições respondem `equip_error` para a UI avisar em vez de falhar mudo.
     this.onMessage('equip_weapon', async (client, data) => {
       const equip = data?.equip === true;
+      const fail = (message: string) => client.send('equip_error', { message });
       // Pedidos rápidos em sequência: só o mais novo aplica depois dos
       // awaits (senão um equipar antigo em voo desfaz um desequipar novo).
       const seq = (this.equipSeq.get(client.sessionId) ?? 0) + 1;
@@ -631,39 +635,50 @@ export class WorldRoom extends Room<WorldState> {
         if (this.equipSeq.get(client.sessionId) !== seq) return; // pedido mais novo venceu
         config = this.playerCharacters.get(client.sessionId);
       }
-      if (!config) return; // sem personagem criado (ou sessão anônima)
+      if (!config) { fail('Crie seu personagem antes de equipar'); return; }
       if (!equip) {
-        const player = this.state.players.get(client.sessionId);
-        if (!player) return;
-        player.equippedWeapon = '';
-        config.equippedWeapon = null;
-        void this.persistEquippedWeapon(player.id, null);
+        this.unequipWeapon(client.sessionId);
         return;
       }
-      const requested =
-        typeof data?.ref === 'string' && WEAPON_REF_RE.test(data.ref) ? (data.ref as string) : null;
+      const rawRef = typeof data?.ref === 'string' ? (data.ref as string) : null;
+      if (rawRef !== null && !WEAPON_REF_RE.test(rawRef)) { fail('Item não equipável'); return; }
+      const requested = rawRef;
       const categories = await getAssetCategoriesCached();
       if (this.equipSeq.get(client.sessionId) !== seq) return;
       const defaultWeapon = findClassWeaponRef(categories, config.classId);
       let ref = defaultWeapon;
       if (requested) {
         if (requested.startsWith('gen:weapon/')) {
-          if (requested !== defaultWeapon) return;
+          if (requested !== defaultWeapon) { fail('Sua classe só equipa a própria arma'); return; }
           ref = requested;
         } else if (requested.startsWith('gen:crafttools/')) {
           const inventory = await getInventory(this.state.players.get(client.sessionId)?.id ?? '');
-          if (this.equipSeq.get(client.sessionId) !== seq || inventory.error || inventory.tableMissing ||
-              !inventory.items.some((item) => item.itemKey === requested && item.qty > 0)) return;
+          if (this.equipSeq.get(client.sessionId) !== seq) return;
+          if (inventory.error || inventory.tableMissing) { fail('Inventário indisponível'); return; }
+          if (!inventory.items.some((item) => item.itemKey === requested && item.qty > 0)) {
+            fail('Essa ferramenta não está no seu inventário');
+            return;
+          }
           ref = requested;
-        } else return;
+        } else { fail('Item não equipável'); return; }
       }
-      if (!ref) return; // classe sem arma liberada no assets-controller
+      if (!ref) { fail('Sua classe ainda não tem arma liberada'); return; }
       const player = this.state.players.get(client.sessionId);
       if (!player) return; // saiu durante o await
       player.equippedWeapon = ref;
       config.equippedWeapon = ref;
       void this.persistEquippedWeapon(player.id, ref);
     });
+  }
+
+  /** Guarda a arma/ferramenta em uso (estado da sala + config em memória + banco). */
+  private unequipWeapon(sessionId: string): void {
+    const player = this.state.players.get(sessionId);
+    if (!player) return;
+    player.equippedWeapon = '';
+    const config = this.playerCharacters.get(sessionId);
+    if (config) config.equippedWeapon = null;
+    void this.persistEquippedWeapon(player.id, null);
   }
 
   private async inventorySnapshot(userId: string): Promise<RoomReply> {
@@ -742,7 +757,7 @@ export class WorldRoom extends Room<WorldState> {
     if (typeof body.itemKey !== 'string' || classifyCraftEntityId(body.itemKey) === null ||
       typeof body.qty !== 'number' || !Number.isInteger(body.qty) || body.qty < 1 || body.qty > 999 ||
       typeof body.x !== 'number' || typeof body.y !== 'number' || !Number.isFinite(body.x) || !Number.isFinite(body.y) ||
-      Math.hypot(body.x - player.x, body.y - player.y) > 180) {
+      Math.hypot(body.x - player.x, body.y - player.y) > INVENTORY_DROP_MAX_DISTANCE) {
       return { event: 'inventory_error', payload: { message: 'Drop inválido ou distante' } };
     }
     const debit = await applyInventoryDeltas(player.id, [{ itemKey: body.itemKey, qty: -body.qty }]);
@@ -756,7 +771,13 @@ export class WorldRoom extends Room<WorldState> {
     drop.x = body.x;
     drop.y = body.y;
     this.state.worldDrops.set(drop.id, drop);
-    return this.inventorySnapshot(player.id);
+    const reply = await this.inventorySnapshot(player.id);
+    // Soltou a última unidade da ferramenta que estava na mão: ela sai do personagem também.
+    if (player.equippedWeapon === body.itemKey && reply.event === 'inventory_changed') {
+      const items = (reply.payload as { items: Array<{ itemKey: string; qty: number }> }).items;
+      if (!items.some((item) => item.itemKey === body.itemKey && item.qty > 0)) this.unequipWeapon(client.sessionId);
+    }
+    return reply;
   }
 
   private async handleInventoryPickup(client: Client, data: unknown): Promise<RoomReply> {
@@ -769,7 +790,7 @@ export class WorldRoom extends Room<WorldState> {
     const task = previous.catch(() => undefined).then(async (): Promise<RoomReply> => {
       const drop = this.state.worldDrops.get(dropId);
       if (!drop) return { event: 'inventory_error', payload: { message: 'Drop não encontrado' } };
-      if (Math.hypot(drop.x - player.x, drop.y - player.y) > 100) {
+      if (Math.hypot(drop.x - player.x, drop.y - player.y) > INVENTORY_PICKUP_MAX_DISTANCE) {
         return { event: 'inventory_error', payload: { message: 'Drop distante demais' } };
       }
       // Remove first so all clients observe one claimant; restore exactly if credit fails.

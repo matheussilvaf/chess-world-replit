@@ -32,8 +32,21 @@ export function useInventoryVisualCatalog() {
   return catalog;
 }
 
+/**
+ * Entrada visual de um item. Refs só de família (`gen:weapon/sword`, sem
+ * variante — formato aceito pelo servidor para a arma da classe) usam a
+ * primeira variante catalogada da família para ter ícone/nome.
+ */
 export function inventoryEntry(catalog: CraftCatalog | null, itemKey: string): CraftCatalogEntry | null {
-  return catalog?.byId.get(itemKey) ?? null;
+  if (!catalog) return null;
+  const direct = catalog.byId.get(itemKey);
+  if (direct) return direct;
+  if (!itemKey.startsWith('gen:') || itemKey.split('/').length !== 2) return null;
+  const prefix = `${itemKey}/`;
+  for (const [id, entry] of catalog.byId) {
+    if (id.startsWith(prefix)) return entry;
+  }
+  return null;
 }
 
 export function inventoryFallbackName(itemKey: string) {

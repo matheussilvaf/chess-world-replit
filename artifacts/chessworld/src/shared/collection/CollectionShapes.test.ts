@@ -6,13 +6,18 @@
 import { describe, expect, it } from 'vitest';
 import {
   COLLECTION_CONFIG_ID,
+  DEFAULT_INVENTORY_SLOTS,
   GATHER_LOCK_HP_RATIO,
   GATHER_TOOL_KINDS,
   GATHER_TOOL_LABELS,
+  INVENTORY_COLUMNS,
+  INVENTORY_SLOTS_RANGE,
   RESOURCE_MIN_LEVEL_RANGE,
   defaultGatherToolFor,
   isGatherToolKind,
+  isValidInventorySlots,
   lockedHpFloorFor,
+  resolveInventorySlots,
   validateCollectionWorldConfig,
 } from './CollectionShapes.js';
 
@@ -122,5 +127,37 @@ describe('validateCollectionWorldConfig — resourceMinLevel/resourceTool', () =
     expect(
       validateCollectionWorldConfig({ ...baseConfig(), resourceMinLevel: [] }).ok,
     ).toBe(false);
+  });
+});
+
+describe('inventário — tamanho configurável (admin)', () => {
+  it('padrão é múltiplo das colunas e cabe na faixa', () => {
+    expect(DEFAULT_INVENTORY_SLOTS % INVENTORY_COLUMNS).toBe(0);
+    expect(isValidInventorySlots(DEFAULT_INVENTORY_SLOTS)).toBe(true);
+    expect(isValidInventorySlots(INVENTORY_SLOTS_RANGE.min)).toBe(true);
+    expect(isValidInventorySlots(INVENTORY_SLOTS_RANGE.max)).toBe(true);
+  });
+
+  it('rejeita fora da faixa, não múltiplo de colunas e não inteiro', () => {
+    expect(isValidInventorySlots(INVENTORY_SLOTS_RANGE.min - INVENTORY_COLUMNS)).toBe(false);
+    expect(isValidInventorySlots(INVENTORY_SLOTS_RANGE.max + INVENTORY_COLUMNS)).toBe(false);
+    expect(isValidInventorySlots(DEFAULT_INVENTORY_SLOTS + 1)).toBe(false);
+    expect(isValidInventorySlots(DEFAULT_INVENTORY_SLOTS + 0.5)).toBe(false);
+    expect(isValidInventorySlots('25')).toBe(false);
+    expect(isValidInventorySlots(undefined)).toBe(false);
+  });
+
+  it('resolveInventorySlots cai no padrão para config ausente/inválida', () => {
+    expect(resolveInventorySlots(null)).toBe(DEFAULT_INVENTORY_SLOTS);
+    expect(resolveInventorySlots({})).toBe(DEFAULT_INVENTORY_SLOTS);
+    expect(resolveInventorySlots({ inventorySlots: 7 })).toBe(DEFAULT_INVENTORY_SLOTS);
+    expect(resolveInventorySlots({ inventorySlots: INVENTORY_SLOTS_RANGE.max })).toBe(INVENTORY_SLOTS_RANGE.max);
+  });
+
+  it('validateCollectionWorldConfig aceita o campo válido e rejeita inválido', () => {
+    expect(validateCollectionWorldConfig({ ...baseConfig(), inventorySlots: 30 }).ok).toBe(true);
+    const bad = validateCollectionWorldConfig({ ...baseConfig(), inventorySlots: 31 });
+    expect(bad.ok).toBe(false);
+    expect(bad.errors.some((e) => e.includes('inventorySlots'))).toBe(true);
   });
 });

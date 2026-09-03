@@ -78,6 +78,38 @@ export const RESOURCE_HP_RANGE = { min: 1, max: 99999 } as const;
 export const DEFAULT_HAND_POWER = 1;
 export const HAND_POWER_RANGE = { min: 1, max: 100 } as const;
 
+// ------------------------------------------------------------ inventário
+
+/**
+ * Geometria do inventário do jogador. A grade tem INVENTORY_COLUMNS colunas;
+ * a ÚLTIMA linha é o acesso rápido (hotbar) e o primeiro slot dela é
+ * reservado à arma da classe. O total de slots é configurado no admin
+ * (`inventorySlots`) e precisa ser múltiplo do número de colunas.
+ */
+export const INVENTORY_COLUMNS = 5;
+export const DEFAULT_INVENTORY_SLOTS = 25;
+export const INVENTORY_SLOTS_RANGE = { min: INVENTORY_COLUMNS, max: 100 } as const;
+/** Distância máxima (px do mundo) entre o jogador e o ponto onde solta um item. */
+export const INVENTORY_DROP_MAX_DISTANCE = 180;
+/** Distância máxima (px do mundo) para recolher um item do chão. */
+export const INVENTORY_PICKUP_MAX_DISTANCE = 100;
+
+export function isValidInventorySlots(value: unknown): value is number {
+  return (
+    typeof value === 'number' &&
+    Number.isInteger(value) &&
+    value >= INVENTORY_SLOTS_RANGE.min &&
+    value <= INVENTORY_SLOTS_RANGE.max &&
+    value % INVENTORY_COLUMNS === 0
+  );
+}
+
+/** Total de slots efetivo a partir da config (ausente/inválido = padrão). */
+export function resolveInventorySlots(config: { inventorySlots?: number } | null | undefined): number {
+  const value = config?.inventorySlots;
+  return isValidInventorySlots(value) ? value : DEFAULT_INVENTORY_SLOTS;
+}
+
 // ------------------------------------------------- ferramenta certa + nível
 /** Ferramentas de coleta que um recurso pode exigir ('hand' = mão limpa). */
 export const GATHER_TOOL_KINDS = ['pickaxe', 'axe', 'machete', 'scissors', 'hand'] as const;
@@ -171,6 +203,8 @@ export interface CollectionWorldConfig {
   resourceTool?: Record<string, GatherToolKind>;
   /** Poder de coleta da mão (dano por golpe sem ferramenta; padrão 1). Nível da mão é sempre 0. */
   handPower?: number;
+  /** Total de slots do inventário (múltiplo de INVENTORY_COLUMNS; padrão DEFAULT_INVENTORY_SLOTS). */
+  inventorySlots?: number;
 }
 
 export interface ValidationResult {
@@ -327,6 +361,11 @@ export function validateCollectionWorldConfig(value: unknown): ValidationResult 
     ) {
       errors.push(`handPower: inteiro entre ${HAND_POWER_RANGE.min} e ${HAND_POWER_RANGE.max}`);
     }
+  }
+  if (value.inventorySlots !== undefined && !isValidInventorySlots(value.inventorySlots)) {
+    errors.push(
+      `inventorySlots: inteiro múltiplo de ${INVENTORY_COLUMNS} entre ${INVENTORY_SLOTS_RANGE.min} e ${INVENTORY_SLOTS_RANGE.max}`,
+    );
   }
   return { ok: errors.length === 0, errors };
 }

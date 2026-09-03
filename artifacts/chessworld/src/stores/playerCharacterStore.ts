@@ -12,8 +12,8 @@
  * mesmo caminho servidor → estado → cena.
  */
 import { create } from 'zustand';
-import type { PlayerCharacterConfigV1 } from '../shared/characters/PlayerCharacterShapes';
-import { fetchMyCharacter } from '../lib/playerCharacterApi';
+import { findClassWeaponRef, type PlayerCharacterConfigV1 } from '../shared/characters/PlayerCharacterShapes';
+import { fetchMyCharacter, fetchPublicAssetCategories } from '../lib/playerCharacterApi';
 
 interface PlayerCharacterStore {
   /** GET /api/me/character já respondeu com sucesso. */
@@ -27,16 +27,27 @@ interface PlayerCharacterStore {
   liveAppearance: string;
   liveWeapon: string;
   worldReady: boolean;
-  panelOpen: boolean;
-  /** Envia equipar/desequipar; `ref` opcional escolhe a ARMA (itens de teste). */
+  /**
+   * Ref da arma padrão da classe (assets-controller → default-weapons), só
+   * para a UI mostrar o ícone/estado; quem decide o que equipa é o servidor.
+   * undefined = ainda não consultado; null = classe sem arma liberada.
+   */
+  classWeaponRef: string | null | undefined;
+  /** Última recusa do servidor ao equipar (mostrada na hotbar). */
+  equipError: string | null;
+  /**
+   * Envia equipar/desequipar. Sem `ref` o servidor equipa a arma da classe;
+   * com `ref` de ferramenta (gen:crafttools/…) equipa a ferramenta do inventário.
+   */
   equipSender: ((equip: boolean, ref?: string) => void) | null;
   characterReadySender: (() => void) | null;
 
   load: () => Promise<void>;
+  loadClassWeapon: () => Promise<void>;
   setCharacter: (c: PlayerCharacterConfigV1) => void;
   setLive: (appearance: string, weapon: string) => void;
   setWorldReady: (ready: boolean) => void;
-  setPanelOpen: (open: boolean) => void;
+  setEquipError: (message: string | null) => void;
   setSenders: (equip: ((equip: boolean, ref?: string) => void) | null, ready: (() => void) | null) => void;
   reset: () => void;
 }
@@ -51,7 +62,8 @@ const initial = {
   liveAppearance: '',
   liveWeapon: '',
   worldReady: false,
-  panelOpen: false,
+  classWeaponRef: undefined as string | null | undefined,
+  equipError: null as string | null,
   equipSender: null as ((equip: boolean, ref?: string) => void) | null,
   characterReadySender: null as (() => void) | null,
 };
@@ -78,8 +90,27 @@ export const usePlayerCharacterStore = create<PlayerCharacterStore>((set, get) =
     }
   },
 
+  async loadClassWeapon() {
+    const character = get().character;
+    if (!character) return;
+    try {
+      const categories = await fetchPublicAssetCategories();
+      const current = get().character;
+      if (current?.classId !== character.classId) return; // trocou de personagem no meio
+      set({ classWeaponRef: findClassWeaponRef(categories, character.classId) });
+    } catch (e) {
+      console.warn('[personagem] arma da classe indisponível:', e instanceof Error ? e.message : e);
+    }
+  },
+
   setCharacter(c) {
-    set({ character: c, loaded: true, loadError: null });
+    const previous = get().character;
+    set({
+      character: c,
+      loaded: true,
+      loadError: null,
+      ...(previous?.classId !== c.classId ? { classWeaponRef: undefined } : {}),
+    });
   },
 
   setLive(appearance, weapon) {
@@ -92,8 +123,8 @@ export const usePlayerCharacterStore = create<PlayerCharacterStore>((set, get) =
     if (get().worldReady !== ready) set({ worldReady: ready });
   },
 
-  setPanelOpen(open) {
-    set({ panelOpen: open });
+  setEquipError(message) {
+    set({ equipError: message });
   },
 
   setSenders(equip, ready) {

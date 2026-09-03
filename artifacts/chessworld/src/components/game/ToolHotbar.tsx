@@ -1,26 +1,159 @@
-import { useEffect, useState } from 'react';
+/**
+ * Hotbar (acesso rápido) fixa no rodapé: espelha a ÚLTIMA linha do inventário.
+ * 1º slot = arma da classe (ícone real + estado equipada); os demais são slots
+ * comuns — ferramentas equipam/desequipam ao clicar, itens só ficam
+ * selecionados. Reordenar por arrasto; arrastar para fora entra no modo de
+ * soltar no chão. Também é onde aparecem as recusas do servidor (equipar/
+ * inventário), porque a janela pode estar fechada.
+ */
+import { useEffect, useMemo, useRef } from 'react';
+import { AlertTriangle, Backpack, X } from 'lucide-react';
 import { usePlayerCharacterStore } from '../../stores/playerCharacterStore';
-import { useCollectionInventoryStore } from '../../stores/collectionInventoryStore';
-import { DEFAULT_INVENTORY_SLOT_COUNT, INVENTORY_COLUMNS } from '../../config/inventoryConfig';
-import { fetchPublicAssetCategories } from '../../lib/playerCharacterApi';
-import { findClassWeaponRef } from '../../shared/characters/PlayerCharacterShapes';
+import { useCollectionInventoryStore, weaponSlotIndex } from '../../stores/collectionInventoryStore';
+import { useInventoryUiStore } from '../../stores/inventoryUiStore';
+import { getInventoryBridge } from '../../game/inventory/inventoryBridge';
 import { useInventoryVisualCatalog } from '../../lib/inventory/inventoryVisualCatalog';
-import { InventoryItemThumb } from './InventoryItemVisual';
+import { InventorySlotCell } from './inventory/InventorySlotCell';
+import { WeaponSlotCell } from './inventory/WeaponSlotCell';
+import { SlotDragGhost } from './inventory/SlotDragGhost';
+import { useSlotDrag } from './inventory/useSlotDrag';
+
+const isTool = (key: string) => key.startsWith('gen:crafttools/');
+const NOTICE_MS = 5000;
 
 export function ToolHotbar() {
-  const character = usePlayerCharacterStore(s => s.character); const ready = usePlayerCharacterStore(s => s.worldReady);
-  const sender = usePlayerCharacterStore(s => s.equipSender); const live = usePlayerCharacterStore(s => s.liveWeapon);
-  const { slots, items, selectedItemKey, selectItem, moveSlot } = useCollectionInventoryStore();
-  const [weapon, setWeapon] = useState<string | null>(null); const [drag, setDrag] = useState<number | null>(null);
+  const character = usePlayerCharacterStore((s) => s.character);
+  const ready = usePlayerCharacterStore((s) => s.worldReady);
+  const send = usePlayerCharacterStore((s) => s.equipSender);
+  const live = usePlayerCharacterStore((s) => s.liveWeapon);
+  const equipError = usePlayerCharacterStore((s) => s.equipError);
+  const setEquipError = usePlayerCharacterStore((s) => s.setEquipError);
+  const slots = useCollectionInventoryStore((s) => s.slots);
+  const items = useCollectionInventoryStore((s) => s.items);
+  const capacity = useCollectionInventoryStore((s) => s.capacity);
+  const selectedItemKey = useCollectionInventoryStore((s) => s.selectedItemKey);
+  const inventoryError = useCollectionInventoryStore((s) => s.error);
+  const setInventoryError = useCollectionInventoryStore((s) => s.setInventoryError);
+  const selectItem = useCollectionInventoryStore((s) => s.selectItem);
+  const moveSlot = useCollectionInventoryStore((s) => s.moveSlot);
+  const ensureLoaded = useCollectionInventoryStore((s) => s.ensureLoaded);
+  const inventoryOpen = useInventoryUiStore((s) => s.open);
+  const toggleInventory = useInventoryUiStore((s) => s.toggleInventory);
+  const beginPlacement = useInventoryUiStore((s) => s.beginPlacement);
   const catalog = useInventoryVisualCatalog();
-  useEffect(() => { if (character) void fetchPublicAssetCategories().then(c => setWeapon(findClassWeaponRef(c, character.classId))).catch(() => setWeapon(null)); }, [character]);
+  const barRef = useRef<HTMLDivElement | null>(null);
+
+  // Slots são populados pelo servidor — carregar assim que o mundo abrir, não só ao abrir a janela.
+  useEffect(() => {
+    if (character && ready) ensureLoaded();
+  }, [character, ready, ensureLoaded]);
+
+  // Avisos somem sozinhos.
+  const notice = equipError ?? inventoryError;
+  useEffect(() => {
+    if (!notice) return;
+    const timer = setTimeout(() => {
+      setEquipError(null);
+      setInventoryError(null);
+    }, NOTICE_MS);
+    return () => clearTimeout(timer);
+  }, [notice, setEquipError, setInventoryError]);
+
+  const weaponIndex = weaponSlotIndex(capacity);
+  const { drag, handlePointerDown, consumeClick } = useSlotDrag({
+    containerRef: barRef,
+    outMargin: 40,
+    onMove: moveSlot,
+    canDropAt: (index) => index !== weaponIndex,
+    onDragOut: (_from, itemKey) => {
+      const qty = useCollectionInventoryStore.getState().items[itemKey] ?? 0;
+      if (qty <= 0 || !getInventoryBridge()) return;
+      beginPlacement(itemKey, qty);
+    },
+  });
+  const quick = useMemo(() => slots.slice(weaponIndex + 1, capacity), [slots, weaponIndex, capacity]);
+  const dragging = drag?.active ? drag : null;
+
   if (!character || !ready) return null;
-  const start = DEFAULT_INVENTORY_SLOT_COUNT - INVENTORY_COLUMNS; const quick = slots.slice(start);
-  const chooseWeapon = () => { selectItem(null); if (weapon) sender?.(live !== weapon, weapon); };
-  return <div className="pointer-events-auto fixed bottom-2 left-1/2 z-[110] -translate-x-1/2"><div className="flex gap-1 rounded-md border-2 border-[#8a5a2b] bg-[#2b1c10]/95 p-1">
-    <button type="button" onClick={chooseWeapon} title="Arma padrão da classe" className={`relative h-11 w-11 rounded border-2 text-[9px] text-amber-100 ${live === weapon && weapon ? 'border-emerald-500' : 'border-[#6b4a26]'}`}>Arma</button>
-    {quick.map((key, i) => <button key={i} draggable={!!key} onDragStart={() => setDrag(i)} onDragOver={e => e.preventDefault()} onDrop={() => { if (drag !== null) moveSlot(start + drag, start + i); setDrag(null); }} onDragEnd={() => setDrag(null)} onClick={() => { if (!key) return; selectItem(key); if (key.startsWith('gen:crafttools/')) sender?.(true, key); else sender?.(false); }} className={`relative h-11 w-11 overflow-hidden rounded border-2 ${(key && ((key.startsWith('gen:crafttools/') && live === key) || (!key.startsWith('gen:crafttools/') && selectedItemKey === key))) ? 'border-emerald-500' : 'border-[#6b4a26]'}`}>
-      {key && <><InventoryItemThumb itemKey={key} catalog={catalog} size={40} /><span className="absolute bottom-0 right-0 bg-black/80 px-1 text-[10px] text-white">{items[key]}</span></>}
-    </button>)}
-  </div></div>;
+
+  const onCellClick = (key: string | null) => {
+    if (consumeClick() || !key) return;
+    if (isTool(key)) {
+      selectItem(null);
+      send?.(live !== key, key);
+      return;
+    }
+    selectItem(selectedItemKey === key ? null : key);
+  };
+
+  return (
+    <>
+      <div className="pointer-events-none fixed inset-x-0 bottom-2 z-[110] flex flex-col items-center gap-2">
+        {notice && (
+          <div className="pointer-events-auto flex max-w-[min(92vw,420px)] items-start gap-2 rounded-lg border border-red-800 bg-[#3a1512] px-3 py-2 text-xs text-red-100 shadow-lg">
+            <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-red-300" />
+            <span className="flex-1">{notice}</span>
+            <button
+              type="button"
+              onClick={() => { setEquipError(null); setInventoryError(null); }}
+              className="text-red-200/80 hover:text-white"
+              title="Dispensar"
+            >
+              <X className="h-3.5 w-3.5" />
+            </button>
+          </div>
+        )}
+        <div className="pointer-events-auto flex items-stretch gap-1.5">
+          <div
+            ref={barRef}
+            className="flex items-center gap-1.5 rounded-xl border-[3px] border-[#8a5a2b] bg-[#2a1a0e] p-1.5 shadow-[0_0_0_1px_#1a0f07,0_10px_28px_rgba(0,0,0,.6)]"
+          >
+            <div className="w-12 sm:w-14">
+              <WeaponSlotCell index={weaponIndex} catalog={catalog} thumbSize={36} compact />
+            </div>
+            <span className="mx-0.5 h-8 w-px self-center bg-[#8a5a2b]/70" aria-hidden />
+            {quick.map((key, offset) => {
+              const index = weaponIndex + 1 + offset;
+              const active = !!key && (isTool(key) ? live === key : selectedItemKey === key);
+              return (
+                <div key={index} className="w-12 sm:w-14">
+                  <InventorySlotCell
+                    index={index}
+                    itemKey={key}
+                    qty={key ? items[key] : undefined}
+                    catalog={catalog}
+                    tone="quick"
+                    thumbSize={36}
+                    active={active}
+                    ghosted={dragging?.from === index}
+                    dropTarget={dragging?.over === index}
+                    title={key ? (isTool(key) ? (live === key ? 'Ferramenta equipada — clique para guardar' : 'Clique para equipar a ferramenta') : undefined) : 'Slot vazio'}
+                    onPointerDown={key ? (event) => handlePointerDown(index, key, event) : undefined}
+                    onClick={() => onCellClick(key)}
+                  />
+                </div>
+              );
+            })}
+          </div>
+          <button
+            type="button"
+            onClick={toggleInventory}
+            aria-pressed={inventoryOpen}
+            title={inventoryOpen ? 'Fechar inventário' : 'Abrir inventário'}
+            className={`flex w-11 flex-col items-center justify-center gap-0.5 rounded-xl border-[3px] text-[9px] font-bold uppercase tracking-wide shadow-[0_0_0_1px_#1a0f07,0_10px_28px_rgba(0,0,0,.6)] transition-colors sm:w-12 ${
+              inventoryOpen
+                ? 'border-amber-400/80 bg-[#4a2e15] text-amber-100'
+                : 'border-[#8a5a2b] bg-[#2a1a0e] text-amber-200/80 hover:bg-[#33200f] hover:text-amber-100'
+            }`}
+          >
+            <Backpack className="h-4 w-4" />
+            <span>Bolsa</span>
+          </button>
+        </div>
+      </div>
+      {dragging && (
+        <SlotDragGhost itemKey={dragging.itemKey} catalog={catalog} x={dragging.x} y={dragging.y} qty={items[dragging.itemKey]} size={44} />
+      )}
+    </>
+  );
 }

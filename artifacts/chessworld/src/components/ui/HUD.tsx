@@ -11,7 +11,8 @@ import { leaveWorldRoom } from '../../game/network/colyseusClient';
 import {
   User, MessageSquare, Users, Settings, DoorOpen, Mic, Maximize, Minimize, TreePine, Castle,
 } from 'lucide-react';
-import { CollectionInventoryButton, CollectionInventoryPanel } from '../game/CollectionInventoryPanel';
+import { CollectionInventoryButton } from '../game/CollectionInventoryPanel';
+import { useInventoryUiStore } from '../../stores/inventoryUiStore';
 
 // iPhone Safari has no Fullscreen API for arbitrary elements — hide the button there.
 const FULLSCREEN_SUPPORTED =
@@ -25,7 +26,8 @@ export function HUD() {
   const matchId = useChessStore(s => s.matchId);
   const chatPreviewSeconds = useGameSettingsStore((s) => s.chatPreviewSeconds);
   const [isFullscreen, setIsFullscreen] = useState(!!document.fullscreenElement);
-  const [showInventory, setShowInventory] = useState(false);
+  const inventoryOpen = useInventoryUiStore((s) => s.open);
+  const toggleInventory = useInventoryUiStore((s) => s.toggleInventory);
 
   const regionInfo = REGIONS.find(r => r.id === region);
   const inGame = !!matchId;
@@ -178,7 +180,7 @@ export function HUD() {
               label={currentWorld === 'crafting' ? 'Voltar ao Mundo Principal' : 'Mundo de Coleta (dev)'}
             />
           )}
-          <CollectionInventoryButton onClick={() => setShowInventory(true)} />
+          <CollectionInventoryButton onClick={toggleInventory} active={inventoryOpen} />
           <HUDButton icon={<Mic className="w-4 h-4" />} onClick={toggleVoiceChat} label="Voice" />
           <HUDButton icon={<Settings className="w-4 h-4" />} onClick={toggleSettings} label="Settings" />
           {FULLSCREEN_SUPPORTED && (
@@ -204,8 +206,6 @@ export function HUD() {
           )}
         </div>
       </div>
-      {/* Debug panel removed */}
-      {showInventory && <CollectionInventoryPanel onClose={() => setShowInventory(false)} />}
     </div>
   );
 }

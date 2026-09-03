@@ -9,10 +9,13 @@ import {
   DEFAULT_DROP_COUNT,
   DEFAULT_FLEE_RADIUS,
   DEFAULT_HAND_POWER,
+  DEFAULT_INVENTORY_SLOTS,
   DEFAULT_RESOURCE_HP,
   DEFAULT_RESPAWN_SECONDS,
   GATHER_TOOL_LABELS,
   HAND_POWER_RANGE,
+  INVENTORY_COLUMNS,
+  INVENTORY_SLOTS_RANGE,
   RESOURCE_HP_RANGE,
   RESOURCE_MIN_LEVEL_RANGE,
   FLEE_RADIUS_RANGE,
@@ -312,6 +315,7 @@ export function CollectionAdminPage() {
   );
   /** Poder de coleta da MÃO (dano por golpe sem ferramenta; o nível da mão é fixo: 0). */
   const [handPower, setHandPower] = useState<number>(DEFAULT_HAND_POWER);
+  const [inventorySlots, setInventorySlots] = useState<number>(DEFAULT_INVENTORY_SLOTS);
   const [respawnSeconds, setRespawnSeconds] = useState<Record<string, number>>(
     Object.fromEntries(RESOURCE_KEYS.map((key) => [key, DEFAULT_RESPAWN_SECONDS])),
   );
@@ -424,6 +428,7 @@ export function CollectionAdminPage() {
           ]),
         ));
         setHandPower(config.handPower ?? DEFAULT_HAND_POWER);
+        setInventorySlots(config.inventorySlots ?? DEFAULT_INVENTORY_SLOTS);
         setRespawnSeconds(Object.fromEntries(
           RESOURCE_KEYS.map((key) => [
             key,
@@ -540,6 +545,7 @@ export function CollectionAdminPage() {
         COLLECTIBLE_ITEM_KEYS.map((key) => [key, resourceTool[key] ?? defaultGatherToolFor(key)]),
       ),
       handPower,
+      inventorySlots,
       respawnSeconds: Object.fromEntries(
         RESOURCE_KEYS.map((key) => [key, respawnSeconds[key] ?? DEFAULT_RESPAWN_SECONDS]),
       ),
@@ -587,6 +593,7 @@ export function CollectionAdminPage() {
         ]),
       ));
       setHandPower(response.config.handPower ?? DEFAULT_HAND_POWER);
+      setInventorySlots(response.config.inventorySlots ?? DEFAULT_INVENTORY_SLOTS);
       setRespawnSeconds(Object.fromEntries(
         RESOURCE_KEYS.map((key) => [
           key,
@@ -769,6 +776,44 @@ export function CollectionAdminPage() {
               title="O nível da mão é fixo — não sobe com nada"
             >
               Nível 0 (fixo)
+            </span>
+          </label>
+        </section>
+
+        <section className="mb-4 rounded-xl border border-slate-700/60 bg-slate-900/70 p-4">
+          <h2 className="text-sm font-semibold text-slate-100">Inventário</h2>
+          <p className="mb-3 mt-1 text-xs text-slate-500">
+            Total de slots da bolsa de cada jogador, em linhas de {INVENTORY_COLUMNS}. A última linha é o acesso
+            rápido (hotbar) e o primeiro slot dela é reservado à arma da classe. Vale para todos ao entrar no mundo.
+          </p>
+          <label className="flex max-w-xs items-center gap-3 rounded-lg border border-slate-700/50 bg-slate-950/40 p-2">
+            <span className="min-w-0 flex-1">
+              <span className="mb-1 block text-xs text-slate-300">
+                Slots ({INVENTORY_SLOTS_RANGE.min}–{INVENTORY_SLOTS_RANGE.max}, múltiplos de {INVENTORY_COLUMNS})
+              </span>
+              <input
+                type="number"
+                min={INVENTORY_SLOTS_RANGE.min}
+                max={INVENTORY_SLOTS_RANGE.max}
+                step={INVENTORY_COLUMNS}
+                disabled={busy || tableMissing}
+                value={inventorySlots}
+                onChange={(event) => {
+                  const value = Number(event.target.value);
+                  if (Number.isInteger(value)) setInventorySlots(value);
+                }}
+                onBlur={() => {
+                  const rounded = Math.round(inventorySlots / INVENTORY_COLUMNS) * INVENTORY_COLUMNS;
+                  setInventorySlots(Math.max(INVENTORY_SLOTS_RANGE.min, Math.min(INVENTORY_SLOTS_RANGE.max, rounded)));
+                }}
+                className={inputClass}
+              />
+            </span>
+            <span
+              className="rounded-md border border-slate-700/60 bg-slate-950/70 px-2 py-1 text-[10px] font-mono text-slate-400"
+              title="Linhas da grade (a última é a hotbar)"
+            >
+              {Math.max(1, Math.round(inventorySlots / INVENTORY_COLUMNS))} linhas
             </span>
           </label>
         </section>
