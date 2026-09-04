@@ -23,3 +23,5 @@ Sem a conexão GitHub anexada ao ambiente o callback nem aparece, e `git push` H
 - O `shellExec` do sandbox REMOVE tabulações da saída: `git diff-tree --name-status` vira `Mcaminho` (status colado). Usar `--name-only --diff-filter=ACMR` e `--diff-filter=D` em chamadas separadas.
 - A mensagem de commit lida por `git show -s --format=%B` e reagrupada perde as quebras de linha (o body vira uma linha só no GitHub). Ler a mensagem com `readFile` de um arquivo gerado por `git show -s --format=%B <sha> > /tmp/msg.txt`.
 - Ao replicar N commits, o SHA remoto difere do local; comparar parent pelo mapa local→remoto (o primeiro parent é o head remoto), não pelo SHA local.
+- No sandbox, `readFile` devolve `{ bytes, content }` no sucesso (SEM `ok: true`); só a falha tem `ok:false`. Testar `typeof r.content === 'string'`. E a saída de `shellExec` traz `\r` no fim de cada linha — `trim()` cada caminho antes de ler, senão `notFound` fantasma.
+- Commits vazios "Published your App" (marcador do Publish do Replit) aparecem só no gitsafe-backup; pode-se pular e apontar o parent para o head real do GitHub — o `reset --hard origin/main` depois descarta o marcador local sem perda.
