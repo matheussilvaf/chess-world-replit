@@ -236,6 +236,13 @@ Rotas Express custom do servidor devem ser registradas COM o prefixo `/api` (ex.
 **Why:** review flagou o craft; endurecer os demais foi deixado fora de escopo do round de receitas.
 **How to apply:** ao tocar qualquer router admin desses, trocar o middleware junto (import + .use), espelhar no api-server e avisar o usuário para definir ADMIN_EMAILS antes de publicar.
 
+## Nó ≠ item: recursos que rendem OUTRO item (set/2026)
+- `hand_stone` (pedra de mão) é só NÓ do mapa: colher rende `mineral:pedra` (Pedra comum), mesma pilha/receitas da mineração. Mapeamento único em `RESOURCE_YIELD_ITEM_KEYS`/`yieldItemKeyFor` (CollectionShapes, espelhado ×3); item de inventário válido = `isInventoryItemId` (CraftShapes) — animais e nós que rendem outro item NÃO são itens.
+- Regra: todo ponto de entrada de chave vinda do cliente (/collect, deltas de inventário, drop no WorldRoom) CANONIZA com `yieldItemKeyFor` antes de validar — cliente antigo mandando a chave do nó ainda credita o item certo; receitas rejeitam nós como alvo/ingrediente.
+- Pilhas legadas da chave do nó são fundidas na leitura do inventário via UM upsert (legada→0, alvo+=saldo): um só INSERT…ON CONFLICT é atômico no PostgREST; nunca "delete e depois credita" (perde item se o crédito falhar).
+**Why:** pedido do usuário — pedra da mão e pedra minerada precisam ser o mesmo item; review pegou o merge não-atômico e o vazamento de hand_stone em receitas/drops.
+**How to apply:** novo nó que rende item existente → só adicionar em RESOURCE_YIELD_ITEM_KEYS; o resto (catálogo do manual, admin "Rende:", drop visual, fusão legada) já segue o mapa.
+
 ## Config de coleta — allowlist no PUT (armadilha)
 - O PUT do admin de coleta monta uma cópia NORMALIZADA campo a campo em collectionRoutes.ts (allowlist). Campo novo nas shapes (ex.: handPower) TEM de entrar também ali, senão o servidor valida mas DESCARTA em silêncio ao salvar.
 - currentSwingState (WorldScene) devolve rects VAZIOS nos frames de windup de armas com perfil autorado; lógica de "início do golpe" no runtime deve rodar ANTES do early-return por rects.length===0.
