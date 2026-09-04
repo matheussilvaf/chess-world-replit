@@ -7,6 +7,8 @@ export class WorldDropState extends Schema {
   qty = 0;
   x = 0;
   y = 0;
+  /** Epoch ms (relógio do servidor) em que o item some do chão se ninguém recolher. */
+  expiresAt = 0;
 }
 
 defineTypes(WorldDropState, {
@@ -15,4 +17,5 @@ defineTypes(WorldDropState, {
   qty: 'number',
   x: 'number',
   y: 'number',
+  expiresAt: 'number',
 });

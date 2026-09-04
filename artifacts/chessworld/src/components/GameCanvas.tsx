@@ -35,6 +35,7 @@ import { setInventoryBridge } from '../game/inventory/inventoryBridge';
 import { useCollectionInventoryStore } from '../stores/collectionInventoryStore';
 import { useInventoryUiStore } from '../stores/inventoryUiStore';
 import { loadInventoryVisualCatalog } from '../lib/inventory/inventoryVisualCatalog';
+import type { CraftThumb } from '../lib/craft/craftCatalog';
 import { clearStationCraftBridge, rejectStationCraft, resolveStationCraft, setStationCraftSender } from '../game/stations/stationCraftBridge';
 import { StationGamePanel } from './game/StationGamePanel';
 
@@ -598,16 +599,31 @@ export function GameCanvas() {
     const drops = state.worldDrops;
     let detachDrops: (() => void) | undefined;
     if (drops && typeof drops.onAdd === 'function') {
+      // O catálogo visual carrega de forma assíncrona: se o drop for removido
+      // (recolhido/expirado) ou a sala trocar antes de resolver, o desenho
+      // atrasado não pode ressuscitar o item. Só a geração viva desenha.
+      const liveDrops = new Map<string, number>();
       drops.onAdd((drop: any, id: string) => {
         const render = () => {
-          const data = { id, itemKey: drop.itemKey, qty: drop.qty, x: drop.x, y: drop.y };
-          void loadInventoryVisualCatalog().then(catalog => scene.upsertWorldDrop(data, undefined, catalog.byId.get(data.itemKey)?.thumb)).catch(() => scene.upsertWorldDrop(data));
+          const generation = (liveDrops.get(id) ?? 0) + 1;
+          liveDrops.set(id, generation);
+          const data = { id, itemKey: drop.itemKey, qty: drop.qty, x: drop.x, y: drop.y, expiresAt: drop.expiresAt };
+          const draw = (thumb?: CraftThumb) => {
+            if (liveDrops.get(id) === generation) scene.upsertWorldDrop(data, undefined, thumb);
+          };
+          void loadInventoryVisualCatalog().then(catalog => draw(catalog.byId.get(data.itemKey)?.thumb)).catch(() => draw());
         };
         render();
         drop.onChange?.(render);
       });
-      drops.onRemove((_: any, id: string) => scene.removeWorldDrop(id));
-      detachDrops = () => scene.clearWorldDrops();
+      drops.onRemove((_: any, id: string) => {
+        liveDrops.delete(id);
+        scene.removeWorldDrop(id);
+      });
+      detachDrops = () => {
+        liveDrops.clear();
+        scene.clearWorldDrops();
+      };
     }
     inventoryListenerCleanupRef.current = () => {
       if (typeof removeInventoryChanged === 'function') removeInventoryChanged();

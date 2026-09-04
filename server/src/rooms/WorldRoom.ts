@@ -20,7 +20,7 @@ import {
 } from '../shared/characters/PlayerCharacterShapes.js';
 import { verifySupabaseToken } from '../auth/supabaseAuth.js';
 import { isInventoryItemId } from '../shared/craft/CraftShapes.js';
-import { INVENTORY_DROP_MAX_DISTANCE, INVENTORY_PICKUP_MAX_DISTANCE, yieldItemKeyFor } from '../shared/collection/CollectionShapes.js';
+import { INVENTORY_DROP_MAX_DISTANCE, INVENTORY_PICKUP_MAX_DISTANCE, WORLD_DROP_TTL_MS, yieldItemKeyFor } from '../shared/collection/CollectionShapes.js';
 import { applyInventoryDeltas, getInventory } from '../collection/inventoryRepository.js';
 import { executePlayerCraft } from '../craft/craftService.js';
 
@@ -81,6 +81,9 @@ export class WorldRoom extends Room<WorldState> {
     // other clients ~17ms sooner on average; patches are tiny position deltas.
     this.setPatchRate(1000 / 30);
     this.maxClients = 100;
+    // Itens no chão expiram sozinhos; a varredura roda mesmo com a sala vazia
+    // (ver holdRoomWhileDropsExist) para que o prazo seja o mesmo para todos.
+    this.clock.setInterval(() => this.sweepExpiredDrops(), 250);
 
     this.region = String(options.region || 'default');
 
@@ -772,7 +775,9 @@ export class WorldRoom extends Room<WorldState> {
     drop.qty = body.qty;
     drop.x = body.x;
     drop.y = body.y;
+    drop.expiresAt = Date.now() + WORLD_DROP_TTL_MS;
     this.state.worldDrops.set(drop.id, drop);
+    this.holdRoomWhileDropsExist();
     const reply = await this.inventorySnapshot(player.id);
     // Soltou a última unidade da ferramenta que estava na mão: ela sai do personagem também.
     if (player.equippedWeapon === body.itemKey && reply.event === 'inventory_changed') {
@@ -788,10 +793,17 @@ export class WorldRoom extends Room<WorldState> {
     if (!player || player.id.startsWith('anon:')) return { event: 'inventory_error', payload: { message: 'Autenticação obrigatória' } };
     if (typeof body?.dropId !== 'string' || body.dropId.length > 64) return { event: 'inventory_error', payload: { message: 'dropId inválido' } };
     const dropId = body.dropId;
-    const previous = this.dropLocks.get(dropId) ?? Promise.resolve();
-    const task = previous.catch(() => undefined).then(async (): Promise<RoomReply> => {
+    return this.withDropLock(dropId, async (): Promise<RoomReply> => {
       const drop = this.state.worldDrops.get(dropId);
       if (!drop) return { event: 'inventory_error', payload: { message: 'Drop não encontrado' } };
+      // O prazo é autoritativo aqui, não só na varredura (que roda a cada
+      // 250 ms): pedido que chega (ou sai da fila do lock) depois de vencer
+      // não leva o item — ele é apagado na hora.
+      if (drop.expiresAt > 0 && drop.expiresAt <= Date.now()) {
+        this.state.worldDrops.delete(dropId);
+        this.holdRoomWhileDropsExist();
+        return { event: 'inventory_error', payload: { message: 'O item já sumiu do chão' } };
+      }
       if (Math.hypot(drop.x - player.x, drop.y - player.y) > INVENTORY_PICKUP_MAX_DISTANCE) {
         return { event: 'inventory_error', payload: { message: 'Drop distante demais' } };
       }
@@ -802,11 +814,50 @@ export class WorldRoom extends Room<WorldState> {
         this.state.worldDrops.set(drop.id, drop);
         return { event: 'inventory_error', payload: { message: credit.error ?? 'Não foi possível recolher drop' } };
       }
+      this.holdRoomWhileDropsExist();
       return this.inventorySnapshot(player.id);
     });
-    const marker = task.then(() => undefined, () => undefined);
+  }
+
+  /** Serializa recolher/expirar o MESMO drop: um só vencedor por item. */
+  private async withDropLock<T>(dropId: string, task: () => Promise<T>): Promise<T> {
+    const previous = this.dropLocks.get(dropId) ?? Promise.resolve();
+    const run = previous.catch(() => undefined).then(task);
+    const marker = run.then(() => undefined, () => undefined);
     this.dropLocks.set(dropId, marker);
-    try { return await task; } finally { if (this.dropLocks.get(dropId) === marker) this.dropLocks.delete(dropId); }
+    try { return await run; } finally { if (this.dropLocks.get(dropId) === marker) this.dropLocks.delete(dropId); }
+  }
+
+  /**
+   * Itens no chão vencidos somem para todos e não voltam para ninguém. Passa
+   * pelo mesmo lock do pickup: quem clicou no último instante ainda leva o
+   * item se o crédito já estava em curso; o vencido nunca é recolhido.
+   */
+  private sweepExpiredDrops(): void {
+    if (this.state.worldDrops.size === 0) return;
+    const now = Date.now();
+    const expired: string[] = [];
+    this.state.worldDrops.forEach((drop, id) => { if (drop.expiresAt > 0 && drop.expiresAt <= now) expired.push(id); });
+    for (const id of expired) {
+      void this.withDropLock(id, async () => {
+        const drop = this.state.worldDrops.get(id);
+        if (!drop || drop.expiresAt > Date.now()) return;
+        this.state.worldDrops.delete(id);
+        console.log(`[WorldRoom] drop expirado: ${drop.itemKey} x${drop.qty} (${id})`);
+        this.holdRoomWhileDropsExist();
+      });
+    }
+  }
+
+  /**
+   * Um item solto tem de continuar no chão pelo prazo inteiro mesmo que todo
+   * mundo saia do mapa: sem isto o Colyseus descarta a sala vazia (e os drops
+   * com ela) e quem voltasse segundos depois não veria mais nada. Enquanto
+   * houver drop a sala fica viva; sem drops volta ao descarte automático.
+   */
+  private holdRoomWhileDropsExist(): void {
+    const shouldHold = this.state.worldDrops.size > 0;
+    if (this.autoDispose === shouldHold) this.autoDispose = !shouldHold;
   }
 
   /** Carrega o personagem persistido e espelha no estado (last-write-wins). */

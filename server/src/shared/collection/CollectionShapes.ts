@@ -123,6 +123,14 @@ export const INVENTORY_SLOTS_RANGE = { min: INVENTORY_COLUMNS, max: 100 } as con
 export const INVENTORY_DROP_MAX_DISTANCE = 180;
 /** Distância máxima (px do mundo) para recolher um item do chão. */
 export const INVENTORY_PICKUP_MAX_DISTANCE = 100;
+/**
+ * Quanto tempo um item solto fica no chão antes de sumir de vez (o servidor
+ * apaga e ninguém recebe nada). Vale para todos na sala — quem sair e voltar
+ * ao mapa dentro do prazo ainda vê o item no mesmo lugar.
+ */
+export const WORLD_DROP_TTL_MS = 15_000;
+/** Nos últimos segundos o item pisca no cliente para avisar que vai sumir. */
+export const WORLD_DROP_WARNING_MS = 5_000;
 
 export function isValidInventorySlots(value: unknown): value is number {
   return (

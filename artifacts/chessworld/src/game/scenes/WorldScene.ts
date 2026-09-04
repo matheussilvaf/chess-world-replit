@@ -22,7 +22,7 @@ import { composedDefIdFor, ensureAppearanceDef, getGeneratorManifest, pruneCompo
 import { COMPOSED_SHEET, parseWeaponRef } from '../../shared/characters/PlayerCharacterShapes';
 import { loadRigConfig } from '../rigs/rigLoader';
 import { resolveGatherStats, resolveWeaponProfileForFamily, resolveWeaponShootStats, type GatherToolStats } from '../rigs/weaponLoader';
-import { INVENTORY_DROP_MAX_DISTANCE, type GatherToolKind } from '../../shared/collection/CollectionShapes';
+import { INVENTORY_DROP_MAX_DISTANCE, WORLD_DROP_WARNING_MS, type GatherToolKind } from '../../shared/collection/CollectionShapes';
 import { projectilePairedFamily } from '../../lib/character-generator/weaponCatalog';
 import { ArrowProjectiles } from '../world/ArrowProjectiles';
 import { RESOURCE_DROP_ICONS } from '../../lib/collection/resourceCatalog';
@@ -160,6 +160,8 @@ export class WorldScene extends Phaser.Scene {
   private otherPlayers: Map<string, RemotePlayer> = new Map();
   /** Server-authoritative ground inventory drops. */
   private worldDrops = new Map<string, Phaser.GameObjects.Container>();
+  /** Aviso de "vai sumir" agendado por drop (cancelado ao recolher/remover). */
+  private worldDropWarnings = new Map<string, Phaser.Time.TimerEvent>();
   /** Feedback do fluxo de soltar item: anel de alcance (segue o jogador) + marcador do ponto. */
   private dropRadiusRing: Phaser.GameObjects.Graphics | null = null;
   private dropMarker: Phaser.GameObjects.Container | null = null;
@@ -4172,7 +4174,7 @@ export class WorldScene extends Phaser.Scene {
 
   /** Called from Colyseus MapSchema handlers. It deliberately accepts plain
    * objects too, so cloud rooms that do not yet expose worldDrops stay safe. */
-  public upsertWorldDrop(drop: { id?: string; itemKey: string; qty: number; x: number; y: number }, mapKey?: string, thumb?: CraftThumb) {
+  public upsertWorldDrop(drop: { id?: string; itemKey: string; qty: number; x: number; y: number; expiresAt?: number }, mapKey?: string, thumb?: CraftThumb) {
     const id = drop.id ?? mapKey;
     if (!id) return;
     // Cena já destruída (troca de mapa/HMR) com listener do room ainda vivo: nada a desenhar.
@@ -4180,6 +4182,7 @@ export class WorldScene extends Phaser.Scene {
     this.removeWorldDrop(id);
     const container = this.add.container(drop.x, drop.y).setDepth(80);
     this.worldDrops.set(id, container);
+    this.scheduleWorldDropWarning(id, container, drop.expiresAt);
     const bg = this.add.rectangle(0, 0, 24, 24, 0x17110b, 0.8).setStrokeStyle(1, 0xd69e3a).setInteractive({ useHandCursor: true });
     const label = this.add.text(0, -19, `${drop.qty}x`, { fontFamily: 'monospace', fontSize: '10px', color: '#ffffff', stroke: '#000000', strokeThickness: 3 }).setOrigin(0.5);
     container.add([bg, label]);
@@ -4249,9 +4252,31 @@ export class WorldScene extends Phaser.Scene {
   }
 
   public removeWorldDrop(id: string) {
+    this.worldDropWarnings.get(id)?.remove(false);
+    this.worldDropWarnings.delete(id);
     const old = this.worldDrops.get(id);
-    if (old) old.destroy();
+    if (old) {
+      this.tweens.killTweensOf(old);
+      old.destroy();
+    }
     this.worldDrops.delete(id);
+  }
+
+  /**
+   * Nos últimos segundos antes de o servidor apagar o item, ele pisca. O
+   * sumiço em si é sempre do servidor (onRemove); aqui é só aviso — com o
+   * relógio do cliente, então um desvio de segundos só desloca o piscar.
+   */
+  private scheduleWorldDropWarning(id: string, container: Phaser.GameObjects.Container, expiresAt: number | undefined) {
+    if (!expiresAt || !Number.isFinite(expiresAt)) return;
+    const startIn = Math.max(0, expiresAt - Date.now() - WORLD_DROP_WARNING_MS);
+    const blink = () => {
+      this.worldDropWarnings.delete(id);
+      if (!container.active || this.worldDrops.get(id) !== container) return;
+      this.tweens.add({ targets: container, alpha: 0.25, duration: 220, yoyo: true, repeat: -1, ease: 'Sine.easeInOut' });
+    };
+    if (startIn === 0) { blink(); return; }
+    this.worldDropWarnings.set(id, this.time.delayedCall(startIn, blink));
   }
 
   public clearWorldDrops() {
