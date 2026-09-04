@@ -275,3 +275,10 @@ Rotas Express custom do servidor devem ser registradas COM o prefixo `/api` (ex.
 - Overlays React do jogo são renderizados pelo GameCanvas, FORA do HUD (`pointer-events-none`): qualquer painel novo que precise de clique/arrasto não pode viver dentro do HUD.
 - Drop no chão é correlacionado por `requestId` (server devolve `requestId` em `inventory_changed`/`inventory_error`); a UI espera a resposta antes de encerrar o fluxo (recusa volta à confirmação). Fila de coleta é otimista → "saldo insuficiente" é possível logo após coletar.
 - Sem `gitPush` no sandbox quando a conexão GitHub não está anexada ao ambiente; `git push` por HTTPS falha (sem token). Propor a conexão GitHub (ProposeIntegration) em vez de tentar credenciais.
+
+## Drops no chão: TTL de 15 s e sala viva com sala vazia (set/2026)
+- Drops vivem só no state da sala (sem tabela); Colyseus 0.15 descarta a sala assim que o último jogador sai (não há `allowReconnection` na WorldRoom) → os drops sumiriam antes do prazo. Regra: `autoDispose = false` enquanto `worldDrops.size > 0`, `true` ao zerar (o setter re-arma o `_disposeIfEmpty` de 1 s). Sem esse toggle a sala vazia vaza para sempre ou perde os itens.
+- **Why:** o usuário quer o item visível para todos, inclusive quem sai do mapa e volta dentro dos 15 s; reuso de sala é por região (`filterBy(['region'])`), então o jogador cai na mesma sala.
+- O prazo é autoritativo nos DOIS lados do lock por drop: varredura (`clock.setInterval` 250 ms, roda com a sala vazia) e o próprio pickup (recusa e apaga se já venceu). Pickup que entrou no lock antes de vencer ainda ganha.
+- Cliente decodifica por reflexão (nenhuma classe de schema no front) → adicionar campo ao schema não quebra abas antigas.
+- Teste E2E de sala sem navegador: `node` + `colyseus.js` do root (`node_modules/.pnpm/colyseus.js@0.15.28/.../build/cjs/index.js`) contra `ws://localhost:8080`; usuário temporário via `auth.admin.createUser` + `signInWithPassword` com a anon key para obter `token`; região única (`craft:ttl-test-<ts>`) garante sala nova; apagar o usuário no `finally`. `inventory_changed` chega ANTES do patch do state — esperar `onAdd`, não a mensagem.
