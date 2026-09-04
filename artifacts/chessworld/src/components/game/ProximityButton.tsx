@@ -1,5 +1,6 @@
 import { DoorOpen, Building2, Compass, BarChart3, Landmark, Hammer } from 'lucide-react';
 import { useInteractionStore } from '../../stores/interactionStore';
+import { useControlsStore } from '../../stores/controlsStore';
 
 const CATEGORY_ICONS: Record<string, typeof DoorOpen> = {
   house: DoorOpen,
@@ -21,6 +22,7 @@ const CATEGORY_ACTIONS: Record<string, string> = {
 
 export function ProximityButton() {
   const { proximityObject, debugEnabled, confirmAction } = useInteractionStore();
+  const interactKey = useControlsStore((s) => s.bindings.interact.label);
 
   if (!proximityObject || (!debugEnabled && proximityObject.category !== 'station')) return null;
 
@@ -51,7 +53,7 @@ export function ProximityButton() {
           <span className="text-sm font-medium text-white leading-tight">{actionLabel}</span>
         </div>
         <kbd className="ml-2 px-1.5 py-0.5 text-[10px] font-mono bg-slate-700 text-slate-300 rounded border border-slate-600">
-          E
+          {interactKey}
         </kbd>
       </button>
     </div>

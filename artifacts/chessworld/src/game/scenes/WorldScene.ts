@@ -43,6 +43,9 @@ import {
   localShapeToWorldCoordinates,
 } from '../../shared/combat/CharacterCombatShapes';
 import { RemotePlayerInterpolator } from '../network/interpolation';
+import { KeyboardControls, isTextInputFocused } from '../input/KeyboardControls';
+import { getKeyBindings, isCapturingKey } from '../../stores/controlsStore';
+import { useGameStore } from '../../stores/gameStore';
 import AStarGrid from '../pathfinding/AStarGrid';
 import { InteractionSystem } from '../interactions/InteractionSystem';
 import type { InteractionEvent, InteractionObject, ZoneChangeEvent } from '../interactions/InteractionSystem';
@@ -203,6 +206,13 @@ export class WorldScene extends Phaser.Scene {
   private holdActive = false;
   private lastHoldRepath = 0;
   private lastHoldTarget: { x: number; y: number } | null = null;
+  /** Teclas do jogador (WASD/atacar/interagir configuráveis) — ver updateKeyboardMove. */
+  private keyboardControls: KeyboardControls | null = null;
+  /** True enquanto o teclado comanda o movimento (tem prioridade sobre o clique). */
+  private keyboardMoving = false;
+  /** Vetores reutilizados na projeção tela→mundo do teclado (sem alocar por frame). */
+  private readonly kbWorldA = new Phaser.Math.Vector2();
+  private readonly kbWorldB = new Phaser.Math.Vector2();
   private localHp = 100;
   private localMaxHp = 100;
   private localHpBar: Phaser.GameObjects.Graphics | null = null;
@@ -429,7 +439,7 @@ export class WorldScene extends Phaser.Scene {
     const spawnPoint = this.findSpawnPoint(map);
     this.createPlayer(spawnPoint.x, spawnPoint.y);
     this.createAnimations();
-    this.setupAttackKey();
+    this.setupKeyboardControls();
 
     // Debug graphics overlay
     this.debugGfx = this.add.graphics();
@@ -500,12 +510,9 @@ export class WorldScene extends Phaser.Scene {
       this.navigateTo(worldPoint.x, worldPoint.y);
     });
 
-    // "E" key for confirming proximity interactions
-    this.input.keyboard?.on('keydown-E', () => {
-      this.confirmProximityInteraction();
-    });
-
     this.events.once('shutdown', () => {
+      this.keyboardControls?.destroy();
+      this.keyboardControls = null;
       this.interactionSystem?.destroy();
       this.arrowProjectiles?.destroy();
       this.arrowProjectiles = null;
@@ -1256,6 +1263,7 @@ export class WorldScene extends Phaser.Scene {
    */
   private updateHoldToMove() {
     if (this.holdStartedAt <= 0) return;
+    if (this.keyboardMoving) return; // teclado manda; o toque volta a valer ao soltar as teclas
     if (this.isPinching || this.movementLocked || this.inMatch || this.currentSeatInfo || this.seatTween) {
       this.holdStartedAt = 0;
       this.holdActive = false;
@@ -1488,12 +1496,12 @@ export class WorldScene extends Phaser.Scene {
     // Local attack animation finished → settle back to idle pose
     if (this.attackingUntil > 0 && Date.now() >= this.attackingUntil) {
       this.attackingUntil = 0;
-      if (!this.target) this.localIdle();
+      if (!this.target && !this.keyboardMoving) this.localIdle();
     }
     // Hurt animation finished → settle (hurt never blocks movement)
     if (this.hurtUntil > 0 && Date.now() >= this.hurtUntil) {
       this.hurtUntil = 0;
-      if (!this.target && this.attackingUntil <= 0) this.localIdle();
+      if (!this.target && !this.keyboardMoving && this.attackingUntil <= 0) this.localIdle();
     }
     this.updateLocalHpBar();
     // Dead: the corpse pose owns everything — no input, no motion — until the
@@ -1507,6 +1515,8 @@ export class WorldScene extends Phaser.Scene {
     this.updateHoldToMove();
     // Stationary 'attack' blocks movement; walk-attack/run-attack don't.
     if (this.attackingUntil > 0 && this.attackLocksMovement) return;
+
+    if (this.updateKeyboardMove()) return;
 
     if (!this.target) {
       if (this.playerBody.speed > 0.1) {
@@ -1608,6 +1618,87 @@ export class WorldScene extends Phaser.Scene {
     if (this.onPositionUpdate && this.game.loop.frame % 30 === 0) {
       this.onPositionUpdate(this.player.x, this.player.y);
     }
+  }
+
+  /**
+   * Movimento por teclado (WASD por padrão). Tem prioridade sobre o
+   * clique-para-andar: apertar uma direção descarta o caminho atual sem parar.
+   * Mesmas travas do clique (movimento travado, partida, assento, morte — esta
+   * já tratada antes). Retorna true quando o teclado comandou este frame
+   * (andando, ou acabou de soltar as teclas e parou).
+   */
+  private updateKeyboardMove(): boolean {
+    const kb = this.keyboardControls;
+    if (!kb) return false;
+    if (this.movementLocked || this.inMatch || this.currentSeatInfo || this.seatTween) {
+      // Travado (partida, assento, troca de mapa…): solta as teclas presas para
+      // nada ficar "na fila" até destravar; quem estava andando para e avisa.
+      kb.clear();
+      if (this.keyboardMoving) {
+        this.keyboardMoving = false;
+        this.matter.body.setVelocity(this.playerBody, { x: 0, y: 0 });
+        this.localIdle();
+        this.emitMovement(false);
+      }
+      return false;
+    }
+    const v = kb.moveVector();
+    if (!v) {
+      if (!this.keyboardMoving) return false;
+      this.keyboardMoving = false;
+      this.matter.body.setVelocity(this.playerBody, { x: 0, y: 0 });
+      this.localIdle();
+      this.emitMovement(false);
+      if (this.onPositionUpdate) this.onPositionUpdate(this.player.x, this.player.y);
+      return true;
+    }
+    if (this.target || this.finalDestination) {
+      this.target = null;
+      this.pathWaypoints = [];
+      this.currentWaypointIndex = 0;
+      this.finalDestination = null;
+      this.stuckFrames = 0;
+      this.lastStuckPos = null;
+      this.rerouteAttempts = 0;
+    }
+    if (!this.keyboardMoving) {
+      this.keyboardMoving = true;
+      this.lastSentTime = 0; // primeira posição sai já neste frame
+    }
+    // Tela → mundo: a câmera pode estar girada (180° para quem joga de pretas),
+    // e "cima" tem que ser cima NA TELA. Projeta dois pontos da tela pela
+    // própria câmera (exato para qualquer rotação/zoom) e normaliza.
+    let wx = v.x;
+    let wy = v.y;
+    if (this.currentCameraRotation !== 0) {
+      const cam = this.cameras.main;
+      const cx = cam.width * 0.5;
+      const cy = cam.height * 0.5;
+      cam.getWorldPoint(cx, cy, this.kbWorldA);
+      cam.getWorldPoint(cx + v.x * 100, cy + v.y * 100, this.kbWorldB);
+      const dx = this.kbWorldB.x - this.kbWorldA.x;
+      const dy = this.kbWorldB.y - this.kbWorldA.y;
+      const len = Math.hypot(dx, dy);
+      if (len > 0) {
+        wx = dx / len;
+        wy = dy / len;
+      }
+    }
+    this.matter.body.setVelocity(this.playerBody, { x: wx * this.playerSpeed, y: wy * this.playerSpeed });
+
+    const dir = this.getDirection8(wx, wy);
+    this.currentDirection = dir;
+    this.localWalk(dir, this.playerSpeed / MAP_CONFIG.playerSpeed);
+
+    const now = Date.now();
+    if (now - this.lastSentTime >= this.SEND_INTERVAL) {
+      this.emitMovement(true, dir);
+      this.lastSentTime = now;
+    }
+    if (this.onPositionUpdate && this.game.loop.frame % 30 === 0) {
+      this.onPositionUpdate(this.player.x, this.player.y);
+    }
+    return true;
   }
 
   private getDirection8(dx: number, dy: number): Direction8 {
@@ -3442,12 +3533,25 @@ export class WorldScene extends Phaser.Scene {
   // Combat (dev): attack intent + remote attack playback
   // ------------------------------------------------------------------
 
-  private setupAttackKey() {
-    this.input.keyboard?.on('keydown-F', () => {
-      const el = document.activeElement as HTMLElement | null;
-      if (el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.isContentEditable)) return;
-      this.tryAttack();
-    });
+  /**
+   * Teclado do jogador: direções (WASD por padrão), atacar (F) e interagir (E),
+   * todas configuráveis em Configurações → Controles. Ouvintes DOM na janela
+   * (o plugin de teclado do Phaser não expõe `code`); ignorados enquanto um
+   * campo de texto tem foco, o menu de configurações está aberto ou a aba
+   * Controles espera uma tecla.
+   */
+  private setupKeyboardControls() {
+    this.keyboardControls?.destroy();
+    this.keyboardControls = new KeyboardControls({
+      target: window,
+      document,
+      getBindings: getKeyBindings,
+      isBlocked: () => isTextInputFocused() || isCapturingKey() || useGameStore.getState().showSettings,
+      onAction: (action) => {
+        if (action === 'attack') this.tryAttack();
+        else this.confirmProximityInteraction();
+      },
+    }).attach();
   }
 
   /** Plays the local attack animation and sends the attack INTENT to the server. */
@@ -3466,7 +3570,7 @@ export class WorldScene extends Phaser.Scene {
     if (shootData && def.movements.get('shoot')) return this.tryShoot(def, shootData);
     // Moving with a walk-attack sheet available → attack WHILE walking
     // (animation + server damage timeline use the walk-attack asset).
-    const moving = !!this.target;
+    const moving = !!this.target || this.keyboardMoving;
     const walkAttack = def.movements.get('walk-attack');
     const attackMv =
       (moving && walkAttack ? walkAttack : undefined) ??

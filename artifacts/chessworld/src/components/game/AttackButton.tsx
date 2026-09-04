@@ -48,7 +48,8 @@ function loadCfg(): ButtonCfg {
 }
 
 /**
- * Mobile-only circular Attack button. Tap = same attack intent as the F key
+ * Mobile-only circular Attack button. Tap = same attack intent as the attack
+ * key (F by default, configurable in Configurações → Controles)
  * (the scene enforces cooldown/death/seat locks — no ghost swings). Press and
  * HOLD for 4s to enter edit mode: drag to reposition, use the corner handle to
  * resize; the layout is saved to localStorage. All pointer events are consumed
