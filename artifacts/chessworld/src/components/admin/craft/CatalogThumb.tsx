@@ -7,9 +7,10 @@
  *   - image: imagem única (ícone de drop ou upload de craft item);
  *   - none: caixinha tracejada (item ainda sem imagem).
  */
-import { useEffect, useRef } from 'react';
+import { useLayoutEffect, useRef } from 'react';
 import { SpriteFrameThumb } from '../../game/SpriteFrameThumb';
 import type { CraftThumb } from '../../../lib/craft/craftCatalog';
+import { getCachedImage, loadImage } from '../../../lib/imageCache';
 
 function FrameCrop({
   url,
@@ -24,14 +25,15 @@ function FrameCrop({
 }) {
   const ref = useRef<HTMLCanvasElement | null>(null);
 
-  useEffect(() => {
+  // Cache compartilhado: com a imagem pronta, desenha síncrono no commit (sem
+  // piscar quando a célula troca de item); senão mantém os pixels antigos até
+  // a carga terminar.
+  useLayoutEffect(() => {
     const canvas = ref.current;
     const ctx = canvas?.getContext('2d');
     if (!canvas || !ctx) return;
     let cancelled = false;
-    const img = new Image();
-    img.onload = () => {
-      if (cancelled || !ref.current) return;
+    const draw = (img: HTMLImageElement) => {
       ctx.imageSmoothingEnabled = false;
       ctx.clearRect(0, 0, size, size);
       const scale = Math.min(size / frameWidth, size / frameHeight);
@@ -39,10 +41,18 @@ function FrameCrop({
       const h = frameHeight * scale;
       ctx.drawImage(img, 0, 0, frameWidth, frameHeight, (size - w) / 2, (size - h) / 2, w, h);
     };
-    img.onerror = () => {
-      /* thumb vazia é aceitável */
-    };
-    img.src = url;
+    const cached = getCachedImage(url);
+    if (cached) {
+      draw(cached);
+      return;
+    }
+    loadImage(url)
+      .then((img) => {
+        if (!cancelled && ref.current) draw(img);
+      })
+      .catch(() => {
+        /* thumb vazia é aceitável */
+      });
     return () => {
       cancelled = true;
     };

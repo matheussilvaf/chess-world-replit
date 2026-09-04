@@ -10,13 +10,22 @@
  * INVENTORY_COLUMNS colunas. A última linha é o acesso rápido; o primeiro
  * slot dela é RESERVADO à arma da classe (nunca recebe item). A arrumação
  * dos slots é local (localStorage por usuário); as quantidades são do servidor.
+ *
+ * Durabilidade: `queueToolWear(toolRef)` a cada golpe que conecta — a barra
+ * desce na hora e os golpes vão em lote ao servidor, que é quem quebra a
+ * ferramenta (qty − 1) e devolve o snapshot com o restante da próxima cópia.
  */
 import { create } from 'zustand';
-import { fetchInventory, postCollect } from '../lib/collectionInventoryApi';
+import { fetchInventory, postCollect, postToolWear, type InventoryItemDto, type ToolWearDto } from '../lib/collectionInventoryApi';
 import type { RigApiError } from '../components/admin/rig-editor/rigApi';
 import { useAuthStore } from './authStore';
+import { usePlayerCharacterStore } from './playerCharacterStore';
 import { loadCollectionWorldConfig } from '../game/config/collectionConfigLoader';
 import { DEFAULT_INVENTORY_SLOTS, resolveInventorySlots } from '../shared/collection/CollectionShapes';
+import { TOOL_WEAR_MAX_ENTRIES, TOOL_WEAR_MAX_HITS_PER_ENTRY, isToolItemKey } from '../shared/collection/ToolWear';
+import { inventoryEntry, inventoryFallbackName, loadInventoryVisualCatalog } from '../lib/inventory/inventoryVisualCatalog';
+import { loadToolMaxDurability } from '../lib/inventory/toolDurability';
+import { notifyBeforeSlotsChange } from '../lib/inventory/slotChangeSignal';
 import {
   countUnslottedItems as countUnslotted,
   emptySlots,
@@ -49,6 +58,13 @@ function persistSlots(slots: Array<string | null>) {
 interface CollectionInventoryState {
   /** itemKey → quantidade total. */
   items: Record<string, number>;
+  /** Ferramentas: durabilidade restante da cópia em uso (ausente = cheia). */
+  durability: Record<string, number>;
+  /** Ferramentas: durabilidade máxima configurada (resolvida sob demanda). */
+  toolMax: Record<string, number>;
+  /** Servidor sem a coluna `durability` (barras ocultas; SQL para o admin). */
+  durabilityColumnMissing: boolean;
+  durabilitySql: string | null;
   /** Grade fixa e ordenada; null = slot vazio. `slots[weaponSlotIndex(capacity)]` é sempre null. */
   slots: Array<string | null>;
   /** Total de slots (admin). */
@@ -63,7 +79,9 @@ interface CollectionInventoryState {
   /** Carrega uma única vez (hotbar/painel chamam ao montar). */
   ensureLoaded: () => void;
   addLocal: (itemKey: string, qty: number) => void;
-  applyServerTotals: (items: Array<{ itemKey: string; qty: number }>) => void;
+  applyServerTotals: (items: InventoryItemDto[]) => void;
+  /** Desconto otimista de 1 golpe na barra (o servidor confirma no snapshot). */
+  wearLocal: (itemKey: string) => void;
   moveSlot: (from: number, to: number) => void;
   selectItem: (itemKey: string | null) => void;
   setCapacity: (capacity: number) => void;
@@ -73,6 +91,10 @@ interface CollectionInventoryState {
 
 export const useCollectionInventoryStore = create<CollectionInventoryState>((set, get) => ({
   items: {},
+  durability: {},
+  toolMax: {},
+  durabilityColumnMissing: false,
+  durabilitySql: null,
   slots: emptySlots(DEFAULT_INVENTORY_SLOTS),
   capacity: DEFAULT_INVENTORY_SLOTS,
   selectedItemKey: null,
@@ -94,13 +116,17 @@ export const useCollectionInventoryStore = create<CollectionInventoryState>((set
       persistSlots(slots);
       set({
         items,
+        durability: durabilityFrom(res.items),
         slots,
         capacity,
         loaded: true,
         loading: false,
         tableMissing: !!res.tableMissing,
         tableSql: res.tableSql ?? null,
+        durabilityColumnMissing: !!res.durabilityColumnMissing,
+        durabilitySql: res.durabilitySql ?? null,
       });
+      ensureToolMax(Object.keys(items));
     } catch (e) {
       const err = e as RigApiError & { tableSql?: string };
       set({
@@ -117,15 +143,17 @@ export const useCollectionInventoryStore = create<CollectionInventoryState>((set
     if (!s.loaded && !s.loading) void s.refresh();
   },
 
-  addLocal: (itemKey, qty) =>
+  addLocal: (itemKey, qty) => {
     set((s) => {
       const items = { ...s.items, [itemKey]: Math.max(0, (s.items[itemKey] ?? 0) + qty) };
       const slots = reconcileSlots(s.slots, items, s.capacity);
       persistSlots(slots);
       return { items, slots };
-    }),
+    });
+    ensureToolMax([itemKey]);
+  },
 
-  applyServerTotals: (items) =>
+  applyServerTotals: (items) => {
     set((s) => {
       const next: Record<string, number> = {};
       for (const it of items) if (it.qty > 0) next[it.itemKey] = it.qty;
@@ -133,17 +161,32 @@ export const useCollectionInventoryStore = create<CollectionInventoryState>((set
       persistSlots(slots);
       return {
         items: next,
+        durability: durabilityFrom(items),
         slots,
         selectedItemKey: s.selectedItemKey && next[s.selectedItemKey] > 0 ? s.selectedItemKey : null,
       };
+    });
+    ensureToolMax(Object.keys(get().items));
+  },
+
+  wearLocal: (itemKey) =>
+    set((s) => {
+      if (!isToolItemKey(itemKey) || (s.items[itemKey] ?? 0) <= 0 || s.durabilityColumnMissing) return s;
+      const max = s.toolMax[itemKey];
+      const current = s.durability[itemKey] ?? max;
+      if (typeof current !== 'number') return s; // máximo ainda não resolvido: espera o snapshot
+      return { durability: { ...s.durability, [itemKey]: Math.max(0, current - 1) } };
     }),
 
-  moveSlot: (from, to) => set((s) => {
+  moveSlot: (from, to) => {
+    const s = get();
     const slots = swapSlots(s.slots, from, to, s.capacity);
-    if (slots === s.slots) return s;
+    if (slots === s.slots) return;
+    // Quem anima a troca (FLIP) mede as posições atuais ANTES do DOM mudar.
+    notifyBeforeSlotsChange();
     persistSlots(slots);
-    return { slots };
-  }),
+    set({ slots });
+  },
 
   selectItem: (selectedItemKey) => set({ selectedItemKey }),
 
@@ -163,6 +206,25 @@ export const useCollectionInventoryStore = create<CollectionInventoryState>((set
 /** Quantos itens (com saldo) não couberam em nenhum slot. */
 export function countUnslottedItems(state: Pick<CollectionInventoryState, 'items' | 'slots'>): number {
   return countUnslotted(state.items, state.slots);
+}
+
+/** Durabilidade restante por ferramenta a partir de um snapshot do servidor. */
+function durabilityFrom(items: InventoryItemDto[]): Record<string, number> {
+  const out: Record<string, number> = {};
+  for (const it of items) {
+    if (it.qty > 0 && isToolItemKey(it.itemKey) && typeof it.durability === 'number') out[it.itemKey] = it.durability;
+  }
+  return out;
+}
+
+/** Resolve (uma vez por ref) a durabilidade máxima das ferramentas presentes. */
+function ensureToolMax(itemKeys: string[]): void {
+  for (const itemKey of itemKeys) {
+    if (!isToolItemKey(itemKey) || itemKey in useCollectionInventoryStore.getState().toolMax) continue;
+    void loadToolMaxDurability(itemKey).then((max) => {
+      useCollectionInventoryStore.setState((s) => (s.toolMax[itemKey] === max ? s : { toolMax: { ...s.toolMax, [itemKey]: max } }));
+    });
+  }
 }
 
 // --------------------------- fila de coleta (lote) ---------------------------
@@ -231,8 +293,10 @@ async function flushPending(): Promise<void> {
   }
   try {
     const res = await postCollect(batch);
-    useCollectionInventoryStore.getState().applyServerTotals(res.items);
     retryMs = RETRY_BASE_MS;
+    // Trocou de conta enquanto o POST voava: o snapshot é da conta anterior.
+    if (currentUserId() !== uid) return;
+    useCollectionInventoryStore.getState().applyServerTotals(res.items);
   } catch (e) {
     const err = e as RigApiError & { tableSql?: string };
     if (err.status === 503) {
@@ -257,4 +321,154 @@ async function flushPending(): Promise<void> {
     inFlight = false;
     if (pending.size > 0) scheduleFlush(FLUSH_MS);
   }
+}
+
+// ------------------------ fila de desgaste (lote) ---------------------------
+//
+// Mesmo desenho da coleta (agrega golpes por ferramenta, um flush por vez,
+// re-tenta em falha transitória, descarta em 4xx), com uma diferença: o lote
+// enviado fica guardado com o seu `requestId` até o servidor confirmar, e a
+// re-tentativa reenvia EXATAMENTE o mesmo lote/id — assim uma resposta perdida
+// nunca cobra os golpes duas vezes (o servidor deduplica por conta+id). Golpes
+// novos esperam na fila atrás do lote em voo.
+
+interface WearBatch {
+  requestId: string;
+  userId: string | null;
+  wear: ToolWearDto[];
+}
+
+let pendingWear = new Map<string, number>();
+let pendingWearUserId: string | null = null;
+let wearTimer: ReturnType<typeof setTimeout> | null = null;
+let wearInFlight = false;
+let wearRetryMs = RETRY_BASE_MS;
+/** Lote enviado e ainda não confirmado (re-tentado com o mesmo requestId). */
+let unconfirmedWear: WearBatch | null = null;
+
+function newRequestId(): string {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') return crypto.randomUUID();
+  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 12)}`;
+}
+
+/** Chamado pelo runtime do mapa a cada golpe de FERRAMENTA que conecta (fora do React). */
+export function queueToolWear(toolRef: string): void {
+  if (!isToolItemKey(toolRef)) return;
+  const store = useCollectionInventoryStore.getState();
+  if (store.durabilityColumnMissing) return; // servidor sem durabilidade: nada a registrar
+  const uid = currentUserId();
+  if (pendingWear.size > 0 && pendingWearUserId !== uid) pendingWear = new Map();
+  pendingWearUserId = uid;
+  store.wearLocal(toolRef);
+  pendingWear.set(toolRef, (pendingWear.get(toolRef) ?? 0) + 1);
+  scheduleWearFlush(FLUSH_MS);
+}
+
+function scheduleWearFlush(delayMs: number): void {
+  if (wearTimer || wearInFlight) return;
+  wearTimer = setTimeout(() => {
+    wearTimer = null;
+    void flushWear();
+  }, delayMs);
+}
+
+/** Servidor sem suporte (coluna ausente ou rota inexistente): barras somem e a fila para. */
+function disableDurability(sql: string | null): void {
+  useCollectionInventoryStore.setState({ durabilityColumnMissing: true, durabilitySql: sql, durability: {} });
+  pendingWear = new Map();
+  unconfirmedWear = null;
+}
+
+/** Tira da fila o próximo lote (limites do servidor: 999 golpes por entrada, 40 entradas). */
+function takeWearBatch(): ToolWearDto[] {
+  const batch: ToolWearDto[] = [];
+  for (const [itemKey, total] of pendingWear) {
+    for (let h = total; h > 0 && batch.length < TOOL_WEAR_MAX_ENTRIES; h -= TOOL_WEAR_MAX_HITS_PER_ENTRY) {
+      batch.push({ itemKey, hits: Math.min(TOOL_WEAR_MAX_HITS_PER_ENTRY, h) });
+    }
+    if (batch.length >= TOOL_WEAR_MAX_ENTRIES) break;
+  }
+  for (const { itemKey, hits } of batch) {
+    const left = (pendingWear.get(itemKey) ?? 0) - hits;
+    if (left > 0) pendingWear.set(itemKey, left);
+    else pendingWear.delete(itemKey);
+  }
+  return batch;
+}
+
+async function flushWear(): Promise<void> {
+  if (wearInFlight) return;
+  const uid = currentUserId();
+  // Lote de outra conta (trocou de usuário com envio pendente): morre com a sessão.
+  if (unconfirmedWear && unconfirmedWear.userId !== uid) unconfirmedWear = null;
+  if (!unconfirmedWear) {
+    if (pendingWear.size === 0) return;
+    if (uid !== pendingWearUserId) {
+      pendingWear = new Map();
+      pendingWearUserId = uid;
+      return;
+    }
+    unconfirmedWear = { requestId: newRequestId(), userId: uid, wear: takeWearBatch() };
+  }
+  const batch = unconfirmedWear;
+  wearInFlight = true;
+  try {
+    const res = await postToolWear(batch.wear, batch.requestId);
+    unconfirmedWear = null;
+    wearRetryMs = RETRY_BASE_MS;
+    // Trocou de conta enquanto o POST voava: snapshot e quebras são da conta anterior.
+    if (currentUserId() !== batch.userId) return;
+    useCollectionInventoryStore.getState().applyServerTotals(res.items);
+    if (res.durabilityColumnMissing) disableDurability(res.durabilitySql ?? null);
+    void announceBrokenTools(res.broken ?? [], res.items);
+  } catch (e) {
+    const err = e as RigApiError & { tableSql?: string; durabilitySql?: string };
+    if (err.status === 503 && err.durabilitySql) {
+      // Coluna ausente: para de contar até o admin migrar (o próximo refresh re-liga).
+      disableDurability(err.durabilitySql);
+      return;
+    }
+    if (err.status === 404) {
+      // Servidor antigo sem a rota (deploy pendente): não insistir nem poluir o console.
+      console.warn('[Inventário] Servidor sem durabilidade de ferramentas ainda:', err.message);
+      disableDurability(null);
+      return;
+    }
+    if (err.status === 503) {
+      useCollectionInventoryStore.setState({ tableMissing: true, tableSql: err.tableSql ?? null });
+    }
+    if (err.status === 0 || err.status >= 500) {
+      // Falha transitória: o lote continua em `unconfirmedWear` e volta com o mesmo id.
+      console.warn(`[Inventário] Desgaste ainda não salvo (${err.message}); nova tentativa em ${Math.round(wearRetryMs / 1000)}s.`);
+      wearInFlight = false;
+      scheduleWearFlush(wearRetryMs);
+      wearRetryMs = Math.min(wearRetryMs * 2, RETRY_MAX_MS);
+      return; // o finally abaixo não re-agenda: o timer de retry já está marcado
+    }
+    // 4xx (sem sessão / payload inválido): não insistir — descarta este lote.
+    console.warn('[Inventário] Desgaste descartado pelo servidor:', err.message);
+    unconfirmedWear = null;
+  } finally {
+    wearInFlight = false;
+    if (unconfirmedWear || pendingWear.size > 0) scheduleWearFlush(FLUSH_MS);
+  }
+}
+
+/** Aviso de quebra na hotbar + desequipa se a última cópia se foi. */
+async function announceBrokenTools(broken: Array<{ itemKey: string; count: number }>, items: InventoryItemDto[]): Promise<void> {
+  if (broken.length === 0) return;
+  const gone = new Set(broken.filter((b) => !items.some((it) => it.itemKey === b.itemKey && it.qty > 0)).map((b) => b.itemKey));
+  // A última cópia quebrou com ela equipada: o servidor ainda a considera em uso.
+  const character = usePlayerCharacterStore.getState();
+  if (character.liveWeapon && gone.has(character.liveWeapon)) character.equipSender?.(false);
+
+  const catalog = await loadInventoryVisualCatalog().catch(() => null);
+  const nameOf = (itemKey: string) => inventoryEntry(catalog, itemKey)?.name ?? inventoryFallbackName(itemKey);
+  const message =
+    broken.length === 1
+      ? gone.has(broken[0].itemKey)
+        ? `${nameOf(broken[0].itemKey)} quebrou — era a última cópia.`
+        : `${nameOf(broken[0].itemKey)} quebrou — você pegou outra cópia da bolsa.`
+      : `Ferramentas quebraram: ${broken.map((b) => nameOf(b.itemKey)).join(', ')}.`;
+  useCollectionInventoryStore.getState().setInventoryError(message);
 }

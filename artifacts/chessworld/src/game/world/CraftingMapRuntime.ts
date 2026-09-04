@@ -62,7 +62,7 @@ import {
   type ResourceHurtbox,
 } from '../../shared/collection/CollectionShapes';
 import { sweepPath } from './moveSweep';
-import { queueCollect } from '../../stores/collectionInventoryStore';
+import { queueCollect, queueToolWear } from '../../stores/collectionInventoryStore';
 import { gatherAudio } from '../audio/gatherAudio';
 
 /**
@@ -1091,6 +1091,11 @@ export class CraftingMapRuntime {
     const spr = node.sprite;
     // Animal recém-renascido: intocável (nem durabilidade consome).
     if (node.kind === 'animal' && (node.protectedUntilMs ?? 0) > this.scene.time.now) return;
+    // Durabilidade: todo golpe de FERRAMENTA que conecta gasta 1 — inclusive
+    // no alvo errado ou com nível baixo (a batida aconteceu). Mão, flecha
+    // (toolRef '') e arma da classe (gen:weapon/) não gastam. O servidor é
+    // quem quebra a ferramenta; aqui só a barra desce na hora.
+    if (hit.toolRef) queueToolWear(hit.toolRef);
     if (node.kind === 'animal') {
       const ag = this.animals.find((a) => a.sprite === node.sprite);
       if (!ag || ag.dead) return;

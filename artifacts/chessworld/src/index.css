@@ -95,6 +95,26 @@ canvas {
   to   { transform: translateY(0);    opacity: 1; }
 }
 
+/* ─── Inventário: arrastar-e-soltar ────────────────────────────────────────
+   O ghost (SlotDragGhost) é movido por translate3d no wrapper externo; o
+   interno centraliza no ponteiro e "levanta" (escala 1.1 = GHOST_SCALE, a
+   animação de soltar do useSlotFlip começa desse tamanho). */
+@keyframes slot-ghost-lift {
+  from { transform: translate(-50%, -50%) scale(.9) rotate(0deg);  opacity: .55; }
+  to   { transform: translate(-50%, -50%) scale(1.1) rotate(-3deg); opacity: 1; }
+}
+.slot-ghost-inner {
+  animation: slot-ghost-lift 150ms cubic-bezier(.2, .8, .2, 1) forwards;
+}
+/* Enquanto um item é arrastado, a página inteira mostra a mão fechada. */
+html.slot-dragging,
+html.slot-dragging * {
+  cursor: grabbing !important;
+}
+@media (prefers-reduced-motion: reduce) {
+  .slot-ghost-inner { animation: none; transform: translate(-50%, -50%); }
+}
+
 /* ─── HTML player name-tag overlay ─────────────────────────────────────────
    Rendered by PlayerNameTags.tsx over the Phaser canvas.
    Each .player-nametag-wrap is position:absolute top:0 left:0 and moved with

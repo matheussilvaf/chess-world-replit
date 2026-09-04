@@ -44,6 +44,16 @@ const AssetsControllerPage = lazy(() =>
   })),
 );
 
+// Bancada DEV do inventário (DnD/durabilidade sem Phaser). Fora do DEV o
+// `import.meta.env.DEV` é substituído estaticamente e o chunk nem é gerado.
+const InventoryBenchPage = import.meta.env.DEV
+  ? lazy(() =>
+      import('./components/dev/InventoryBenchPage.tsx').then((m) => ({
+        default: m.InventoryBenchPage,
+      })),
+    )
+  : null;
+
 function RouteFallback() {
   return (
     <div className="min-h-screen bg-slate-900 flex items-center justify-center">
@@ -66,6 +76,7 @@ createRoot(document.getElementById('root')!).render(
         <Route path="/admin/characters" element={<Navigate to="/admin/rigs" replace />} />
         <Route path="/admin/character-generator" element={<CharacterGeneratorPage />} />
         <Route path="/swiss-test" element={<SwissTestPage />} />
+        {InventoryBenchPage && <Route path="/dev/inventario" element={<InventoryBenchPage />} />}
         <Route path="*" element={<App />} />
       </Routes>
     </Suspense>

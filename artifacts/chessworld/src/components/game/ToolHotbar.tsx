@@ -6,17 +6,20 @@
  * soltar no chão. Também é onde aparecem as recusas do servidor (equipar/
  * inventário), porque a janela pode estar fechada.
  */
-import { useEffect, useMemo, useRef } from 'react';
+import { useCallback, useEffect, useMemo, useRef } from 'react';
 import { AlertTriangle, Backpack, X } from 'lucide-react';
 import { usePlayerCharacterStore } from '../../stores/playerCharacterStore';
 import { useCollectionInventoryStore, weaponSlotIndex } from '../../stores/collectionInventoryStore';
 import { useInventoryUiStore } from '../../stores/inventoryUiStore';
 import { getInventoryBridge } from '../../game/inventory/inventoryBridge';
 import { useInventoryVisualCatalog } from '../../lib/inventory/inventoryVisualCatalog';
+import { toolDurabilityView } from '../../lib/inventory/toolDurability';
+import { durabilityLabel } from './inventory/DurabilityBar';
 import { InventorySlotCell } from './inventory/InventorySlotCell';
 import { WeaponSlotCell } from './inventory/WeaponSlotCell';
-import { SlotDragGhost } from './inventory/SlotDragGhost';
+import { GHOST_SCALE, SlotDragGhost } from './inventory/SlotDragGhost';
 import { useSlotDrag } from './inventory/useSlotDrag';
+import { useSlotFlip } from './inventory/useSlotFlip';
 
 const isTool = (key: string) => key.startsWith('gen:crafttools/');
 const NOTICE_MS = 5000;
@@ -32,6 +35,9 @@ export function ToolHotbar() {
   const items = useCollectionInventoryStore((s) => s.items);
   const capacity = useCollectionInventoryStore((s) => s.capacity);
   const selectedItemKey = useCollectionInventoryStore((s) => s.selectedItemKey);
+  const durability = useCollectionInventoryStore((s) => s.durability);
+  const toolMax = useCollectionInventoryStore((s) => s.toolMax);
+  const durabilityColumnMissing = useCollectionInventoryStore((s) => s.durabilityColumnMissing);
   const inventoryError = useCollectionInventoryStore((s) => s.error);
   const setInventoryError = useCollectionInventoryStore((s) => s.setInventoryError);
   const selectItem = useCollectionInventoryStore((s) => s.selectItem);
@@ -60,10 +66,21 @@ export function ToolHotbar() {
   }, [notice, setEquipError, setInventoryError]);
 
   const weaponIndex = weaponSlotIndex(capacity);
-  const { drag, handlePointerDown, consumeClick } = useSlotDrag({
+  const { setDropOrigin } = useSlotFlip(barRef, slots);
+  const onMove = useCallback(
+    (from: number, to: number, at: { x: number; y: number }) => {
+      const before = useCollectionInventoryStore.getState().slots;
+      const itemKey = before[from];
+      if (itemKey) setDropOrigin({ itemKey, x: at.x, y: at.y, scale: GHOST_SCALE });
+      moveSlot(from, to);
+      if (useCollectionInventoryStore.getState().slots === before) setDropOrigin({ itemKey: '', x: 0, y: 0 });
+    },
+    [moveSlot, setDropOrigin],
+  );
+  const { drag, handlePointerDown, consumeClick, ghostRef } = useSlotDrag({
     containerRef: barRef,
     outMargin: 40,
-    onMove: moveSlot,
+    onMove,
     canDropAt: (index) => index !== weaponIndex,
     onDragOut: (_from, itemKey) => {
       const qty = useCollectionInventoryStore.getState().items[itemKey] ?? 0;
@@ -73,6 +90,8 @@ export function ToolHotbar() {
   });
   const quick = useMemo(() => slots.slice(weaponIndex + 1, capacity), [slots, weaponIndex, capacity]);
   const dragging = drag?.active ? drag : null;
+  const durabilityOf = (key: string | null) =>
+    durabilityColumnMissing ? null : toolDurabilityView(key, key ? durability[key] : null, key ? toolMax[key] : undefined);
 
   if (!character || !ready) return null;
 
@@ -115,6 +134,12 @@ export function ToolHotbar() {
             {quick.map((key, offset) => {
               const index = weaponIndex + 1 + offset;
               const active = !!key && (isTool(key) ? live === key : selectedItemKey === key);
+              const view = durabilityOf(key);
+              const hint = key
+                ? isTool(key)
+                  ? live === key ? 'Ferramenta equipada — clique para guardar' : 'Clique para equipar a ferramenta'
+                  : undefined
+                : 'Slot vazio';
               return (
                 <div key={index} className="w-12 sm:w-14">
                   <InventorySlotCell
@@ -122,12 +147,13 @@ export function ToolHotbar() {
                     itemKey={key}
                     qty={key ? items[key] : undefined}
                     catalog={catalog}
+                    durability={view}
                     tone="quick"
                     thumbSize={36}
                     active={active}
                     ghosted={dragging?.from === index}
                     dropTarget={dragging?.over === index}
-                    title={key ? (isTool(key) ? (live === key ? 'Ferramenta equipada — clique para guardar' : 'Clique para equipar a ferramenta') : undefined) : 'Slot vazio'}
+                    title={hint && view ? `${hint} · ${durabilityLabel(view)}` : hint}
                     onPointerDown={key ? (event) => handlePointerDown(index, key, event) : undefined}
                     onClick={() => onCellClick(key)}
                   />
@@ -152,7 +178,14 @@ export function ToolHotbar() {
         </div>
       </div>
       {dragging && (
-        <SlotDragGhost itemKey={dragging.itemKey} catalog={catalog} x={dragging.x} y={dragging.y} qty={items[dragging.itemKey]} size={44} />
+        <SlotDragGhost
+          ghostRef={ghostRef}
+          itemKey={dragging.itemKey}
+          catalog={catalog}
+          qty={items[dragging.itemKey]}
+          durability={durabilityOf(dragging.itemKey)}
+          size={44}
+        />
       )}
     </>
   );

@@ -5,20 +5,23 @@
  * dela é reservado à arma da classe.
  *
  * Arrastar um item para fora da janela fecha o inventário e entra no modo de
- * soltar no chão (ver InventoryDropPlacement).
+ * soltar no chão (ver InventoryDropPlacement). Trocas de slot são animadas
+ * (useSlotFlip); o ghost acompanha o ponteiro (useSlotDrag).
  */
-import { useEffect, useMemo, useRef } from 'react';
+import { useCallback, useEffect, useMemo, useRef } from 'react';
 import { AlertTriangle, Backpack, GripVertical, X } from 'lucide-react';
 import { countUnslottedItems, useCollectionInventoryStore, weaponSlotIndex } from '../../stores/collectionInventoryStore';
 import { useInventoryUiStore } from '../../stores/inventoryUiStore';
 import { usePanelPlacement } from '../../hooks/usePanelPlacement';
 import { getInventoryBridge } from '../../game/inventory/inventoryBridge';
 import { useInventoryVisualCatalog } from '../../lib/inventory/inventoryVisualCatalog';
+import { toolDurabilityView } from '../../lib/inventory/toolDurability';
 import { INVENTORY_COLUMNS } from '../../shared/collection/CollectionShapes';
 import { InventorySlotCell } from './inventory/InventorySlotCell';
 import { WeaponSlotCell } from './inventory/WeaponSlotCell';
-import { SlotDragGhost } from './inventory/SlotDragGhost';
+import { GHOST_SCALE, SlotDragGhost } from './inventory/SlotDragGhost';
 import { useSlotDrag } from './inventory/useSlotDrag';
+import { useSlotFlip } from './inventory/useSlotFlip';
 import { InventoryItemName } from './InventoryItemVisual';
 
 export function CollectionInventoryButton({ onClick, active }: { onClick: () => void; active?: boolean }) {
@@ -50,6 +53,10 @@ export function CollectionInventoryPanel() {
   const loading = useCollectionInventoryStore((s) => s.loading);
   const error = useCollectionInventoryStore((s) => s.error);
   const tableMissing = useCollectionInventoryStore((s) => s.tableMissing);
+  const durability = useCollectionInventoryStore((s) => s.durability);
+  const toolMax = useCollectionInventoryStore((s) => s.toolMax);
+  const durabilityColumnMissing = useCollectionInventoryStore((s) => s.durabilityColumnMissing);
+  const durabilitySql = useCollectionInventoryStore((s) => s.durabilitySql);
   const refresh = useCollectionInventoryStore((s) => s.refresh);
   const moveSlot = useCollectionInventoryStore((s) => s.moveSlot);
   const selectItem = useCollectionInventoryStore((s) => s.selectItem);
@@ -81,9 +88,21 @@ export function CollectionInventoryPanel() {
   }, [closeInventory]);
 
   const weaponIndex = weaponSlotIndex(capacity);
-  const { drag, handlePointerDown, consumeClick } = useSlotDrag({
+  const { setDropOrigin } = useSlotFlip(frameRef, slots);
+  const onMove = useCallback(
+    (from: number, to: number, at: { x: number; y: number }) => {
+      const before = useCollectionInventoryStore.getState().slots;
+      const itemKey = before[from];
+      if (itemKey) setDropOrigin({ itemKey, x: at.x, y: at.y, scale: GHOST_SCALE });
+      moveSlot(from, to);
+      // Troca recusada (nada mudou): não deixe a origem "presa" para a próxima animação.
+      if (useCollectionInventoryStore.getState().slots === before) setDropOrigin({ itemKey: '', x: 0, y: 0 });
+    },
+    [moveSlot, setDropOrigin],
+  );
+  const { drag, handlePointerDown, consumeClick, ghostRef } = useSlotDrag({
     containerRef: frameRef,
-    onMove: moveSlot,
+    onMove,
     canDropAt: (index) => index !== weaponIndex,
     onDragOut: (_from, itemKey) => {
       const qty = useCollectionInventoryStore.getState().items[itemKey] ?? 0;
@@ -97,6 +116,8 @@ export function CollectionInventoryPanel() {
   const used = slots.filter((key, index) => key && index !== weaponIndex).length;
   const unslotted = countUnslottedItems({ items, slots });
   const dragging = drag?.active ? drag : null;
+  const durabilityOf = (key: string | null) =>
+    durabilityColumnMissing ? null : toolDurabilityView(key, key ? durability[key] : null, key ? toolMax[key] : undefined);
 
   const renderCell = (key: string | null, index: number, tone: 'storage' | 'quick') => (
     <InventorySlotCell
@@ -105,6 +126,7 @@ export function CollectionInventoryPanel() {
       itemKey={key}
       qty={key ? items[key] : undefined}
       catalog={catalog}
+      durability={durabilityOf(key)}
       tone={tone}
       active={!!key && selectedItemKey === key}
       ghosted={dragging?.from === index}
@@ -174,6 +196,18 @@ export function CollectionInventoryPanel() {
               O inventário ainda não foi ativado no servidor (tabela ausente). Peça a um administrador.
             </div>
           )}
+          {!tableMissing && durabilityColumnMissing && (
+            <div className="border-b border-amber-900/60 bg-[#3a2a12] px-3 py-2 text-xs text-amber-100" data-testid="durability-migration-banner">
+              {durabilitySql ? (
+                <>
+                  Durabilidade das ferramentas desligada: falta a coluna no Supabase. Um administrador precisa rodar no SQL Editor:
+                  <code className="mt-1 block select-all break-all rounded bg-black/40 px-2 py-1 font-mono text-[10px] text-amber-50">{durabilitySql}</code>
+                </>
+              ) : (
+                'Durabilidade das ferramentas indisponível: o servidor ainda não foi atualizado.'
+              )}
+            </div>
+          )}
           {unslotted > 0 && (
             <div className="border-b border-amber-900/60 bg-[#3a2a12] px-3 py-2 text-xs text-amber-100">
               {unslotted === 1 ? '1 item está' : `${unslotted} itens estão`} sem slot (inventário menor). Libere espaço para vê-lo.
@@ -218,7 +252,13 @@ export function CollectionInventoryPanel() {
         </div>
       </div>
       {dragging && (
-        <SlotDragGhost itemKey={dragging.itemKey} catalog={catalog} x={dragging.x} y={dragging.y} qty={items[dragging.itemKey]} />
+        <SlotDragGhost
+          ghostRef={ghostRef}
+          itemKey={dragging.itemKey}
+          catalog={catalog}
+          qty={items[dragging.itemKey]}
+          durability={durabilityOf(dragging.itemKey)}
+        />
       )}
     </>
   );

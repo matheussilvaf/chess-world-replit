@@ -1,29 +1,15 @@
 /**
  * Miniatura de UM frame de uma folha de sprites do gerador (96×96 por frame).
  * Usada nos chips de peças (criação) e no slot de arma (equipamento).
- * Imagens são cacheadas por URL no módulo (uma carga por folha).
+ * Imagens vêm do cache compartilhado (lib/imageCache): quando a folha já está
+ * carregada o frame é desenhado de forma SÍNCRONA no commit — uma célula do
+ * inventário que troca de item não pisca em branco. Folhas sem a pose pedida
+ * (picaretas só têm frames de golpe) caem no primeiro frame visível da linha.
  */
-import { useEffect, useRef } from 'react';
+import { useLayoutEffect, useRef } from 'react';
 import { FRAME_HEIGHT, FRAME_WIDTH } from '../../lib/character-generator/constants';
-
-const imageCache = new Map<string, Promise<HTMLImageElement>>();
-
-function loadSheetImage(url: string): Promise<HTMLImageElement> {
-  let p = imageCache.get(url);
-  if (!p) {
-    p = new Promise<HTMLImageElement>((resolve, reject) => {
-      const img = new Image();
-      img.onload = () => resolve(img);
-      img.onerror = () => {
-        imageCache.delete(url); // permite retry depois
-        reject(new Error(`Falha ao carregar ${url}`));
-      };
-      img.src = url;
-    });
-    imageCache.set(url, p);
-  }
-  return p;
-}
+import { getCachedImage, loadImage } from '../../lib/imageCache';
+import { visibleFrameCol } from '../../lib/spriteSheetFrame';
 
 interface SpriteFrameThumbProps {
   /** URL da folha (23 colunas × 4 linhas de frames de 96px). */
@@ -40,18 +26,26 @@ interface SpriteFrameThumbProps {
 export function SpriteFrameThumb({ url, col = 1, row = 0, size = 48, className }: SpriteFrameThumbProps) {
   const ref = useRef<HTMLCanvasElement | null>(null);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     let cancelled = false;
     const canvas = ref.current;
     const ctx = canvas?.getContext('2d');
     if (!canvas || !ctx) return;
+    const draw = (img: HTMLImageElement) => {
+      const drawCol = visibleFrameCol(img, url, col, row);
+      ctx.imageSmoothingEnabled = false;
+      ctx.clearRect(0, 0, size, size);
+      ctx.drawImage(img, drawCol * FRAME_WIDTH, row * FRAME_HEIGHT, FRAME_WIDTH, FRAME_HEIGHT, 0, 0, size, size);
+    };
+    const cached = getCachedImage(url);
+    if (cached) {
+      draw(cached);
+      return;
+    }
     ctx.clearRect(0, 0, size, size);
-    loadSheetImage(url)
+    loadImage(url)
       .then((img) => {
-        if (cancelled || !ref.current) return;
-        ctx.imageSmoothingEnabled = false;
-        ctx.clearRect(0, 0, size, size);
-        ctx.drawImage(img, col * FRAME_WIDTH, row * FRAME_HEIGHT, FRAME_WIDTH, FRAME_HEIGHT, 0, 0, size, size);
+        if (!cancelled && ref.current) draw(img);
       })
       .catch(() => {
         /* thumb vazia é aceitável; o erro real aparece no preview grande */
