@@ -5,8 +5,10 @@ import { getGeneratorManifest } from '../../game/characters/appearanceRuntime';
 import { buildCraftCatalog } from '../../lib/craft/craftCatalog';
 import { craft } from '../../game/stations/stationCraftBridge';
 import { useCollectionInventoryStore } from '../../stores/collectionInventoryStore';
+import { usePlacedStationsStore } from '../../stores/placedStationsStore';
 import type { CraftItemConfig, CraftRecipeConfig } from '../../shared/craft/CraftShapes';
 import type { StationConfig } from '../../shared/craft/StationShapes';
+import { PlacedStationBanner } from './stations/PlacedStationBanner';
 
 interface StationsPayload {
   stations: StationConfig[];
@@ -25,8 +27,22 @@ async function getPublic<T>(path: string): Promise<T> {
   return response.json() as Promise<T>;
 }
 
-export function StationGamePanel({ stationId, onClose }: { stationId: string; onClose: () => void }) {
+export function StationGamePanel({ stationId, placedId, onClose }: {
+  stationId: string;
+  /** Estação portátil posicionada (privada) que abriu este card — craft gasta a durabilidade dela. */
+  placedId?: string;
+  onClose: () => void;
+}) {
   const inventory = useCollectionInventoryStore((state) => state.items);
+  const placed = usePlacedStationsStore((state) => (placedId ? state.stations[placedId] : undefined));
+  const pushNotice = usePlacedStationsStore((state) => state.pushNotice);
+  // A estação portátil sumiu (recolhida/expirou) com o card aberto: fecha e avisa.
+  const placedGone = !!placedId && !placed;
+  useEffect(() => {
+    if (!placedGone) return;
+    pushNotice('info', 'A estação portátil não está mais no lugar.');
+    onClose();
+  }, [placedGone, pushNotice, onClose]);
   const applySnapshot = useCollectionInventoryStore((state) => state.applyServerTotals);
   const setInventoryError = useCollectionInventoryStore((state) => state.setInventoryError);
   const [data, setData] = useState<{ stations: StationsPayload; craft: CraftPayload; manifest: Awaited<ReturnType<typeof getGeneratorManifest>> } | null>(null);
@@ -87,9 +103,10 @@ export function StationGamePanel({ stationId, onClose }: { stationId: string; on
             return entry ? { name: entry.name, thumb: entry.thumb } : null;
           }}
           onClose={onClose}
+          banner={placed ? <PlacedStationBanner station={placed} /> : undefined}
           onCraft={async (targetId, quantity) => {
             try {
-              const result = await craft(stationId, targetId, quantity);
+              const result = await craft(stationId, targetId, quantity, placedId);
               applySnapshot(result.items);
             } catch (reason) {
               const message = reason instanceof Error ? reason.message : 'Falha ao criar item.';

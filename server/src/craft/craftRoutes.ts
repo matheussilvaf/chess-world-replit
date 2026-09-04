@@ -24,12 +24,15 @@ import {
   type CraftItemConfig,
   type CraftRecipeConfig,
 } from '../shared/craft/CraftShapes.js';
+import { isPlaceableStationItemKey } from '../shared/craft/PlaceableStations.js';
 import { getServiceClient, PERSISTENCE_UNAVAILABLE } from '../rigs/serviceSupabase.js';
 import {
   CRAFT_TABLES_SQL,
   deleteCraftItem,
   deleteCraftRecipe,
   getCraftItemsCached,
+  builtInCraftItems,
+  mergeBuiltInCraftItem,
   getCraftRecipesCached,
   listCraftItems,
   listCraftRecipes,
@@ -140,23 +143,30 @@ craftItemsAdminRouter.put('/:itemId', async (req: Request, res: Response) => {
     return;
   }
   // Normalized copy — never persist unknown fields into the jsonb.
+  const builtIn = isPlaceableStationItemKey(itemId);
   const config: CraftItemConfig = {
     itemId,
     name: body.name.trim(),
-    imageUrl: body.imageUrl ?? null,
+    // Estações portáteis embutidas: a imagem é a do jogo (resolvida pelo id), nunca uma URL salva.
+    imageUrl: builtIn ? null : (body.imageUrl ?? null),
     repairsItemId: body.repairsItemId ?? null,
+    ...(builtIn && body.durability !== undefined && body.durability !== null ? { durability: body.durability } : {}),
   };
   const result = await saveCraftItem(config);
   if (!result.ok) {
     writeFailed(res, result);
     return;
   }
-  res.json({ item: config });
+  res.json({ item: builtIn ? mergeBuiltInCraftItem(builtInCraftItems()[itemId], config) : config });
 });
 
 craftItemsAdminRouter.delete('/:itemId', async (req: Request, res: Response) => {
   const itemId = String(req.params.itemId ?? '');
   if (badItemId(res, itemId)) return;
+  if (isPlaceableStationItemKey(itemId)) {
+    res.status(409).json({ error: `"${itemId}" é uma estação portátil embutida no jogo e não pode ser excluída` });
+    return;
+  }
   // Never orphan recipes silently: block deletion while recipes reference it.
   const recipes = await listCraftRecipes();
   if (recipes.error) {
@@ -211,6 +221,10 @@ craftItemsAdminRouter.post(
   async (req: Request, res: Response) => {
   const itemId = String(req.params.itemId ?? '');
   if (badItemId(res, itemId)) return;
+  if (isPlaceableStationItemKey(itemId)) {
+    res.status(409).json({ error: `"${itemId}" é uma estação portátil embutida: a imagem é fixa (sprite do jogo)` });
+    return;
+  }
   if (!Buffer.isBuffer(req.body) || req.body.byteLength === 0) {
     res.status(400).json({
       error:

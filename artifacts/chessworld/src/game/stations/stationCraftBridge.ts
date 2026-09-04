@@ -1,8 +1,20 @@
 export interface CraftResult {
   items: Array<{ itemKey: string; qty: number }>;
+  /** Craft feito numa estação portátil posicionada: id e durabilidade que restou. */
+  placedId?: string;
+  durability?: number;
 }
 
-type Sender = (payload: { requestId: string; stationId: string; targetId: string; quantity: number }) => void;
+export interface CraftPayload {
+  requestId: string;
+  stationId: string;
+  targetId: string;
+  quantity: number;
+  /** Estação portátil posicionada (privada) usada no lugar da pública. */
+  placedId?: string;
+}
+
+type Sender = (payload: CraftPayload) => void;
 type Pending = {
   resolve: (value: CraftResult) => void;
   reject: (reason: Error) => void;
@@ -17,10 +29,10 @@ export function setStationCraftSender(next: Sender | null) {
   sender = next;
 }
 
-export function craft(stationId: string, targetId: string, quantity: number): Promise<CraftResult> {
+export function craft(stationId: string, targetId: string, quantity: number, placedId?: string): Promise<CraftResult> {
   if (!sender) return Promise.reject(new Error('Estação indisponível: conexão com o mundo não está pronta.'));
   const requestId = crypto.randomUUID();
-  const payload = { requestId, stationId, targetId, quantity };
+  const payload: CraftPayload = { requestId, stationId, targetId, quantity, ...(placedId ? { placedId } : {}) };
   return new Promise<CraftResult>((resolve, reject) => {
     const retryTimer = setTimeout(() => {
       // The server de-duplicates by requestId. Retrying the identical payload

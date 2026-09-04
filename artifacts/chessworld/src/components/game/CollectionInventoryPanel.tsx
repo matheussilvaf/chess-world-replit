@@ -16,6 +16,7 @@ import { usePanelPlacement } from '../../hooks/usePanelPlacement';
 import { getInventoryBridge } from '../../game/inventory/inventoryBridge';
 import { useInventoryVisualCatalog } from '../../lib/inventory/inventoryVisualCatalog';
 import { toolDurabilityView } from '../../lib/inventory/toolDurability';
+import { isPlaceableStationItemKey } from '../../shared/craft/PlaceableStations';
 import { INVENTORY_COLUMNS } from '../../shared/collection/CollectionShapes';
 import { InventorySlotCell } from './inventory/InventorySlotCell';
 import { WeaponSlotCell } from './inventory/WeaponSlotCell';
@@ -107,7 +108,8 @@ export function CollectionInventoryPanel() {
     onDragOut: (_from, itemKey) => {
       const qty = useCollectionInventoryStore.getState().items[itemKey] ?? 0;
       if (qty <= 0 || !getInventoryBridge()) return;
-      beginPlacement(itemKey, qty);
+      // Estação portátil: arrastar para fora entra no modo "posicionar" (com opção de soltar).
+      beginPlacement(itemKey, qty, isPlaceableStationItemKey(itemKey) ? 'place' : 'drop');
     },
   });
 

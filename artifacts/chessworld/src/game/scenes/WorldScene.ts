@@ -53,6 +53,17 @@ import { loadTableRegistry, getSeatAnchor, getExitAnchor } from '../config/table
 import type { TableAnchors, TableRegistry } from '../config/tableAnchors';
 import { ChessOverlayManager } from '../overlay/ChessOverlayManager';
 import { playerTagBus, type PlayerTagEntry } from '../playerTagBus';
+import { PlacedStationLayer, type PlacementGhost } from '../world/PlacedStationLayer';
+import {
+  PLACED_STATION_CLEARANCE,
+  PUBLIC_STATION_RECTS,
+  placeableStationFor,
+  placedStationRect,
+  pointInRect,
+  rectsOverlap,
+  type Rect as StationRect,
+} from '../../shared/craft/PlaceableStations';
+import type { PlacedStationView } from '../../stores/placedStationsStore';
 
 interface ChessArenaZone {
   id: string;
@@ -168,6 +179,12 @@ export class WorldScene extends Phaser.Scene {
   /** Feedback do fluxo de soltar item: anel de alcance (segue o jogador) + marcador do ponto. */
   private dropRadiusRing: Phaser.GameObjects.Graphics | null = null;
   private dropMarker: Phaser.GameObjects.Container | null = null;
+  /** Estações portáteis posicionadas (desenho + colisão); criado em create(). */
+  private placedStationLayer: PlacedStationLayer | null = null;
+  private placedStationRects: StationRect[] = [];
+  private placedStationTickAt = 0;
+  /** Clique numa estação portátil posicionada (abre painel / pedido de permissão). */
+  public onPlacedStationClick: ((placedId: string) => void) | null = null;
   private inventoryPickupSender: ((dropId: string) => void) | null = null;
 
   // Debug graphics
@@ -506,9 +523,22 @@ export class WorldScene extends Phaser.Scene {
       const worldPoint = this.cameras.main.getWorldPoint(pointer.x, pointer.y);
       // Don't walk if pointer is over an interactive object (handled by InteractionSystem)
       if (this.interactionSystem?.hitTestPointer(worldPoint.x, worldPoint.y)) return;
+      // Estação portátil posicionada: o clique abre o painel (zona interativa), não anda.
+      if (this.placedStationLayer?.hitTest(worldPoint.x, worldPoint.y)) return;
       if (this.inMatch) return;
       this.navigateTo(worldPoint.x, worldPoint.y);
     });
+
+    this.placedStationLayer = new PlacedStationLayer(
+      this,
+      (y) => (this.craftingRuntime.active ? this.craftingRuntime.depthForY(y) : 80),
+      (placedId) => this.onPlacedStationClick?.(placedId),
+      (rects) => {
+        this.placedStationRects = rects;
+        // Rotas do jogador e dos animais desviam do corpo (mesma folga das paredes).
+        this.pathfinder?.setDynamicRects(rects, 12);
+      },
+    );
 
     this.events.once('shutdown', () => {
       this.keyboardControls?.destroy();
@@ -516,6 +546,8 @@ export class WorldScene extends Phaser.Scene {
       this.interactionSystem?.destroy();
       this.arrowProjectiles?.destroy();
       this.arrowProjectiles = null;
+      this.placedStationLayer?.destroy();
+      this.placedStationLayer = null;
     });
 
     // Setup zoom controls
@@ -1426,6 +1458,10 @@ export class WorldScene extends Phaser.Scene {
   update(_time: number = 0, delta: number = 16.7) {
     if (!this.player || !this.playerBody) return;
     if (this.dropRadiusRing) this.dropRadiusRing.setPosition(this.player.x, this.player.y);
+    if (this.placedStationLayer && _time - this.placedStationTickAt >= 250) {
+      this.placedStationTickAt = _time;
+      this.placedStationLayer.tick(Date.now());
+    }
 
     // Mundo de Coleta: profundidade por Y — player passa atrás/na frente de árvores etc.
     if (this.craftingRuntime.active) {
@@ -3097,6 +3133,8 @@ export class WorldScene extends Phaser.Scene {
     const mapHeight = tmjData.height * (tmjData.tileheight || MAP_CONFIG.tileSize);
     this.pathfinder = new AStarGrid(16);
     this.pathfinder.buildGrid(mapWidth, mapHeight, this.collisionRects, this.collisionPolys, 12);
+    // Estações portáteis que continuam posicionadas (mesma sala) voltam à grade nova.
+    this.placedStationLayer?.reattachBodies();
 
     // Update Matter world bounds
     this.matter.world.setBounds(0, 0, mapWidth, mapHeight);
@@ -4393,6 +4431,40 @@ export class WorldScene extends Phaser.Scene {
   public getPlayerSpritePosition(): { x: number; y: number } {
     if (this.player) return { x: this.player.x, y: this.player.y };
     return this.getPlayerPosition();
+  }
+
+  /** Espelha as estações portáteis posicionadas da sala (store → cena). */
+  public syncPlacedStations(views: PlacedStationView[]) {
+    this.placedStationLayer?.sync(views);
+  }
+
+  /** Fantasma do posicionamento (null = remove). */
+  public setPlacementGhost(ghost: PlacementGhost | null) {
+    this.placedStationLayer?.setGhost(ghost);
+  }
+
+  /**
+   * Validação local do ponto de posicionamento (o servidor repete as regras
+   * que consegue: distância, estações públicas/posicionadas, jogadores; as
+   * paredes do mapa só existem aqui).
+   */
+  public validateStationPlacement(itemKey: string, x: number, y: number): { ok: boolean; reason?: string } {
+    const def = placeableStationFor(itemKey);
+    if (!def) return { ok: false, reason: 'Item não pode ser posicionado' };
+    if (!this.craftingRuntime.active) return { ok: false, reason: 'Só pode ser posicionada no Mundo de Coleta' };
+    const rect = placedStationRect(def, x, y);
+    if (!this.pathfinder || this.pathfinder.isMapRectBlocked(rect)) return { ok: false, reason: 'Encosta em um obstáculo' };
+    for (const pub of Object.values(PUBLIC_STATION_RECTS)) {
+      if (rectsOverlap(rect, pub, PLACED_STATION_CLEARANCE)) return { ok: false, reason: 'Muito perto de uma estação pública' };
+    }
+    for (const other of this.placedStationRects) {
+      if (rectsOverlap(rect, other, PLACED_STATION_CLEARANCE)) return { ok: false, reason: 'Muito perto de outra estação' };
+    }
+    if (this.player && pointInRect(this.player.x, this.player.y, rect)) return { ok: false, reason: 'Você está em cima do lugar' };
+    for (const remote of this.otherPlayers.values()) {
+      if (pointInRect(remote.container.x, remote.container.y, rect)) return { ok: false, reason: 'Tem um jogador nesse lugar' };
+    }
+    return { ok: true };
   }
 
   /** Anel tracejado com o alcance máximo do drop; acompanha o jogador no update(). */

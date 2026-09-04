@@ -16,6 +16,20 @@ export interface WorldPoint {
   y: number;
 }
 
+export interface StationPlaceRequest {
+  requestId: string;
+  itemKey: string;
+  x: number;
+  y: number;
+}
+
+export interface PlacementGhostView {
+  itemKey: string;
+  x: number;
+  y: number;
+  valid: boolean;
+}
+
 export type InventoryBridge = {
   /** Coordenada de tela (clientX/Y) → mundo; null se o canvas não existe. */
   screenToWorld: (clientX: number, clientY: number) => WorldPoint | null;
@@ -28,6 +42,13 @@ export type InventoryBridge = {
   /** Marcador no ponto escolhido (null = remove). */
   setDropMarker: (point: WorldPoint | null) => void;
   sendDrop: (request: InventoryDropRequest) => void;
+  /** Estações portáteis: validação local do ponto, fantasma e envio do posicionamento. */
+  validatePlacement: (itemKey: string, x: number, y: number) => { ok: boolean; reason?: string };
+  setPlacementGhost: (ghost: PlacementGhostView | null) => void;
+  sendPlace: (request: StationPlaceRequest) => void;
+  sendStationPickup: (request: { requestId: string; placedId: string }) => void;
+  sendStationAccessRequest: (placedId: string) => void;
+  sendStationAccessResponse: (placedId: string, requesterId: string, allow: boolean) => void;
 };
 
 let bridge: InventoryBridge | null = null;

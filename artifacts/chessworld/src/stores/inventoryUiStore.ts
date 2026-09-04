@@ -11,8 +11,15 @@
  */
 import { create } from 'zustand';
 
+export type PlacementMode = 'drop' | 'place';
+
 export interface DropPlacement {
   itemKey: string;
+  /**
+   * 'drop' = soltar no chão (quantidade); 'place' = posicionar uma estação
+   * portátil (1 unidade, preview do corpo, com opção de soltar no chão).
+   */
+  mode: PlacementMode;
   /** Saldo disponível (limite da quantidade). */
   max: number;
   phase: 'pick' | 'confirm' | 'sending';
@@ -35,7 +42,7 @@ interface InventoryUiState {
   openInventory: () => void;
   closeInventory: () => void;
   toggleInventory: () => void;
-  beginPlacement: (itemKey: string, max: number) => void;
+  beginPlacement: (itemKey: string, max: number, mode?: PlacementMode) => void;
   choosePoint: (point: { worldX: number; worldY: number; screenX: number; screenY: number }) => void;
   setPlacementQty: (qty: number) => void;
   /** Volta da confirmação para a escolha do ponto. */
@@ -62,9 +69,16 @@ export const useInventoryUiStore = create<InventoryUiState>((set, get) => ({
   openInventory: () => set({ open: true, placement: null }),
   closeInventory: () => set({ open: false }),
   toggleInventory: () => set((s) => ({ open: !s.open, placement: null })),
-  beginPlacement: (itemKey, max) => set({
+  beginPlacement: (itemKey, max, mode = 'drop') => set({
     open: false,
-    placement: { itemKey, max, phase: 'pick', qty: clampQty(max, max), worldX: 0, worldY: 0, screenX: 0, screenY: 0 },
+    placement: {
+      itemKey,
+      mode,
+      max,
+      phase: 'pick',
+      qty: mode === 'place' ? 1 : clampQty(max, max),
+      worldX: 0, worldY: 0, screenX: 0, screenY: 0,
+    },
   }),
   choosePoint: (point) => set((s) => (
     s.placement && s.placement.phase !== 'sending'

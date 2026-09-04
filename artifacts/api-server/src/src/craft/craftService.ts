@@ -1,6 +1,7 @@
 import { applyInventoryDeltas, getInventory, type InventoryItem } from '../collection/inventoryRepository.js';
 import { mergeStationsWithDefaults, isStationId } from '../shared/craft/StationShapes.js';
-import { listCraftRecipes } from './craftRepository.js';
+import { PLACEABLE_STACK_LIMIT, placeableStationFor } from '../shared/craft/PlaceableStations.js';
+import { getCraftItemsCached, listCraftRecipes } from './craftRepository.js';
 import { listStationMembers, listStations } from './stationRepository.js';
 
 export type PlayerCraftResult = { ok: true; items: InventoryItem[] } | { ok: false; message: string };
@@ -26,8 +27,20 @@ export async function executePlayerCraft(
     !(station?.tabs.some((tab) => tab.rows.some((row) => row.includes(targetId))))) {
     return { ok: false, message: 'Item não pode ser criado nesta estação' };
   }
+  const produced = (recipe.outputQuantity ?? 1) * quantity;
+  // Estações portáteis: uma cópia por inventário (a durabilidade é da cópia).
+  const placeable = placeableStationFor(targetId);
+  if (placeable) {
+    const current = await getInventory(userId);
+    if (current.error) return { ok: false, message: current.error };
+    const owned = current.items.find((item) => item.itemKey === targetId)?.qty ?? 0;
+    if (owned + produced > PLACEABLE_STACK_LIMIT) {
+      const name = (await getCraftItemsCached())[targetId]?.name ?? placeable.name;
+      return { ok: false, message: `Você já carrega uma ${name} — posicione ou solte a atual antes de criar outra` };
+    }
+  }
   const deltas = recipe.ingredients.map((ingredient) => ({ itemKey: ingredient.itemId, qty: -ingredient.quantity * quantity }));
-  deltas.push({ itemKey: targetId, qty: (recipe.outputQuantity ?? 1) * quantity });
+  deltas.push({ itemKey: targetId, qty: produced });
   const changed = await applyInventoryDeltas(userId, deltas);
   if (!changed.ok) return { ok: false, message: changed.error ?? 'Falha no inventário' };
   const snapshot = await getInventory(userId);

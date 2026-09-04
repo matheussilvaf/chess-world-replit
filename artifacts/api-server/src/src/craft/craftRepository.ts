@@ -15,6 +15,7 @@ import {
   type CraftItemConfig,
   type CraftRecipeConfig,
 } from '../shared/craft/CraftShapes.js';
+import { PLACEABLE_STATIONS, isPlaceableStationItemKey } from '../shared/craft/PlaceableStations.js';
 import { PERSISTENCE_UNAVAILABLE, getServiceClient, isTableMissing } from '../rigs/serviceSupabase.js';
 
 export const CRAFT_TABLES_SQL = `CREATE TABLE IF NOT EXISTS craft_items (
@@ -65,6 +66,29 @@ const emptyList = <T>(over: Partial<CraftListResult<T>> = {}): CraftListResult<T
 
 // ------------------------------------------------------------------- items
 
+/**
+ * Itens EMBUTIDOS (estações portáteis): existem mesmo sem linha na tabela; a
+ * linha, quando houver, só sobrescreve nome/durabilidade/reparo — a imagem é
+ * sempre a do jogo (o cliente resolve pelo id), nunca uma URL enviada.
+ */
+export function builtInCraftItems(): Record<string, CraftItemConfig> {
+  const records: Record<string, CraftItemConfig> = {};
+  for (const def of PLACEABLE_STATIONS) {
+    records[def.itemId] = { itemId: def.itemId, name: def.name, imageUrl: null, durability: def.defaultDurability };
+  }
+  return records;
+}
+
+/** Aplica uma linha salva por cima da definição embutida (campos travados preservados). */
+export function mergeBuiltInCraftItem(base: CraftItemConfig, override: CraftItemConfig): CraftItemConfig {
+  return {
+    ...base,
+    name: override.name,
+    repairsItemId: override.repairsItemId ?? null,
+    durability: override.durability ?? base.durability,
+  };
+}
+
 export async function listCraftItems(): Promise<CraftListResult<CraftItemConfig>> {
   const client = getServiceClient();
   if (!client) return emptyList({ error: PERSISTENCE_UNAVAILABLE });
@@ -73,15 +97,17 @@ export async function listCraftItems(): Promise<CraftListResult<CraftItemConfig>
     .select('item_id, config, updated_at')
     .order('item_id');
   if (error) {
-    if (isTableMissing(error.code)) return emptyList({ tableMissing: true });
+    if (isTableMissing(error.code)) return emptyList({ tableMissing: true, records: builtInCraftItems() });
     return emptyList({ error: error.message });
   }
-  const result = emptyList<CraftItemConfig>();
+  const result = emptyList<CraftItemConfig>({ records: builtInCraftItems() });
   for (const row of (data ?? []) as ItemRow[]) {
     const validated = validateCraftItemConfig(row.config);
     const config = row.config as CraftItemConfig;
     if (validated.ok && config.itemId === row.item_id) {
-      result.records[row.item_id] = config;
+      result.records[row.item_id] = isPlaceableStationItemKey(row.item_id)
+        ? mergeBuiltInCraftItem(result.records[row.item_id], config)
+        : config;
       if (row.updated_at) result.updatedAt[row.item_id] = row.updated_at;
     } else {
       console.warn(`[craft] stored item "${row.item_id}" is invalid; skipping`);
@@ -184,7 +210,8 @@ export function invalidateCraftCaches(): void {
 export async function getCraftItemsCached(): Promise<Record<string, CraftItemConfig>> {
   if (itemsCache && Date.now() < itemsCache.expiresAt) return itemsCache.map;
   const result = await listCraftItems();
-  const map = result.error ? {} : result.records;
+  // Sem persistência os embutidos continuam existindo (o jogo os conhece).
+  const map = result.error ? builtInCraftItems() : result.records;
   itemsCache = { map, expiresAt: Date.now() + CACHE_TTL_MS };
   return map;
 }

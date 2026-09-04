@@ -67,6 +67,7 @@ import {
 } from '../../../lib/craft/craftCatalog';
 import { RigApiError } from '../rig-editor/rigApi';
 import type { StationConfig } from '../../../shared/craft/StationShapes';
+import { isPlaceableStationItemKey } from '../../../shared/craft/PlaceableStations';
 import { stationsApi } from '../stations/stationsApi';
 import { craftApi } from './craftApi';
 import { CatalogThumb } from './CatalogThumb';
@@ -520,6 +521,7 @@ export function CraftAdminPage() {
       name: values.name,
       imageUrl,
       repairsItemId: values.repairsItemId,
+      ...(values.durability !== undefined ? { durability: values.durability } : {}),
     });
   };
 
@@ -733,15 +735,17 @@ export function CraftAdminPage() {
                                   >
                                     <Pencil className="w-3.5 h-3.5" />
                                   </button>
-                                  <button
-                                    type="button"
-                                    title="Excluir item"
-                                    className="p-1 rounded-md text-slate-400 hover:text-rose-300 hover:bg-slate-700/60 disabled:opacity-40"
-                                    disabled={busy || tableMissing}
-                                    onClick={() => void handleDeleteItem(customItem)}
-                                  >
-                                    <Trash2 className="w-3.5 h-3.5" />
-                                  </button>
+                                  {!isPlaceableStationItemKey(customItem.itemId) && (
+                                    <button
+                                      type="button"
+                                      title="Excluir item"
+                                      className="p-1 rounded-md text-slate-400 hover:text-rose-300 hover:bg-slate-700/60 disabled:opacity-40"
+                                      disabled={busy || tableMissing}
+                                      onClick={() => void handleDeleteItem(customItem)}
+                                    >
+                                      <Trash2 className="w-3.5 h-3.5" />
+                                    </button>
+                                  )}
                                 </span>
                               )}
                             </div>

@@ -10,6 +10,7 @@ import type { GeneratorManifest } from '../character-generator/types';
 import { CRAFTTOOLS_CATEGORY, WEAPON_CATEGORY } from '../../shared/combat/WeaponShapes';
 import { yieldItemKeyFor } from '../../shared/collection/CollectionShapes';
 import type { CraftItemConfig } from '../../shared/craft/CraftShapes';
+import { PLACEABLE_STATIONS, placeableStationFor } from '../../shared/craft/PlaceableStations';
 import {
   RESOURCE_DEFINITIONS,
   RESOURCE_DROP_ICONS,
@@ -176,16 +177,27 @@ export function buildCraftCatalog(
   }
 
   // Itens criados por último (a linha "repara: X" precisa dos nomes gen:).
-  const customEntries = Object.values(customItems)
+  // Estações portáteis embutidas podem faltar no mapa do servidor (persistência
+  // fora do ar): entram sempre, com o ícone fixo do jogo.
+  const allCustom: Record<string, CraftItemConfig> = { ...customItems };
+  for (const def of PLACEABLE_STATIONS) {
+    if (!allCustom[def.itemId]) allCustom[def.itemId] = { itemId: def.itemId, name: def.name, imageUrl: null, durability: def.defaultDurability };
+  }
+  const customEntries = Object.values(allCustom)
     .sort((a, b) => a.name.localeCompare(b.name))
     .map((item): CraftCatalogEntry => {
       const repairs = item.repairsItemId ?? null;
+      const placeable = placeableStationFor(item.itemId);
       return {
         id: item.itemId,
         name: item.name,
-        detail: repairs ? `repara: ${byId.get(repairs)?.name ?? repairs}` : item.itemId,
+        detail: placeable
+          ? `estação portátil · ${item.durability ?? placeable.defaultDurability} usos`
+          : repairs ? `repara: ${byId.get(repairs)?.name ?? repairs}` : item.itemId,
         sectionId: 'custom',
-        thumb: item.imageUrl ? { kind: 'image', url: item.imageUrl } : { kind: 'none' },
+        thumb: placeable
+          ? { kind: 'image', url: withBase(encodeURI(placeable.iconUrl)) }
+          : item.imageUrl ? { kind: 'image', url: item.imageUrl } : { kind: 'none' },
       };
     });
   const customSection: CraftCatalogSection = {

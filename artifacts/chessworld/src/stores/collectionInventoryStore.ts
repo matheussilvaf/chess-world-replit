@@ -24,7 +24,7 @@ import { loadCollectionWorldConfig } from '../game/config/collectionConfigLoader
 import { DEFAULT_INVENTORY_SLOTS, resolveInventorySlots } from '../shared/collection/CollectionShapes';
 import { TOOL_WEAR_MAX_ENTRIES, TOOL_WEAR_MAX_HITS_PER_ENTRY, isToolItemKey } from '../shared/collection/ToolWear';
 import { inventoryEntry, inventoryFallbackName, loadInventoryVisualCatalog } from '../lib/inventory/inventoryVisualCatalog';
-import { loadToolMaxDurability } from '../lib/inventory/toolDurability';
+import { hasDurabilityBar, loadToolMaxDurability } from '../lib/inventory/toolDurability';
 import { notifyBeforeSlotsChange } from '../lib/inventory/slotChangeSignal';
 import {
   countUnslottedItems as countUnslotted,
@@ -212,7 +212,7 @@ export function countUnslottedItems(state: Pick<CollectionInventoryState, 'items
 function durabilityFrom(items: InventoryItemDto[]): Record<string, number> {
   const out: Record<string, number> = {};
   for (const it of items) {
-    if (it.qty > 0 && isToolItemKey(it.itemKey) && typeof it.durability === 'number') out[it.itemKey] = it.durability;
+    if (it.qty > 0 && hasDurabilityBar(it.itemKey) && typeof it.durability === 'number') out[it.itemKey] = it.durability;
   }
   return out;
 }
@@ -220,7 +220,7 @@ function durabilityFrom(items: InventoryItemDto[]): Record<string, number> {
 /** Resolve (uma vez por ref) a durabilidade máxima das ferramentas presentes. */
 function ensureToolMax(itemKeys: string[]): void {
   for (const itemKey of itemKeys) {
-    if (!isToolItemKey(itemKey) || itemKey in useCollectionInventoryStore.getState().toolMax) continue;
+    if (!hasDurabilityBar(itemKey) || itemKey in useCollectionInventoryStore.getState().toolMax) continue;
     void loadToolMaxDurability(itemKey).then((max) => {
       useCollectionInventoryStore.setState((s) => (s.toolMax[itemKey] === max ? s : { toolMax: { ...s.toolMax, [itemKey]: max } }));
     });

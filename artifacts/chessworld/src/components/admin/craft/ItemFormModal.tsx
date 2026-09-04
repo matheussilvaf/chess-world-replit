@@ -10,12 +10,18 @@
  * onSubmit (que faz upload + save e retorna true para fechar).
  */
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { ImagePlus, Loader2, Save, Wrench, X } from 'lucide-react';
+import { Gauge, ImagePlus, Loader2, Save, Wrench, X } from 'lucide-react';
 import {
   MAX_CRAFT_ITEM_NAME_LEN,
   slugifyCraftItemName,
   type CraftItemConfig,
 } from '../../../shared/craft/CraftShapes';
+import {
+  MAX_PLACEABLE_DURABILITY,
+  MIN_PLACEABLE_DURABILITY,
+  isValidPlaceableDurability,
+  placeableStationFor,
+} from '../../../shared/craft/PlaceableStations';
 import type { CraftCatalog } from '../../../lib/craft/craftCatalog';
 import { CatalogThumb } from './CatalogThumb';
 
@@ -27,6 +33,8 @@ export interface ItemFormValues {
   /** Data URL de imagem nova, ou null para manter a atual (edição). */
   imageDataUrl: string | null;
   repairsItemId: string | null;
+  /** Só estações portáteis embutidas: crafts que a estação aguenta. */
+  durability?: number;
 }
 
 export type ItemFormMode = { kind: 'create' } | { kind: 'edit'; item: CraftItemConfig };
@@ -70,6 +78,13 @@ export function ItemFormModal(props: ItemFormModalProps) {
   const [repairTarget, setRepairTarget] = useState(editing?.repairsItemId ?? '');
   const [localError, setLocalError] = useState<string | null>(null);
   const [working, setWorking] = useState(false);
+  // Estação portátil embutida: imagem fixa (sprite do jogo) + campo de durabilidade.
+  const placeable = editing ? placeableStationFor(editing.itemId) : null;
+  const [durabilityText, setDurabilityText] = useState(
+    String(editing?.durability ?? placeable?.defaultDurability ?? ''),
+  );
+  const durabilityValue = Number(durabilityText);
+  const durabilityOk = !placeable || isValidPlaceableDurability(durabilityValue);
   const fileRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
@@ -92,7 +107,7 @@ export function ItemFormModal(props: ItemFormModalProps) {
   const imageOk = editing ? true : imageDataUrl !== null;
   const repairOk = !repairOn || repairTarget !== '';
   const canSave =
-    !busy && !working && nameOk && slug !== '' && !slugTaken && imageOk && repairOk;
+    !busy && !working && nameOk && slug !== '' && !slugTaken && imageOk && repairOk && durabilityOk;
 
   const pickFile = async (file: File | undefined) => {
     if (!file) return;
@@ -115,8 +130,9 @@ export function ItemFormModal(props: ItemFormModalProps) {
     try {
       const ok = await props.onSubmit({
         name: name.trim(),
-        imageDataUrl,
+        imageDataUrl: placeable ? null : imageDataUrl,
         repairsItemId: repairOn ? repairTarget : null,
+        ...(placeable ? { durability: durabilityValue } : {}),
       });
       if (ok) props.onClose();
     } finally {
@@ -124,7 +140,9 @@ export function ItemFormModal(props: ItemFormModalProps) {
     }
   };
 
-  const previewUrl = imageDataUrl ?? editing?.imageUrl ?? null;
+  const previewUrl = placeable
+    ? `${import.meta.env.BASE_URL}${encodeURI(placeable.iconUrl.replace(/^\//, ''))}`
+    : (imageDataUrl ?? editing?.imageUrl ?? null);
   const repairEntry = repairTarget ? (catalog.byId.get(repairTarget) ?? null) : null;
 
   return (
@@ -192,19 +210,55 @@ export function ItemFormModal(props: ItemFormModalProps) {
             ) : (
               <div className="w-12 h-12 rounded-md bg-slate-950/80 border border-dashed border-slate-700/60" />
             )}
-            <button
-              type="button"
-              className={`${btnCls} bg-slate-800/80 text-slate-200 hover:bg-slate-700/80 border border-slate-700/60`}
-              onClick={() => fileRef.current?.click()}
-              disabled={busy || working}
-            >
-              <ImagePlus className="w-3.5 h-3.5" />
-              {previewUrl ? 'Trocar imagem' : 'Escolher imagem'}
-            </button>
-            <span className="text-[10px] text-slate-500">
-              {editing ? 'opcional (mantém a atual)' : 'obrigatória — aparece no jogo'}
-            </span>
+            {placeable ? (
+              <span className="text-[10px] text-slate-500">
+                imagem fixa — é o sprite da estação no mapa
+              </span>
+            ) : (
+              <>
+                <button
+                  type="button"
+                  className={`${btnCls} bg-slate-800/80 text-slate-200 hover:bg-slate-700/80 border border-slate-700/60`}
+                  onClick={() => fileRef.current?.click()}
+                  disabled={busy || working}
+                >
+                  <ImagePlus className="w-3.5 h-3.5" />
+                  {previewUrl ? 'Trocar imagem' : 'Escolher imagem'}
+                </button>
+                <span className="text-[10px] text-slate-500">
+                  {editing ? 'opcional (mantém a atual)' : 'obrigatória — aparece no jogo'}
+                </span>
+              </>
+            )}
           </div>
+
+          {/* ------------------------------------------------ durabilidade */}
+          {placeable && (
+            <div className="rounded-lg border border-slate-700/60 bg-slate-950/40 p-3">
+              <label className="flex items-center gap-2">
+                <Gauge className="w-3.5 h-3.5 text-slate-400" />
+                <span className="text-xs text-slate-200">Durabilidade (crafts por estação)</span>
+                <input
+                  type="number"
+                  min={MIN_PLACEABLE_DURABILITY}
+                  max={MAX_PLACEABLE_DURABILITY}
+                  step={1}
+                  value={durabilityText}
+                  onChange={(e) => setDurabilityText(e.target.value)}
+                  className={`${fieldCls} ml-auto w-24 text-right text-xs`}
+                  disabled={busy || working}
+                  data-testid="input-station-durability"
+                />
+              </label>
+              <p className="text-[10px] text-slate-500 mt-1">
+                Cada craft feito numa estação portátil posicionada gasta 1. Em 0 ela não pode mais ser
+                posicionada nem usada. Inteiro {MIN_PLACEABLE_DURABILITY}–{MAX_PLACEABLE_DURABILITY}.
+              </p>
+              {!durabilityOk && (
+                <p className="text-[10px] text-rose-300 mt-1">Informe um inteiro entre {MIN_PLACEABLE_DURABILITY} e {MAX_PLACEABLE_DURABILITY}.</p>
+              )}
+            </div>
+          )}
 
           {/* ----------------------------------------------------- reparo */}
           <div className="rounded-lg border border-slate-700/60 bg-slate-950/40 p-3">

@@ -8,8 +8,9 @@
  * protege todas as superfícies deste servidor, mas não múltiplas instâncias.
  */
 import { RESOURCE_YIELD_ITEM_KEYS, isYieldOnlyResourceKey, yieldItemKeyFor } from '../shared/collection/CollectionShapes.js';
-import { applyToolWear, isToolItemKey } from '../shared/collection/ToolWear.js';
+import { applyToolWear, clampToolRemaining, isToolItemKey } from '../shared/collection/ToolWear.js';
 import { isInventoryItemId } from '../shared/craft/CraftShapes.js';
+import { PLACEABLE_STACK_LIMIT, clampStationRemaining, isPlaceableStationItemKey, mergeStationRemaining, placeableStationFor } from '../shared/craft/PlaceableStations.js';
 import { PERSISTENCE_UNAVAILABLE, getServiceClient, isTableMissing } from '../rigs/serviceSupabase.js';
 
 export const INVENTORY_TABLE_SQL = `CREATE TABLE IF NOT EXISTS collection_inventory (
@@ -92,10 +93,15 @@ function isLegacyStack(item: InventoryItem): boolean {
 
 interface InventoryRow { item_key: unknown; qty: unknown; durability?: unknown }
 
+/** Itens cuja pilha carrega durabilidade da cópia em uso. */
+export function hasDurability(itemKey: string): boolean {
+  return isToolItemKey(itemKey) || isPlaceableStationItemKey(itemKey);
+}
+
 function toItem(row: InventoryRow): InventoryItem {
   const item: InventoryItem = { itemKey: String(row.item_key), qty: Number(row.qty) || 0 };
-  // Só ferramentas com saldo carregam durabilidade; null (cheia) fica implícito.
-  if (isToolItemKey(item.itemKey) && item.qty > 0 && typeof row.durability === 'number' && Number.isFinite(row.durability)) {
+  // Só ferramentas/estações portáteis com saldo carregam durabilidade; null (cheia) fica implícito.
+  if (hasDurability(item.itemKey) && item.qty > 0 && typeof row.durability === 'number' && Number.isFinite(row.durability)) {
     item.durability = row.durability;
   }
   return item;
@@ -207,10 +213,16 @@ export async function applyInventoryDeltas(userId: string, deltas: InventoryItem
     for (const [itemKey, delta] of totals) {
       const qty = (current.get(itemKey) ?? 0) + delta;
       if (!Number.isSafeInteger(qty) || qty < 0) return { ok: false, items: [], tableMissing: false, error: `Saldo insuficiente: ${itemKey}` };
+      // Estação portátil: uma cópia por inventário — conferido AQUI, dentro da
+      // fila do usuário, para dois crafts simultâneos não passarem os dois.
+      const placeable = delta > 0 ? placeableStationFor(itemKey) : null;
+      if (placeable && qty > PLACEABLE_STACK_LIMIT) {
+        return { ok: false, items: [], tableMissing: false, error: `Você já carrega uma ${placeable.name} — posicione ou solte a atual antes de criar outra` };
+      }
       const row: (typeof rows)[number] = { user_id: userId, item_key: itemKey, qty, updated_at: new Date().toISOString() };
-      // Pilha de ferramenta zerada (gasta numa receita / solta no chão): a
-      // durabilidade da cópia em uso morre com ela — a próxima cópia nasce cheia.
-      if (qty === 0 && isToolItemKey(itemKey) && hasDurabilityColumn()) row.durability = null;
+      // Pilha de ferramenta/estação zerada (gasta numa receita / solta no chão):
+      // a durabilidade da cópia em uso morre com ela — a próxima cópia nasce cheia.
+      if (qty === 0 && hasDurability(itemKey) && hasDurabilityColumn()) row.durability = null;
       rows.push(row);
     }
     let { error: writeError } = await client.from('collection_inventory').upsert(rows, { onConflict: 'user_id,item_key' });
@@ -223,6 +235,132 @@ export async function applyInventoryDeltas(userId: string, deltas: InventoryItem
       ? { ok: false, items: [], tableMissing: true, error: null }
       : { ok: false, items: [], tableMissing: false, error: writeError.message };
     return { ok: true, items: rows.map((r) => ({ itemKey: r.item_key, qty: r.qty })), tableMissing: false, error: null };
+  });
+}
+
+export type DurabilityKind = 'tool' | 'station';
+
+export interface TakeWithDurabilityOptions {
+  kind: DurabilityKind;
+  /** Durabilidade máxima configurada para o item. */
+  max: number;
+  /** Estações: permite tirar uma cópia sem durabilidade (soltar no chão sim; posicionar não). */
+  allowBroken?: boolean;
+}
+
+export interface TakeWithDurabilityResult extends InventoryWriteResult {
+  /** Durabilidade restante da cópia que saiu (null = cheia ou coluna ausente). */
+  carried: number | null;
+  /** false = a coluna `durability` não existe no Supabase (migração pendente): nada de durabilidade foi lido/gravado. */
+  durabilityPersisted: boolean;
+}
+
+/** Durabilidade restante válida da pilha conforme o tipo (ferramenta: 0 = cheia; estação: 0 = gasta). */
+function remainingOf(kind: DurabilityKind, stored: unknown, max: number): number {
+  const value = typeof stored === 'number' && Number.isFinite(stored) ? stored : null;
+  return kind === 'tool' ? clampToolRemaining(value, max) : clampStationRemaining(value, max);
+}
+
+/**
+ * Retira `qty` cópias de um item COM durabilidade (ferramenta/estação
+ * portátil) levando a durabilidade da cópia em uso junto (`carried`): quem
+ * recebe a cópia (drop no chão, estação posicionada) continua de onde parou,
+ * e a pilha que fica volta a "cheia" (a cópia gasta foi embora).
+ */
+export async function takeWithDurability(userId: string, itemKey: string, qty: number, options: TakeWithDurabilityOptions): Promise<TakeWithDurabilityResult> {
+  return serializeUser(userId, async () => {
+    const fail = (error: string, extra: Partial<TakeWithDurabilityResult> = {}): TakeWithDurabilityResult =>
+      ({ ok: false, items: [], tableMissing: false, error, carried: null, durabilityPersisted: false, ...extra });
+    if (!isInventoryItemId(itemKey) || !hasDurability(itemKey) || !Number.isSafeInteger(qty) || qty < 1) return fail('Delta de inventário inválido');
+    const client = getServiceClient();
+    if (!client) return fail(PERSISTENCE_UNAVAILABLE);
+    let withDurability = hasDurabilityColumn();
+    const select = (columns: string) => client.from('collection_inventory').select(columns).eq('user_id', userId).eq('item_key', itemKey).maybeSingle();
+    let { data, error } = await select(withDurability ? 'item_key, qty, durability' : 'item_key, qty');
+    if (error && withDurability && isColumnMissing(error.code)) {
+      markDurabilityColumnMissing();
+      withDurability = false;
+      ({ data, error } = await select('item_key, qty'));
+    }
+    if (error) return isTableMissing(error.code) ? fail('Tabela de inventário ausente', { tableMissing: true, error: null }) : fail(error.message);
+    const row = (data ?? null) as InventoryRow | null;
+    const current = row ? Number(row.qty) || 0 : 0;
+    if (current < qty) return fail(`Saldo insuficiente: ${itemKey}`);
+    const remaining = withDurability ? remainingOf(options.kind, row?.durability, options.max) : null;
+    if (options.kind === 'station' && !options.allowBroken && remaining !== null && remaining <= 0) {
+      return fail('Este item está sem durabilidade');
+    }
+    const max = Math.max(1, Math.floor(options.max));
+    const carried = remaining === null || remaining >= max ? null : remaining;
+    const next: { user_id: string; item_key: string; qty: number; durability?: null; updated_at: string } = {
+      user_id: userId, item_key: itemKey, qty: current - qty, updated_at: new Date().toISOString(),
+    };
+    if (withDurability) next.durability = null; // a cópia gasta saiu: o que ficou está cheio
+    let { error: writeError } = await client.from('collection_inventory').upsert(next, { onConflict: 'user_id,item_key' });
+    if (writeError && isColumnMissing(writeError.code) && 'durability' in next) {
+      markDurabilityColumnMissing();
+      delete next.durability;
+      ({ error: writeError } = await client.from('collection_inventory').upsert(next, { onConflict: 'user_id,item_key' }));
+    }
+    if (writeError) return isTableMissing(writeError.code) ? fail('Tabela de inventário ausente', { tableMissing: true, error: null }) : fail(writeError.message);
+    return { ok: true, items: [{ itemKey, qty: next.qty }], tableMissing: false, error: null, carried, durabilityPersisted: 'durability' in next };
+  });
+}
+
+export interface GiveWithDurabilityOptions {
+  kind: DurabilityKind;
+  max: number;
+  /** Máximo de cópias na pilha depois do crédito (estações portáteis: 1). */
+  limit?: number;
+  limitMessage?: string;
+}
+
+/**
+ * Devolve `qty` cópias de um item COM durabilidade à pilha; a cópia que chega
+ * traz `incoming` (null = cheia). A pilha fica com a PIOR durabilidade entre
+ * a que já tinha e a que chegou — nunca renova uma cópia gasta.
+ */
+export async function giveWithDurability(userId: string, itemKey: string, qty: number, incoming: number | null, options: GiveWithDurabilityOptions): Promise<InventoryWriteResult> {
+  return serializeUser(userId, async () => {
+    const fail = (error: string | null, extra: Partial<InventoryWriteResult> = {}): InventoryWriteResult =>
+      ({ ok: false, items: [], tableMissing: false, error, ...extra });
+    if (!isInventoryItemId(itemKey) || !hasDurability(itemKey) || !Number.isSafeInteger(qty) || qty < 1) return fail('Delta de inventário inválido');
+    const client = getServiceClient();
+    if (!client) return fail(PERSISTENCE_UNAVAILABLE);
+    let withDurability = hasDurabilityColumn();
+    const select = (columns: string) => client.from('collection_inventory').select(columns).eq('user_id', userId).eq('item_key', itemKey).maybeSingle();
+    let { data, error } = await select(withDurability ? 'item_key, qty, durability' : 'item_key, qty');
+    if (error && withDurability && isColumnMissing(error.code)) {
+      markDurabilityColumnMissing();
+      withDurability = false;
+      ({ data, error } = await select('item_key, qty'));
+    }
+    if (error) return isTableMissing(error.code) ? fail(null, { tableMissing: true }) : fail(error.message);
+    const row = (data ?? null) as InventoryRow | null;
+    const current = row ? Number(row.qty) || 0 : 0;
+    const total = current + qty;
+    if (!Number.isSafeInteger(total)) return fail('Quantidade inválida');
+    if (options.limit !== undefined && total > options.limit) return fail(options.limitMessage ?? `Limite de ${options.limit} atingido: ${itemKey}`);
+    const max = Math.max(1, Math.floor(options.max));
+    const next: { user_id: string; item_key: string; qty: number; durability?: number | null; updated_at: string } = {
+      user_id: userId, item_key: itemKey, qty: total, updated_at: new Date().toISOString(),
+    };
+    if (withDurability) {
+      const merged = current > 0
+        ? (options.kind === 'tool'
+          ? Math.min(clampToolRemaining(typeof row?.durability === 'number' ? row.durability : null, max), clampToolRemaining(incoming, max))
+          : mergeStationRemaining(typeof row?.durability === 'number' ? row.durability : null, incoming, max))
+        : remainingOf(options.kind, incoming, max);
+      next.durability = merged >= max ? null : merged;
+    }
+    let { error: writeError } = await client.from('collection_inventory').upsert(next, { onConflict: 'user_id,item_key' });
+    if (writeError && isColumnMissing(writeError.code) && 'durability' in next) {
+      markDurabilityColumnMissing();
+      delete next.durability;
+      ({ error: writeError } = await client.from('collection_inventory').upsert(next, { onConflict: 'user_id,item_key' }));
+    }
+    if (writeError) return isTableMissing(writeError.code) ? fail(null, { tableMissing: true }) : fail(writeError.message);
+    return { ok: true, items: [{ itemKey, qty: next.qty }], tableMissing: false, error: null };
   });
 }
 

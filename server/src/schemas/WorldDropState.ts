@@ -9,6 +9,11 @@ export class WorldDropState extends Schema {
   y = 0;
   /** Epoch ms (relógio do servidor) em que o item some do chão se ninguém recolher. */
   expiresAt = 0;
+  /**
+   * Durabilidade restante que viaja com a cópia (ferramentas e estações
+   * portáteis); -1 = não se aplica / cheia.
+   */
+  durability = -1;
 }
 
 defineTypes(WorldDropState, {
@@ -18,4 +23,5 @@ defineTypes(WorldDropState, {
   x: 'number',
   y: 'number',
   expiresAt: 'number',
+  durability: 'number',
 });

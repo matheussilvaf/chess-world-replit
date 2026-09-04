@@ -120,6 +120,8 @@ export default class AStarGrid {
   private originY: number = 0;
   /** Flat boolean array: true = blocked. Indexed as [y * gridWidth + x] */
   private blocked: Uint8Array = new Uint8Array(0);
+  /** Só as colisões do mapa (sem bloqueios dinâmicos) — base para `setDynamicRects`. */
+  private baseBlocked: Uint8Array = new Uint8Array(0);
   // Buffers do A* reutilizados entre chamadas — alocar ~1,2MB (5 arrays de
   // 96k células) a cada findPath gerava rajadas de GC (engasgos) durante o
   // hold-to-steer, que repete o pathfinding a cada 150ms.
@@ -183,6 +185,44 @@ export default class AStarGrid {
     // Mark cells overlapping polygons (inflated)
     for (const poly of polys) {
       this.rasterizePolygon(poly, inflatePixels);
+    }
+    this.baseBlocked = this.blocked.slice();
+  }
+
+  /**
+   * Bloqueios dinâmicos (estações portáteis posicionadas): substitui o conjunto
+   * anterior — a grade volta às colisões do mapa e marca estes retângulos.
+   */
+  setDynamicRects(rects: Rect[], inflate: number = 0): void {
+    if (this.baseBlocked.length !== this.blocked.length) return; // grade ainda não construída
+    this.blocked.set(this.baseBlocked);
+    for (const rect of rects) this.markRect(rect, inflate);
+  }
+
+  /** True se algum ponto do retângulo (mundo) cai em colisão DO MAPA (ignora bloqueios dinâmicos) ou fora da grade. */
+  isMapRectBlocked(rect: Rect): boolean {
+    const minGX = Math.floor((rect.x - this.originX) / this.cellSize);
+    const minGY = Math.floor((rect.y - this.originY) / this.cellSize);
+    const maxGX = Math.floor((rect.x - this.originX + rect.width) / this.cellSize);
+    const maxGY = Math.floor((rect.y - this.originY + rect.height) / this.cellSize);
+    if (minGX < 0 || minGY < 0 || maxGX >= this.gridWidth || maxGY >= this.gridHeight) return true;
+    for (let gy = minGY; gy <= maxGY; gy++) {
+      const rowOffset = gy * this.gridWidth;
+      for (let gx = minGX; gx <= maxGX; gx++) {
+        if (this.baseBlocked[rowOffset + gx] === 1) return true;
+      }
+    }
+    return false;
+  }
+
+  private markRect(rect: Rect, inflatePixels: number): void {
+    const minGX = Math.max(0, Math.floor((rect.x - this.originX - inflatePixels) / this.cellSize));
+    const minGY = Math.max(0, Math.floor((rect.y - this.originY - inflatePixels) / this.cellSize));
+    const maxGX = Math.min(this.gridWidth - 1, Math.floor((rect.x - this.originX + rect.width + inflatePixels) / this.cellSize));
+    const maxGY = Math.min(this.gridHeight - 1, Math.floor((rect.y - this.originY + rect.height + inflatePixels) / this.cellSize));
+    for (let gy = minGY; gy <= maxGY; gy++) {
+      const rowOffset = gy * this.gridWidth;
+      for (let gx = minGX; gx <= maxGX; gx++) this.blocked[rowOffset + gx] = 1;
     }
   }
 

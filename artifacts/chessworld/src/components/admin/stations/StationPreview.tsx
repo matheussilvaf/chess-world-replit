@@ -21,7 +21,7 @@
  * itens que existem no catálogo e pertencem à estação) — os índices de drop
  * apontam direto para os arrays de `rows`.
  */
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import {
   Check,
   Flame,
@@ -96,6 +96,7 @@ export function StationPreview({
   edit,
   onClose,
   onCraft,
+  banner,
 }: {
   station: StationConfig;
   activeTabIndex: number;
@@ -108,6 +109,8 @@ export function StationPreview({
   onClose?: () => void;
   /** Real crafting hook. When omitted the admin keeps its simulated loader. */
   onCraft?: (targetId: string, quantity: number) => Promise<void>;
+  /** Faixa extra logo abaixo do cabeçalho (ex.: estado da estação portátil). */
+  banner?: ReactNode;
 }) {
   const tabs = station.tabs;
   const tabIndex = Math.min(Math.max(activeTabIndex, 0), Math.max(tabs.length - 1, 0));
@@ -232,6 +235,7 @@ export function StationPreview({
           <X className="w-6 h-6" />
         </button>
       </div>
+      {banner}
 
       {/* Abas */}
       <div className="bg-[#141416] flex items-stretch">

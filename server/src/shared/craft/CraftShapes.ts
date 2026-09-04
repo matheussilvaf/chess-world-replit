@@ -34,6 +34,7 @@
  * Keep it free of Phaser/DOM/Node dependencies.
  */
 import { INVENTORY_ITEM_KEYS, RESOURCE_KEYS } from '../collection/CollectionShapes.js';
+import { MAX_PLACEABLE_DURABILITY, MIN_PLACEABLE_DURABILITY, isPlaceableStationItemKey, isValidPlaceableDurability } from './PlaceableStations.js';
 
 /** Craft item ids (itens criados no admin) são slugs minúsculos. */
 export const CRAFT_ITEM_ID_RE = /^[a-z0-9][a-z0-9_-]{0,47}$/;
@@ -95,6 +96,12 @@ export interface CraftItemConfig {
    * (ex.: "gen:crafttools/axe/stone"). null/ausente = item comum.
    */
   repairsItemId?: string | null;
+  /**
+   * Só para ESTAÇÕES PORTÁTEIS embutidas (ver PlaceableStations): quantos
+   * crafts a estação aguenta antes de ficar sem durabilidade. Inteiro 1..9999;
+   * ausente = padrão da definição embutida. Recusado em qualquer outro item.
+   */
+  durability?: number;
 }
 
 export interface CraftIngredient {
@@ -169,6 +176,14 @@ export function validateCraftItemConfig(value: unknown): CraftValidation {
       errors.push(
         'repairsItemId: null ou ref gen: de arma/ferramenta (ex.: "gen:crafttools/axe/stone")',
       );
+    }
+  }
+  const durability = value.durability;
+  if (durability !== undefined && durability !== null) {
+    if (!isPlaceableStationItemKey(itemId)) {
+      errors.push('durability: só estações portáteis embutidas têm durabilidade');
+    } else if (!isValidPlaceableDurability(durability)) {
+      errors.push(`durability: inteiro ${MIN_PLACEABLE_DURABILITY}..${MAX_PLACEABLE_DURABILITY}`);
     }
   }
   return { ok: errors.length === 0, errors };

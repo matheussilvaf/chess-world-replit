@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { CRAFTING_MAP, CRAFT_REGION_PREFIX } from '../game/config/craftingMapConfig';
 import Phaser from 'phaser';
 import { createPhaserGame, getWorldScene } from '../game/PhaserGame';
@@ -38,6 +38,9 @@ import { loadInventoryVisualCatalog } from '../lib/inventory/inventoryVisualCata
 import type { CraftThumb } from '../lib/craft/craftCatalog';
 import { clearStationCraftBridge, rejectStationCraft, resolveStationCraft, setStationCraftSender } from '../game/stations/stationCraftBridge';
 import { StationGamePanel } from './game/StationGamePanel';
+import { PlacedStationOverlays } from './game/stations/PlacedStationOverlays';
+import { canUsePlacedStation, usePlacedStationsStore, type PlacedStationView } from '../stores/placedStationsStore';
+import { parseAllowedIds } from '../shared/craft/PlaceableStations';
 
 export function GameCanvas() {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -55,8 +58,15 @@ export function GameCanvas() {
   const liveWeapon = usePlayerCharacterStore((s) => s.liveWeapon);
   const worldReady = usePlayerCharacterStore((s) => s.worldReady);
   const [stationId, setStationId] = useState<string | null>(null);
+  /** Estação portátil posicionada que abriu o card atual (craft privado). */
+  const [stationPlacedId, setStationPlacedId] = useState<string | null>(null);
   const inventoryOpen = useInventoryUiStore((s) => s.open);
   const dropPlacementActive = useInventoryUiStore((s) => !!s.placement);
+  const closeStationPanel = useCallback(() => {
+    setStationId(null);
+    setStationPlacedId(null);
+    usePlacedStationsStore.getState().setOpenPlacedId(null);
+  }, []);
   // Modal obrigatório: usuário logado, resposta do banco chegou e não há
   // personagem. Sem resposta (loaded=false) NÃO abre — evita pedir criação
   // para quem já tem personagem numa falha de rede.
@@ -124,6 +134,7 @@ export function GameCanvas() {
         const interactionStore = useInteractionStore.getState();
         const obj = event.object;
         if (obj.category === 'station') {
+          setStationPlacedId(null);
           setStationId(String(obj.properties.stationId));
           return;
         }
@@ -540,6 +551,24 @@ export function GameCanvas() {
       room.send('attack', payload);
     });
     scene.setInventoryPickupSender((dropId) => room.send('inventory_pickup', { requestId: crypto.randomUUID(), dropId }));
+    // Estação portátil posicionada: dono/autorizado abre o card privado; os demais podem pedir permissão.
+    scene.onPlacedStationClick = (placedId) => {
+      const placedStore = usePlacedStationsStore.getState();
+      const view = placedStore.stations[placedId];
+      if (!view) return;
+      const myId = useAuthStore.getState().user?.id ?? null;
+      if (canUsePlacedStation(view, myId)) {
+        placedStore.setPermissionPrompt(null);
+        placedStore.setOpenPlacedId(placedId);
+        setStationPlacedId(placedId);
+        setStationId(view.stationId);
+        return;
+      }
+      const current = placedStore.permissionPrompt;
+      placedStore.setPermissionPrompt(
+        current?.placedId === placedId ? current : { placedId, status: 'idle' },
+      );
+    };
     // CSS px ↔ px do canvas: o backing store pode ser maior que o rect (DPR/escala),
     // mesma correção que o WorldScene aplica nos overlays HTML.
     const canvasFrame = () => {
@@ -573,6 +602,12 @@ export function GameCanvas() {
       setDropRadiusVisible: (visible) => scene.setDropRadiusVisible(visible),
       setDropMarker: (point) => scene.setDropMarker(point),
       sendDrop: (request) => room.send('inventory_drop', request),
+      validatePlacement: (itemKey, x, y) => scene.validateStationPlacement(itemKey, x, y),
+      setPlacementGhost: (ghost) => scene.setPlacementGhost(ghost),
+      sendPlace: (request) => room.send('station_place', request),
+      sendStationPickup: (request) => room.send('station_pickup', request),
+      sendStationAccessRequest: (placedId) => room.send('station_request_access', { placedId }),
+      sendStationAccessResponse: (placedId, requesterId, allow) => room.send('station_respond_access', { placedId, requesterId, allow }),
     });
     setStationCraftSender((payload) => room.send('craft_item', payload));
     const removeCraftResult = room.onMessage('craft_result', (data: { requestId: string; items: Array<{ itemKey: string; qty: number }> }) => {
@@ -581,17 +616,84 @@ export function GameCanvas() {
     const removeCraftError = room.onMessage('craft_error', (data: { requestId?: string; message?: string }) => {
       rejectStationCraft(data.requestId, data.message ?? 'Não foi possível criar o item.');
     });
-    const removeInventoryChanged = room.onMessage('inventory_changed', (data: { requestId?: string; items?: Array<{ itemKey: string; qty: number }> }) => {
+    const removeInventoryChanged = room.onMessage('inventory_changed', (data: { requestId?: string; items?: Array<{ itemKey: string; qty: number }>; placedId?: string }) => {
       if (Array.isArray(data.items)) useCollectionInventoryStore.getState().applyServerTotals(data.items);
       useInventoryUiStore.getState().resolvePlacement(data.requestId, { ok: true });
+      const placedStore = usePlacedStationsStore.getState();
+      if (data.requestId && placedStore.pickupRequestId === data.requestId) {
+        placedStore.setPickupRequestId(null);
+        placedStore.pushNotice('success', 'Estação recolhida para o inventário.');
+      }
     });
     const removeInventoryError = room.onMessage('inventory_error', (data: { requestId?: string; message?: string }) => {
       const message = data.message ?? 'Não foi possível alterar o inventário.';
+      const placedStore = usePlacedStationsStore.getState();
+      if (data.requestId && placedStore.pickupRequestId === data.requestId) {
+        placedStore.setPickupRequestId(null);
+        placedStore.pushNotice('error', message);
+        return;
+      }
       // Recusa do drop em andamento aparece no próprio popover; o resto vai para o aviso da hotbar.
       if (!useInventoryUiStore.getState().resolvePlacement(data.requestId, { ok: false, message })) {
         useCollectionInventoryStore.getState().setInventoryError(message);
       }
     });
+    // Permissões de uso das estações portáteis.
+    const removeAccessRequest = room.onMessage('station_access_request', (data: { placedId: string; stationId: string; itemKey: string; requesterId: string; requesterName: string }) => {
+      usePlacedStationsStore.getState().pushAccessRequest({ ...data, receivedAt: Date.now() });
+    });
+    const removeAccessUpdate = room.onMessage('station_access_update', (data: { placedId: string; status: 'sent' | 'granted' | 'denied' | 'error'; message?: string; stationId?: string }) => {
+      const placedStore = usePlacedStationsStore.getState();
+      if (data.status === 'granted') {
+        placedStore.pushNotice('success', 'Permissão concedida — você já pode usar a estação.');
+        const view = placedStore.stations[data.placedId];
+        if (placedStore.permissionPrompt?.placedId === data.placedId && view) {
+          placedStore.setPermissionPrompt(null);
+          placedStore.setOpenPlacedId(data.placedId);
+          setStationPlacedId(data.placedId);
+          setStationId(view.stationId);
+        }
+        return;
+      }
+      if (data.status === 'denied') placedStore.pushNotice('info', 'O dono recusou o pedido de uso.');
+      placedStore.updatePermissionPrompt(data.placedId, { status: data.status, message: data.message });
+    });
+    // Estações portáteis posicionadas (MapSchema → store → cena). Deploys antigos não têm o mapa.
+    const placedStations = state.placedStations;
+    let detachPlaced: (() => void) | undefined;
+    if (placedStations && typeof placedStations.onAdd === 'function') {
+      const toView = (placed: any, id: string): PlacedStationView => ({
+        id,
+        itemKey: String(placed.itemKey),
+        stationId: String(placed.stationId),
+        ownerId: String(placed.ownerId),
+        ownerName: String(placed.ownerName ?? ''),
+        x: Number(placed.x),
+        y: Number(placed.y),
+        durability: Number(placed.durability),
+        maxDurability: Number(placed.maxDurability),
+        placedAt: Number(placed.placedAt),
+        expiresAt: Number(placed.expiresAt),
+        allowed: parseAllowedIds(String(placed.allowed ?? '')),
+      });
+      placedStations.onAdd((placed: any, id: string) => {
+        usePlacedStationsStore.getState().upsertStation(toView(placed, id));
+        placed.onChange?.(() => usePlacedStationsStore.getState().upsertStation(toView(placed, id)));
+      });
+      placedStations.onRemove((_: any, id: string) => usePlacedStationsStore.getState().removeStation(id));
+      let lastStations = usePlacedStationsStore.getState().stations;
+      scene.syncPlacedStations(Object.values(lastStations));
+      const unsubscribe = usePlacedStationsStore.subscribe((next) => {
+        if (next.stations === lastStations) return;
+        lastStations = next.stations;
+        scene.syncPlacedStations(Object.values(next.stations));
+      });
+      detachPlaced = () => {
+        unsubscribe();
+        usePlacedStationsStore.getState().clearStations();
+        scene.syncPlacedStations([]);
+      };
+    }
     const removeEquipError = room.onMessage('equip_error', (data: { message?: string }) => {
       usePlayerCharacterStore.getState().setEquipError(data.message ?? 'Não foi possível equipar.');
     });
@@ -633,7 +735,11 @@ export function GameCanvas() {
       useInventoryUiStore.getState().finishPlacement();
       if (typeof removeCraftResult === 'function') removeCraftResult();
       if (typeof removeCraftError === 'function') removeCraftError();
+      if (typeof removeAccessRequest === 'function') removeAccessRequest();
+      if (typeof removeAccessUpdate === 'function') removeAccessUpdate();
       detachDrops?.();
+      detachPlaced?.();
+      scene.onPlacedStationClick = null;
       setInventoryBridge(null);
       clearStationCraftBridge();
     };
@@ -993,7 +1099,14 @@ export function GameCanvas() {
       <ToolHotbar />
       {inventoryOpen && <CollectionInventoryPanel />}
       {dropPlacementActive && <InventoryDropPlacement />}
-      {stationId && <StationGamePanel stationId={stationId} onClose={() => setStationId(null)} />}
+      {stationId && (
+        <StationGamePanel
+          stationId={stationId}
+          placedId={stationPlacedId ?? undefined}
+          onClose={closeStationPanel}
+        />
+      )}
+      <PlacedStationOverlays />
       <PerformanceHud />
     </div>
   );

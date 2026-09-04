@@ -21,8 +21,11 @@ import {
 import { verifySupabaseToken } from '../auth/supabaseAuth.js';
 import { isInventoryItemId } from '../shared/craft/CraftShapes.js';
 import { INVENTORY_DROP_MAX_DISTANCE, INVENTORY_PICKUP_MAX_DISTANCE, WORLD_DROP_TTL_MS, yieldItemKeyFor } from '../shared/collection/CollectionShapes.js';
-import { applyInventoryDeltas, getInventory } from '../collection/inventoryRepository.js';
+import { applyInventoryDeltas, getInventory, giveWithDurability, hasDurability, takeWithDurability } from '../collection/inventoryRepository.js';
 import { executePlayerCraft } from '../craft/craftService.js';
+import { PLACEABLE_STACK_LIMIT, placeableStationFor } from '../shared/craft/PlaceableStations.js';
+import { getCraftItemsCached } from '../craft/craftRepository.js';
+import { PlacedStationManager, maxDurabilityForItem } from './PlacedStationManager.js';
 
 interface JoinOptions {
   /** Legado — IGNORADO para identidade (era spoofável). Mantido só por compat. */
@@ -65,6 +68,8 @@ export class WorldRoom extends Room<WorldState> {
   /** Per-session idempotent operation cache. */
   private inventoryRequests = new Map<string, Map<string, RoomRequestEntry>>();
   private dropLocks = new Map<string, Promise<void>>();
+  /** Estações portáteis posicionadas no mapa (place/pickup/craft privado/permissões/expiração); criado em onCreate. */
+  private placedStations!: PlacedStationManager;
   /** Last accepted client movement; performance.now is monotonic per process. */
   private movementGuards = new Map<string, number>();
   // Client MAP_CONFIG.playerSpeed is 120 px/s. 180 allows normal rounding,
@@ -86,6 +91,17 @@ export class WorldRoom extends Room<WorldState> {
     this.clock.setInterval(() => this.sweepExpiredDrops(), 250);
 
     this.region = String(options.region || 'default');
+    this.placedStations = new PlacedStationManager({
+      state: this.state,
+      region: this.region,
+      clientByPlayerId: (playerId) => {
+        const sessionId = this.findSessionByPlayerId(playerId);
+        return sessionId ? this.clients.find((c) => c.sessionId === sessionId) : undefined;
+      },
+      withLock: (key, task) => this.withDropLock(key, task),
+      updateRoomHold: () => this.holdRoomWhileDropsExist(),
+      inventorySnapshot: (userId) => this.inventorySnapshot(userId),
+    });
 
     coordinator.registerWorldRoom(this);
 
@@ -606,8 +622,25 @@ export class WorldRoom extends Room<WorldState> {
       void this.runRoomRequest(client, 'inventory_pickup', body?.requestId, JSON.stringify([body?.dropId]), () => this.handleInventoryPickup(client, data));
     });
     this.onMessage('craft_item', (client, data) => {
-      const body = data as { requestId?: unknown; stationId?: unknown; targetId?: unknown; quantity?: unknown };
-      void this.runRoomRequest(client, 'craft_item', body?.requestId, JSON.stringify([body?.stationId, body?.targetId, body?.quantity]), () => this.handleCraftItem(client, data));
+      const body = data as { requestId?: unknown; stationId?: unknown; targetId?: unknown; quantity?: unknown; placedId?: unknown };
+      void this.runRoomRequest(client, 'craft_item', body?.requestId, JSON.stringify([body?.stationId, body?.targetId, body?.quantity, body?.placedId ?? null]), () => this.handleCraftItem(client, data));
+    });
+    // ---- Estações portáteis (ver PlacedStationManager) ----
+    this.onMessage('station_place', (client, data) => {
+      const body = data as { requestId?: unknown; itemKey?: unknown; x?: unknown; y?: unknown };
+      void this.runRoomRequest(client, 'station_place', body?.requestId, JSON.stringify([body?.itemKey, body?.x, body?.y]),
+        () => this.placedStations.handlePlace(this.state.players.get(client.sessionId), data));
+    });
+    this.onMessage('station_pickup', (client, data) => {
+      const body = data as { requestId?: unknown; placedId?: unknown };
+      void this.runRoomRequest(client, 'station_pickup', body?.requestId, JSON.stringify([body?.placedId]),
+        () => this.placedStations.handlePickup(this.state.players.get(client.sessionId), data));
+    });
+    this.onMessage('station_request_access', (client, data) => {
+      this.placedStations.handleRequestAccess(client, this.state.players.get(client.sessionId), data);
+    });
+    this.onMessage('station_respond_access', (client, data) => {
+      this.placedStations.handleRespondAccess(this.state.players.get(client.sessionId), data);
     });
 
     // ---- Personagem jogável (aparência composta + arma da classe) ----
@@ -726,9 +759,11 @@ export class WorldRoom extends Room<WorldState> {
 
   private async handleCraftItem(client: Client, data: unknown): Promise<RoomReply> {
     const player = this.state.players.get(client.sessionId);
-    const body = data as { stationId?: unknown; targetId?: unknown; quantity?: unknown };
+    const body = data as { stationId?: unknown; targetId?: unknown; quantity?: unknown; placedId?: unknown };
     if (!player || player.id.startsWith('anon:')) return { event: 'craft_error', payload: { message: 'Autenticação obrigatória' } };
     if (!this.region.startsWith('craft:')) return { event: 'craft_error', payload: { message: 'Craft disponível apenas no Mundo de Coleta' } };
+    // Estação portátil posicionada: dono/autorizado, perto dela, gasta 1 de durabilidade.
+    if (typeof body?.placedId === 'string' && body.placedId.length > 0) return this.placedStations.handleCraft(player, body.placedId, body);
     if (typeof body?.stationId !== 'string' || !this.isNearCraftStation(player.x, player.y, body.stationId)) {
       return { event: 'craft_error', payload: { message: 'Você precisa estar perto da estação selecionada' } };
     }
@@ -765,9 +800,16 @@ export class WorldRoom extends Room<WorldState> {
       Math.hypot(body.x - player.x, body.y - player.y) > INVENTORY_DROP_MAX_DISTANCE) {
       return { event: 'inventory_error', payload: { message: 'Drop inválido ou distante' } };
     }
-    const debit = await applyInventoryDeltas(player.id, [{ itemKey: body.itemKey, qty: -body.qty }]);
-    if (!debit.ok) {
-      return { event: 'inventory_error', payload: { message: debit.error ?? 'Saldo insuficiente' } };
+    // Ferramentas/estações portáteis: a durabilidade da cópia em uso vai junto com o drop.
+    let carried: number | null = null;
+    const limits = hasDurability(body.itemKey) ? await maxDurabilityForItem(body.itemKey) : null;
+    if (limits) {
+      const debit = await takeWithDurability(player.id, body.itemKey, body.qty, { kind: limits.kind, max: limits.max, allowBroken: true });
+      if (!debit.ok) return { event: 'inventory_error', payload: { message: debit.error ?? 'Saldo insuficiente' } };
+      carried = debit.carried;
+    } else {
+      const debit = await applyInventoryDeltas(player.id, [{ itemKey: body.itemKey, qty: -body.qty }]);
+      if (!debit.ok) return { event: 'inventory_error', payload: { message: debit.error ?? 'Saldo insuficiente' } };
     }
     const drop = new WorldDropState();
     drop.id = nanoid();
@@ -776,6 +818,7 @@ export class WorldRoom extends Room<WorldState> {
     drop.x = body.x;
     drop.y = body.y;
     drop.expiresAt = Date.now() + WORLD_DROP_TTL_MS;
+    drop.durability = carried ?? -1;
     this.state.worldDrops.set(drop.id, drop);
     this.holdRoomWhileDropsExist();
     const reply = await this.inventorySnapshot(player.id);
@@ -809,13 +852,27 @@ export class WorldRoom extends Room<WorldState> {
       }
       // Remove first so all clients observe one claimant; restore exactly if credit fails.
       this.state.worldDrops.delete(dropId);
-      const credit = await applyInventoryDeltas(player.id, [{ itemKey: drop.itemKey, qty: drop.qty }]);
+      const credit = await this.creditDrop(player.id, drop);
       if (!credit.ok) {
         this.state.worldDrops.set(drop.id, drop);
         return { event: 'inventory_error', payload: { message: credit.error ?? 'Não foi possível recolher drop' } };
       }
       this.holdRoomWhileDropsExist();
       return this.inventorySnapshot(player.id);
+    });
+  }
+
+  /** Crédito de um drop: itens com durabilidade voltam com a que viajou no drop (estações: 1 por inventário). */
+  private async creditDrop(userId: string, drop: WorldDropState): Promise<{ ok: boolean; error: string | null }> {
+    if (!hasDurability(drop.itemKey)) return applyInventoryDeltas(userId, [{ itemKey: drop.itemKey, qty: drop.qty }]);
+    const limits = await maxDurabilityForItem(drop.itemKey);
+    if (!limits) return applyInventoryDeltas(userId, [{ itemKey: drop.itemKey, qty: drop.qty }]);
+    const def = placeableStationFor(drop.itemKey);
+    const name = def ? ((await getCraftItemsCached())[def.itemId]?.name ?? def.name) : drop.itemKey;
+    return giveWithDurability(userId, drop.itemKey, drop.qty, drop.durability >= 0 ? drop.durability : null, {
+      kind: limits.kind,
+      max: limits.max,
+      ...(def ? { limit: PLACEABLE_STACK_LIMIT, limitMessage: `Você já carrega uma ${name} — solte ou posicione a sua antes de pegar outra` } : {}),
     });
   }
 
@@ -834,8 +891,9 @@ export class WorldRoom extends Room<WorldState> {
    * item se o crédito já estava em curso; o vencido nunca é recolhido.
    */
   private sweepExpiredDrops(): void {
-    if (this.state.worldDrops.size === 0) return;
     const now = Date.now();
+    this.placedStations.sweep(now);
+    if (this.state.worldDrops.size === 0) return;
     const expired: string[] = [];
     this.state.worldDrops.forEach((drop, id) => { if (drop.expiresAt > 0 && drop.expiresAt <= now) expired.push(id); });
     for (const id of expired) {
@@ -856,7 +914,7 @@ export class WorldRoom extends Room<WorldState> {
    * houver drop a sala fica viva; sem drops volta ao descarte automático.
    */
   private holdRoomWhileDropsExist(): void {
-    const shouldHold = this.state.worldDrops.size > 0;
+    const shouldHold = this.state.worldDrops.size > 0 || this.state.placedStations.size > 0;
     if (this.autoDispose === shouldHold) this.autoDispose = !shouldHold;
   }
 
