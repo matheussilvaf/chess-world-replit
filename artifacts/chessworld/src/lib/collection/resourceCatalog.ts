@@ -48,7 +48,7 @@ export interface ResourceDefinition {
 
 /** Rótulos PT-BR por id CURTO (sem o prefixo "mineral:"/"tree:"/…). */
 export const RESOURCE_LABELS: Record<string, string> = {
-  pedra: 'Pedra',
+  pedra: 'Pedra comum',
   carvao: 'Carvão',
   ferro: 'Ferro',
   cobre: 'Cobre',
@@ -156,7 +156,8 @@ export const resourceByKey: ReadonlyMap<string, ResourceDefinition> = new Map(
 
 /**
  * Ícone de DROP (imagem única) — o mesmo visual do inventário de coleta.
- * Animais e hand_stone não têm drop dedicado (usam recorte do sheet).
+ * Animais não têm drop dedicado (usam recorte do sheet); a pedra de mão não
+ * é item — rende `mineral:pedra` (ver yieldItemKeyFor) e usa o ícone dele.
  */
 export const RESOURCE_DROP_ICONS: Record<string, string> = {
   'mineral:pedra': `${RESOURCES_BASE}minerals/drop/drop-stone.png`,

@@ -4175,6 +4175,8 @@ export class WorldScene extends Phaser.Scene {
   public upsertWorldDrop(drop: { id?: string; itemKey: string; qty: number; x: number; y: number }, mapKey?: string, thumb?: CraftThumb) {
     const id = drop.id ?? mapKey;
     if (!id) return;
+    // Cena já destruída (troca de mapa/HMR) com listener do room ainda vivo: nada a desenhar.
+    if (!this.sys?.displayList) return;
     this.removeWorldDrop(id);
     const container = this.add.container(drop.x, drop.y).setDepth(80);
     this.worldDrops.set(id, container);
@@ -4212,6 +4214,9 @@ export class WorldScene extends Phaser.Scene {
       container.add(this.add.image(0, 0, key).setDisplaySize(20, 20));
     };
     if (this.textures.exists(key)) { add(); return; }
+    const fallback = () => {
+      if (container.active && this.worldDrops.get(dropId) === container) container.add(this.add.text(0, 0, 'Item', { fontSize: '8px', color: '#f7d36a' }).setOrigin(0.5));
+    };
     const image = new Image();
     image.onload = () => {
       if (this.textures.exists(key)) { add(); return; }
@@ -4226,13 +4231,20 @@ export class WorldScene extends Phaser.Scene {
           : { x: 0, y: 0, w: image.width, h: image.height };
       const scale = Math.min(20 / source.w, 20 / source.h);
       const w = source.w * scale; const h = source.h * scale;
-      ctx.drawImage(image, source.x, source.y, source.w, source.h, (24 - w) / 2, (24 - h) / 2, w, h);
-      canvas.refresh();
+      try {
+        ctx.drawImage(image, source.x, source.y, source.w, source.h, (24 - w) / 2, (24 - h) / 2, w, h);
+        canvas.refresh();
+      } catch {
+        // Imagem sem CORS "suja" o canvas e o WebGL recusa a textura: cai no rótulo.
+        this.textures.remove(key);
+        fallback();
+        return;
+      }
       add();
     };
-    image.onerror = () => {
-      if (container.active && this.worldDrops.get(dropId) === container) container.add(this.add.text(0, 0, 'Item', { fontSize: '8px', color: '#f7d36a' }).setOrigin(0.5));
-    };
+    image.onerror = fallback;
+    // Ícones de craft items vêm do Storage (outra origem): sem isto o canvas fica "tainted".
+    image.crossOrigin = 'anonymous';
     image.src = url;
   }
 

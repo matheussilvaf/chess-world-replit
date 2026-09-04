@@ -3,6 +3,7 @@ import {
   canCraft,
   classifyCraftEntityId,
   craftableTargetIds,
+  isInventoryItemId,
   missingIngredientsFor,
   recipeOutputQuantity,
   sameIngredientBag,
@@ -135,6 +136,38 @@ describe('validateCraftRecipeConfig — ids de qualquer classe', () => {
       ],
     });
     expect(dup.ok).toBe(false);
+  });
+
+  it('rejeita nós do mapa que não são item (pedra de mão, animais) como alvo ou ingrediente', () => {
+    const asIngredient = validateCraftRecipeConfig({
+      targetId: 'gen:weapon/sword/iron',
+      ingredients: [{ itemId: 'hand_stone', quantity: 1 }],
+    });
+    expect(asIngredient.ok).toBe(false);
+    expect(asIngredient.errors.join(' ')).toContain('hand_stone');
+    expect(
+      validateCraftRecipeConfig({ targetId: 'hand_stone', ingredients: [{ itemId: 'mineral:pedra', quantity: 1 }] }).ok,
+    ).toBe(false);
+    expect(
+      validateCraftRecipeConfig({ targetId: 'barra-de-ouro', ingredients: [{ itemId: 'animal:cow', quantity: 1 }] }).ok,
+    ).toBe(false);
+    // O item que a pedra de mão rende continua válido.
+    expect(
+      validateCraftRecipeConfig({ targetId: 'gen:weapon/sword/iron', ingredients: [{ itemId: 'mineral:pedra', quantity: 1 }] }).ok,
+    ).toBe(true);
+  });
+});
+
+describe('isInventoryItemId', () => {
+  it('aceita gen:, craft items e recursos que rendem a si mesmos; recusa nós e lixo', () => {
+    expect(isInventoryItemId('gen:crafttools/axe/iron')).toBe(true);
+    expect(isInventoryItemId('barra-de-ouro')).toBe(true);
+    expect(isInventoryItemId('mineral:pedra')).toBe(true);
+    expect(isInventoryItemId('bush')).toBe(true);
+    expect(isInventoryItemId('hand_stone')).toBe(false);
+    expect(isInventoryItemId('animal:cow')).toBe(false);
+    expect(isInventoryItemId('')).toBe(false);
+    expect(isInventoryItemId(42)).toBe(false);
   });
 });
 

@@ -19,8 +19,8 @@ import {
   type PlayerCharacterConfigV1,
 } from '../shared/characters/PlayerCharacterShapes.js';
 import { verifySupabaseToken } from '../auth/supabaseAuth.js';
-import { classifyCraftEntityId } from '../shared/craft/CraftShapes.js';
-import { INVENTORY_DROP_MAX_DISTANCE, INVENTORY_PICKUP_MAX_DISTANCE } from '../shared/collection/CollectionShapes.js';
+import { isInventoryItemId } from '../shared/craft/CraftShapes.js';
+import { INVENTORY_DROP_MAX_DISTANCE, INVENTORY_PICKUP_MAX_DISTANCE, yieldItemKeyFor } from '../shared/collection/CollectionShapes.js';
 import { applyInventoryDeltas, getInventory } from '../collection/inventoryRepository.js';
 import { executePlayerCraft } from '../craft/craftService.js';
 
@@ -752,9 +752,11 @@ export class WorldRoom extends Room<WorldState> {
 
   private async handleInventoryDrop(client: Client, data: unknown): Promise<RoomReply> {
     const player = this.state.players.get(client.sessionId);
-    const body = data as { requestId?: unknown; itemKey?: unknown; qty?: unknown; x?: unknown; y?: unknown };
+    const raw = data as { requestId?: unknown; itemKey?: unknown; qty?: unknown; x?: unknown; y?: unknown };
     if (!player || player.id.startsWith('anon:')) return { event: 'inventory_error', payload: { message: 'Autenticação obrigatória' } };
-    if (typeof body.itemKey !== 'string' || classifyCraftEntityId(body.itemKey) === null ||
+    // Chave de NÓ legada (hand_stone) vira o item que ela rende: o drop no mundo nasce canônico.
+    const body = { ...raw, itemKey: typeof raw.itemKey === 'string' ? yieldItemKeyFor(raw.itemKey) : raw.itemKey };
+    if (!isInventoryItemId(body.itemKey) ||
       typeof body.qty !== 'number' || !Number.isInteger(body.qty) || body.qty < 1 || body.qty > 999 ||
       typeof body.x !== 'number' || typeof body.y !== 'number' || !Number.isFinite(body.x) || !Number.isFinite(body.y) ||
       Math.hypot(body.x - player.x, body.y - player.y) > INVENTORY_DROP_MAX_DISTANCE) {

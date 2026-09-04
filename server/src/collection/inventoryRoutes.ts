@@ -6,13 +6,14 @@
  */
 import { Router, type Request, type Response } from 'express';
 import { requireSupabaseAuth } from '../auth/supabaseAuth.js';
-import { COLLECTIBLE_ITEM_KEYS } from '../shared/collection/CollectionShapes.js';
+import { INVENTORY_ITEM_KEYS, yieldItemKeyFor } from '../shared/collection/CollectionShapes.js';
 import { INVENTORY_TABLE_SQL, addToInventory, getInventory } from './inventoryRepository.js';
 
 export const collectionInventoryRouter = Router();
 collectionInventoryRouter.use(requireSupabaseAuth);
 
-const COLLECTIBLE = new Set(COLLECTIBLE_ITEM_KEYS);
+/** Só chaves que podem existir numa pilha (o nó `hand_stone` rende `mineral:pedra`). */
+const COLLECTIBLE = new Set(INVENTORY_ITEM_KEYS);
 
 collectionInventoryRouter.get('/inventory', async (req: Request, res: Response) => {
   const userId = (req as Request & { userId?: string }).userId as string;
@@ -35,10 +36,11 @@ collectionInventoryRouter.post('/collect', async (req: Request, res: Response) =
     res.status(400).json({ error: 'items: lista de 1 a 40 entradas' });
     return;
   }
-  // Agrega por chave e valida contra o conjunto conhecido.
+  // Agrega por chave e valida contra o conjunto conhecido. Clientes antigos
+  // ainda mandam a chave do NÓ (hand_stone): credita o item rendido.
   const totals = new Map<string, number>();
   for (const it of body.items) {
-    const key = String(it?.itemKey ?? '');
+    const key = yieldItemKeyFor(String(it?.itemKey ?? ''));
     const qty = Number(it?.qty);
     if (!COLLECTIBLE.has(key)) {
       res.status(400).json({ error: `itemKey desconhecido: ${key}` });

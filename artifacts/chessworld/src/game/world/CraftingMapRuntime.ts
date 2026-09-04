@@ -56,6 +56,7 @@ import {
   defaultGatherToolFor,
   isGatherToolKind,
   lockedHpFloorFor,
+  yieldItemKeyFor,
   type CollectionWorldConfig,
   type GatherToolKind,
   type ResourceHurtbox,
@@ -175,6 +176,27 @@ export type SwingHit = Pick<PlayerSwingState, 'power' | 'toolKind' | 'toolLevel'
 const GID_FLAGS = 0x0fffffff;
 const FLIPPED_H = 0x80000000;
 const FLIPPED_V = 0x40000000;
+
+/**
+ * Visual do mini-drop de um ITEM de inventário (não do nó): minério/tronco
+ * têm sprite de drop próprio; erva/arbusto/galho reusam a textura reduzida.
+ * Chaveado pelo item para que nós que rendem outro item (pedra de mão →
+ * Pedra comum) soltem exatamente o visual do item creditado.
+ */
+function dropVisualForItem(itemKey: string): { textureKey: string; scale: number } | null {
+  if (itemKey.startsWith('mineral:')) {
+    return { textureKey: mineralDropTextureKey(itemKey.slice('mineral:'.length)), scale: 1 };
+  }
+  if (itemKey.startsWith('tree:')) {
+    return { textureKey: treeDropTextureKey(itemKey.slice('tree:'.length) as TreeType), scale: 1 };
+  }
+  if (itemKey.startsWith('herb:')) {
+    return { textureKey: herbTextureKey(itemKey.slice('herb:'.length)), scale: SELF_DROP_SCALE.herb };
+  }
+  if (itemKey === 'bush') return { textureKey: BUSH.textureKey, scale: SELF_DROP_SCALE.bush };
+  if (itemKey === 'branch') return { textureKey: BRANCH.textureKey, scale: SELF_DROP_SCALE.branch };
+  return null;
+}
 
 export class CraftingMapRuntime {
   private scene: Phaser.Scene;
@@ -1172,39 +1194,19 @@ export class CraftingMapRuntime {
   /**
    * Mini-itens pulam do nó quebrado em setores angulares iguais (+ leve ruído),
    * para nunca nascerem uns por cima dos outros; o imã do updateDrops() coleta.
+   * O item creditado é o RENDIDO pelo nó (pedra de mão → Pedra comum), e o
+   * visual do drop segue esse item — o jogador vê exatamente o que entra.
+   * A quantidade continua configurada pelo nó (dropCounts[node.key]).
    */
   private spawnDrops(node: ResourceNode, x: number, y: number): void {
-    let textureKey: string;
-    let frame: number | undefined;
-    let scale = 1;
-    switch (node.kind) {
-      case 'mineral':
-        textureKey = mineralDropTextureKey(node.id);
-        break;
-      case 'tree':
-        textureKey = treeDropTextureKey(node.id as TreeType);
-        break;
-      case 'herb':
-        textureKey = herbTextureKey(node.id);
-        scale = SELF_DROP_SCALE.herb;
-        break;
-      case 'bush':
-        textureKey = BUSH.textureKey;
-        scale = SELF_DROP_SCALE.bush;
-        break;
-      case 'branch':
-        textureKey = BRANCH.textureKey;
-        scale = SELF_DROP_SCALE.branch;
-        break;
-      case 'hand_stone':
-        textureKey = HAND_STONE.textureKey;
-        frame = 0; // sheet de 10 frames — o drop usa só o primeiro
-        scale = SELF_DROP_SCALE.hand_stone;
-        break;
-      default:
-        return; // nó de animal não usa este caminho — abate usa spawnAnimalDrops()
+    if (node.kind === 'animal') return; // abate usa spawnAnimalDrops()
+    const itemKey = yieldItemKeyFor(node.key);
+    const visual = dropVisualForItem(itemKey);
+    if (!visual) {
+      console.warn(`[CraftingMap] item sem visual de drop: ${itemKey} (nó ${node.key})`);
+      return;
     }
-    this.spawnDropItems(node.key, textureKey, x, y, this.dropCountFor(node.key), scale, frame);
+    this.spawnDropItems(itemKey, visual.textureKey, x, y, this.dropCountFor(node.key), visual.scale);
   }
 
   /** Loop comum dos drops: pop em leque + registro no imã do updateDrops(). */
@@ -1215,7 +1217,6 @@ export class CraftingMapRuntime {
     y: number,
     count: number,
     scale: number,
-    frame?: number,
   ): void {
     const scene = this.scene;
     if (!scene.textures.exists(textureKey)) {
@@ -1230,8 +1231,7 @@ export class CraftingMapRuntime {
     for (let i = 0; i < count; i++) {
       const ang = baseAng + i * sector + (Math.random() - 0.5) * sector * 0.5;
       const rad = baseRadius * (0.8 + 0.2 * Math.random());
-      const spr =
-        frame !== undefined ? scene.add.image(x, y - 8, textureKey, frame) : scene.add.image(x, y - 8, textureKey);
+      const spr = scene.add.image(x, y - 8, textureKey);
       spr.setOrigin(0.5, 0.5);
       spr.setDepth(this.depthForY(y) + 1);
       spr.setScale(0);

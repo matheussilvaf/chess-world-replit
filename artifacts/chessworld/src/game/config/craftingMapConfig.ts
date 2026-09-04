@@ -177,8 +177,11 @@ export const ANIMAL_FLEE = { durationMs: 5000, speedMultiplier: 2.2, triggerRadi
  */
 export const ANIMAL_RESPAWN_PROTECT_MS = 1500;
 
-/** Escala dos mini-drops que reusam a própria textura do recurso. */
-export const SELF_DROP_SCALE = { herb: 0.45, bush: 0.45, hand_stone: 0.6, branch: 0.45 } as const;
+/**
+ * Escala dos mini-drops que reusam a própria textura do recurso (a pedra de
+ * mão não entra: ela rende Pedra comum e usa o drop do minério).
+ */
+export const SELF_DROP_SCALE = { herb: 0.45, bush: 0.45, branch: 0.45 } as const;
 
 export const animalTextureKey = (id: string) => `craft-animal-${id}`;
 export const animalWalkTextureKey = (id: string) => `craft-animal-walk-${id}`;

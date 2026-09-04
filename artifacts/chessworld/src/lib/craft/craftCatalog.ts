@@ -8,6 +8,7 @@
  */
 import type { GeneratorManifest } from '../character-generator/types';
 import { CRAFTTOOLS_CATEGORY, WEAPON_CATEGORY } from '../../shared/combat/WeaponShapes';
+import { yieldItemKeyFor } from '../../shared/collection/CollectionShapes';
 import type { CraftItemConfig } from '../../shared/craft/CraftShapes';
 import {
   RESOURCE_DEFINITIONS,
@@ -143,7 +144,11 @@ export function buildCraftCatalog(
 
   for (const group of RESOURCE_GROUPS) {
     const meta = GROUP_SECTIONS[group];
-    const entries = RESOURCE_DEFINITIONS.filter((def) => def.group === group).map(
+    // Nós que rendem OUTRO item (pedra de mão → Pedra comum) não são itens:
+    // ficam fora do manual para nunca virarem ingrediente/alvo inatingível.
+    const entries = RESOURCE_DEFINITIONS.filter(
+      (def) => def.group === group && yieldItemKeyFor(def.key) === def.key,
+    ).map(
       (def): CraftCatalogEntry => {
         const dropIcon = RESOURCE_DROP_ICONS[def.key];
         return {

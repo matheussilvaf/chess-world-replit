@@ -46,9 +46,39 @@ export const RESOURCE_KEYS: readonly string[] = [
   'animal:chicken',
 ];
 
-/** Itens que entram no inventário (tudo menos os nós de animal — o que entra é o drop do abate). */
+/**
+ * Recursos com config própria no admin (itens por quebra, HP, ferramenta,
+ * nível, respawn): tudo menos os nós de animal — o que entra pelo abate é o
+ * drop. ATENÇÃO: nem toda chave daqui é um item de inventário — veja
+ * `yieldItemKeyFor`/`INVENTORY_ITEM_KEYS`.
+ */
 export const COLLECTIBLE_ITEM_KEYS: readonly string[] = RESOURCE_KEYS.filter(
   (k) => !k.startsWith('animal:'),
+);
+
+/**
+ * Recursos cujo drop é OUTRO item do inventário (nó → item rendido).
+ * A pedra de mão (`hand_stone`) não é um item: colher uma rende a mesma
+ * "Pedra comum" (`mineral:pedra`) que a mineração — mesma pilha, mesmas
+ * receitas. As chaves do nó continuam existindo para config/hurtbox no admin.
+ */
+export const RESOURCE_YIELD_ITEM_KEYS: Readonly<Record<string, string>> = {
+  hand_stone: 'mineral:pedra',
+};
+
+/** A chave é um NÓ que rende outro item (logo, nunca é item de inventário)? */
+export function isYieldOnlyResourceKey(key: string): boolean {
+  return Object.prototype.hasOwnProperty.call(RESOURCE_YIELD_ITEM_KEYS, key);
+}
+
+/** Item de inventário rendido ao colher um recurso (a própria chave, salvo os mapeados acima). */
+export function yieldItemKeyFor(resourceKey: string): string {
+  return isYieldOnlyResourceKey(resourceKey) ? RESOURCE_YIELD_ITEM_KEYS[resourceKey] : resourceKey;
+}
+
+/** Chaves que podem de fato existir numa pilha do inventário (recursos que rendem a si mesmos). */
+export const INVENTORY_ITEM_KEYS: readonly string[] = COLLECTIBLE_ITEM_KEYS.filter(
+  (k) => yieldItemKeyFor(k) === k,
 );
 
 /**

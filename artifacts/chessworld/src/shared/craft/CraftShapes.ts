@@ -9,7 +9,9 @@
  *     (ex.: "gen:crafttools/axe/stone", "gen:weapon/sword/default");
  *   - recursos do Mundo de Coleta: chave crua do inventário de coleta
  *     ("mineral:pedra", "tree:pinheiro_peao", "herb:heal_herb", "bush",
- *     "hand_stone", "animal:cow" — ver RESOURCE_KEYS no CollectionShapes);
+ *     "animal:cow" — ver RESOURCE_KEYS no CollectionShapes; nós que rendem
+ *     OUTRO item, como "hand_stone" → "mineral:pedra", não são itens —
+ *     ver yieldItemKeyFor);
  *   - CRAFT ITEMS criados no admin (ex.: "barra-de-ouro"): slug + imagem.
  *
  * CRAFT RECIPES: alvo (targetId) + multiset de 1..9 ingredientes
@@ -31,7 +33,7 @@
  *   - artifacts/api-server/src/src/shared/craft/CraftShapes.ts
  * Keep it free of Phaser/DOM/Node dependencies.
  */
-import { RESOURCE_KEYS } from '../collection/CollectionShapes.js';
+import { INVENTORY_ITEM_KEYS, RESOURCE_KEYS } from '../collection/CollectionShapes.js';
 
 /** Craft item ids (itens criados no admin) são slugs minúsculos. */
 export const CRAFT_ITEM_ID_RE = /^[a-z0-9][a-z0-9_-]{0,47}$/;
@@ -66,6 +68,21 @@ export function classifyCraftEntityId(id: unknown): CraftEntityKind | null {
   if (RESOURCE_KEY_SET.has(id)) return 'resource';
   if (CRAFT_ITEM_ID_RE.test(id)) return 'custom';
   return null;
+}
+
+const INVENTORY_RESOURCE_SET: ReadonlySet<string> = new Set(INVENTORY_ITEM_KEYS);
+
+/**
+ * O id pode existir numa pilha do inventário (logo, ser ingrediente/alvo de
+ * receita ou sofrer delta)? Refs gen: e craft items sempre; chaves de recurso
+ * só as que rendem a si mesmas — nós de animal e nós que rendem OUTRO item
+ * (pedra de mão → Pedra comum) são recurso do mapa, não item.
+ */
+export function isInventoryItemId(id: unknown): id is string {
+  const kind = classifyCraftEntityId(id);
+  if (kind === null) return false;
+  if (kind === 'resource') return INVENTORY_RESOURCE_SET.has(id as string);
+  return true;
 }
 
 export interface CraftItemConfig {
@@ -173,6 +190,8 @@ export function validateCraftRecipeConfig(
   const targetKind = classifyCraftEntityId(targetId);
   if (targetKind === null) {
     errors.push('targetId: id de item inválido (ref gen:, chave de recurso ou slug de craft item)');
+  } else if (!isInventoryItemId(targetId)) {
+    errors.push(`targetId: "${String(targetId)}" é um nó do mapa, não um item de inventário`);
   }
   const ingredients = value.ingredients;
   if (!Array.isArray(ingredients) || ingredients.length < 1 || ingredients.length > MAX_RECIPE_INGREDIENTS) {
@@ -190,6 +209,9 @@ export function validateCraftRecipeConfig(
     if (typeof itemId !== 'string' || kind === null) {
       errors.push(`ingredients[${i}].itemId: id de item inválido`);
     } else {
+      if (!isInventoryItemId(itemId)) {
+        errors.push(`ingredients[${i}].itemId: "${itemId}" é um nó do mapa, não um item de inventário`);
+      }
       if (itemId === targetId) {
         errors.push(`ingredients[${i}].itemId: a receita não pode consumir o próprio item`);
       }

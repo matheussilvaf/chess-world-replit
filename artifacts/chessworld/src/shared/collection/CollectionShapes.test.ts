@@ -5,13 +5,16 @@
  */
 import { describe, expect, it } from 'vitest';
 import {
+  COLLECTIBLE_ITEM_KEYS,
   COLLECTION_CONFIG_ID,
   DEFAULT_INVENTORY_SLOTS,
   GATHER_LOCK_HP_RATIO,
   GATHER_TOOL_KINDS,
   GATHER_TOOL_LABELS,
   INVENTORY_COLUMNS,
+  INVENTORY_ITEM_KEYS,
   INVENTORY_SLOTS_RANGE,
+  RESOURCE_KEYS,
   RESOURCE_MIN_LEVEL_RANGE,
   defaultGatherToolFor,
   isGatherToolKind,
@@ -19,7 +22,32 @@ import {
   lockedHpFloorFor,
   resolveInventorySlots,
   validateCollectionWorldConfig,
+  yieldItemKeyFor,
 } from './CollectionShapes.js';
+
+describe('yieldItemKeyFor (nó → item rendido)', () => {
+  it('pedra de mão rende a Pedra comum da mineração (mesma pilha)', () => {
+    expect(yieldItemKeyFor('hand_stone')).toBe('mineral:pedra');
+  });
+
+  it('os demais recursos rendem a si mesmos', () => {
+    expect(yieldItemKeyFor('mineral:pedra')).toBe('mineral:pedra');
+    expect(yieldItemKeyFor('tree:pinheiro_peao')).toBe('tree:pinheiro_peao');
+    expect(yieldItemKeyFor('bush')).toBe('bush');
+    expect(yieldItemKeyFor('beef')).toBe('beef');
+  });
+
+  it('todo item rendido é uma chave de recurso conhecida', () => {
+    for (const key of RESOURCE_KEYS) expect(RESOURCE_KEYS).toContain(yieldItemKeyFor(key));
+  });
+
+  it('INVENTORY_ITEM_KEYS exclui só as chaves que rendem outro item; hand_stone segue configurável', () => {
+    expect(INVENTORY_ITEM_KEYS).not.toContain('hand_stone');
+    expect(INVENTORY_ITEM_KEYS).toContain('mineral:pedra');
+    expect(COLLECTIBLE_ITEM_KEYS).toContain('hand_stone');
+    expect(INVENTORY_ITEM_KEYS.length).toBe(COLLECTIBLE_ITEM_KEYS.length - 1);
+  });
+});
 
 const baseConfig = () => ({
   configId: COLLECTION_CONFIG_ID,

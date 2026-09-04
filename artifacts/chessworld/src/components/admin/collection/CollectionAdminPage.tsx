@@ -28,6 +28,7 @@ import {
   type GatherToolKind,
   type ResourceHurtbox,
   validateCollectionWorldConfig,
+  yieldItemKeyFor,
 } from '../../../shared/collection/CollectionShapes';
 import {
   ANIMAL_FLEE,
@@ -40,6 +41,7 @@ import {
   RESOURCE_DEFINITIONS,
   RESOURCE_GROUPS,
   RESOURCE_LABELS,
+  resourceByKey,
   type ResourceDefinition,
 } from '../../../lib/collection/resourceCatalog';
 import { RigApiError } from '../rig-editor/rigApi';
@@ -870,6 +872,7 @@ export function CollectionAdminPage() {
                   }
                   const customHurtbox = hurtboxes[resource.key];
                   const hurtbox = customHurtbox ?? fullFrame(resource.frameWidth, resource.frameHeight);
+                  const yieldKey = yieldItemKeyFor(resource.key);
                   return (
                     <div key={resource.key} className="flex flex-col gap-3 rounded-lg border border-slate-700/50 bg-slate-950/40 p-3 sm:flex-row">
                       <SpritePreview
@@ -884,7 +887,15 @@ export function CollectionAdminPage() {
                         <div className="flex items-start justify-between gap-2">
                           <span>
                             <span className="block text-xs font-medium text-slate-200">{resource.label}</span>
-                            <span className="mb-2 block truncate font-mono text-[9px] text-slate-600">{resource.key}</span>
+                            <span className="block truncate font-mono text-[9px] text-slate-600">{resource.key}</span>
+                            {yieldKey !== resource.key ? (
+                              <span className="mb-2 block text-[10px] text-amber-200/80" title="Colher este nó credita o item indicado, na mesma pilha da mineração">
+                                Rende: {resourceByKey.get(yieldKey)?.label ?? yieldKey}{' '}
+                                <span className="font-mono text-[9px] text-slate-500">({yieldKey})</span>
+                              </span>
+                            ) : (
+                              <span className="mb-2 block" />
+                            )}
                           </span>
                           <button
                             type="button"
