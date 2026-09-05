@@ -3,22 +3,22 @@
  *
  * Uma página, duas seções, UM documento salvo de uma vez (botão Salvar):
  *   Energia → máximos globais, custos por ação, condições (fome/fraco/morte),
- *             velocidade fraco e energia por comida (itens com badge `food`).
- *   Skills  → fórmula de nível (Base/Taxa/máximo) e XP por ação de cada
- *             habilidade; listas por badge (`forging`, `smelting`), por
- *             recurso (mineração/lenhador) e da aba "Cozinhar" da fornalha.
+ *             velocidade fraco e energia por comida (itens com badge `edible`).
+ *   Skills  → fórmula de nível (Base/Taxa/máximo), nome de cada habilidade
+ *             (clique no nome para editar) e XP por ação; listas por badge
+ *             (`forging`, `smelting`, `food`) e por recurso (mineração/lenhador).
  *
- * As listas por badge/aba vêm do próprio jogo (badges do /admin/craft e abas
- * do Stations Controller): o admin só preenche os números.
+ * As listas por badge vêm do próprio jogo (badges do /admin/craft): o admin
+ * só preenche os números.
  */
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useMemo, useState, type KeyboardEvent, type ReactNode } from 'react';
 import { Link } from 'react-router-dom';
-import { ArrowLeft, Copy, Drumstick, Loader2, Plus, RefreshCw, RotateCcw, Save, Sparkles, Trash2 } from 'lucide-react';
+import { ArrowLeft, Copy, Drumstick, Loader2, Pencil, Plus, RefreshCw, RotateCcw, Save, Sparkles, Trash2 } from 'lucide-react';
 import {
   BASE_XP_RANGE,
+  DEFAULT_COOKING_XP,
   DEFAULT_CRAFT_XP,
   DEFAULT_ENERGY_SKILLS_CONFIG,
-  DEFAULT_FOOD_PICKUP_XP,
   DEFAULT_NODE_XP,
   ENERGY_COST_RANGE,
   ENERGY_RANGE,
@@ -30,27 +30,30 @@ import {
   MAX_ENERGY_THRESHOLDS,
   MAX_LEVEL_RANGE,
   MINING_RESOURCE_KEYS,
+  SKILL_LABELS,
+  SKILL_NAME_MAX_LEN,
   STRIKE_EVERY_RANGE,
   WEAK_SPEED_RANGE,
   WOODCUTTING_RESOURCE_KEYS,
   XP_RATE_RANGE,
   XP_VALUE_RANGE,
-  isCookingTab,
   parseEnergySkillsConfig,
+  skillName,
   xpToNextLevel,
   type EnergySkillsConfig,
   type EnergyThreshold,
   type EnergyThresholdAction,
   type EnergyToolKind,
+  type SkillId,
 } from '../../../shared/progress/EnergySkillsShapes';
-import { BADGE_FOOD, BADGE_FORGING, BADGE_SMELTING, itemsWithBadge, type CraftBadgeMap } from '../../../shared/craft/CraftBadges';
-import { STATION_IDS, type StationConfig, type StationId } from '../../../shared/craft/StationShapes';
+import { BADGE_EDIBLE, BADGE_FOOD, BADGE_FORGING, BADGE_SMELTING, isEdibleItem, itemsWithBadge, type CraftBadgeMap } from '../../../shared/craft/CraftBadges';
+import { STATION_IDS, type StationId } from '../../../shared/craft/StationShapes';
+import { useDocumentScrollUnlock } from '../../../hooks/useDocumentScrollUnlock';
 import { resourceByKey } from '../../../lib/collection/resourceCatalog';
 import { inventoryEntry, inventoryFallbackName, useInventoryVisualCatalog } from '../../../lib/inventory/inventoryVisualCatalog';
 import { RigApiError } from '../rig-editor/rigApi';
 import { CatalogThumb } from '../craft/CatalogThumb';
 import { craftApi } from '../craft/craftApi';
-import { stationsApi } from '../stations/stationsApi';
 import { energySkillsApi } from './energySkillsApi';
 
 const inputClass =
@@ -115,7 +118,7 @@ function NumberField({
   );
 }
 
-function Section({ title, subtitle, icon, children }: { title: string; subtitle?: string; icon: ReactNode; children: ReactNode }) {
+function Section({ title, subtitle, icon, children }: { title: ReactNode; subtitle?: string; icon: ReactNode; children: ReactNode }) {
   return (
     <section className="rounded-xl border border-slate-700/60 bg-slate-900/70 p-4">
       <div className="mb-4 flex items-center gap-3">
@@ -153,6 +156,7 @@ function Row({ label, detail, children }: { label: ReactNode; detail?: string; c
 }
 
 export function SkillsEnergyPage() {
+  useDocumentScrollUnlock();
   const catalog = useInventoryVisualCatalog();
   const [config, setConfig] = useState<EnergySkillsConfig>(() => clone(DEFAULT_ENERGY_SKILLS_CONFIG));
   const [saved, setSaved] = useState<EnergySkillsConfig>(() => clone(DEFAULT_ENERGY_SKILLS_CONFIG));
@@ -166,7 +170,6 @@ export function SkillsEnergyPage() {
   const [tableSql, setTableSql] = useState<string | null>(null);
   const [progressTableSql, setProgressTableSql] = useState<string | null>(null);
   const [badges, setBadges] = useState<CraftBadgeMap>({});
-  const [stations, setStations] = useState<StationConfig[]>([]);
   // Aba inicial pelo hash (#skills) — dá para linkar direto da administração.
   const [tab, setTabState] = useState<'energy' | 'skills'>(() =>
     typeof window !== 'undefined' && window.location.hash === '#skills' ? 'skills' : 'energy',
@@ -194,10 +197,9 @@ export function SkillsEnergyPage() {
     setError(null);
     setSuccess(null);
     try {
-      const [res, badgesRes, stationsRes] = await Promise.all([
+      const [res, badgesRes] = await Promise.all([
         energySkillsApi.get(),
         craftApi.badges.list().catch(() => null),
-        stationsApi.list().catch(() => null),
       ]);
       // `config` pode vir null (servidor antigo sem tabela/linha) ou fora do
       // formato: normaliza pelo parser, que preenche os defaults.
@@ -211,7 +213,6 @@ export function SkillsEnergyPage() {
       setTableSql(res.tableMissing ? (res.tableSql ?? null) : null);
       setProgressTableSql(res.progressTableSql ?? null);
       setBadges(badgesRes?.badges ?? {});
-      setStations(stationsRes?.stations ?? []);
     } catch (cause) {
       applyError(cause);
     } finally {
@@ -259,23 +260,13 @@ export function SkillsEnergyPage() {
   };
 
   // ------------------------------------------------------------ listas derivadas
+  /** Culinária: tudo que tem pelo menos `food` (ingrediente ou prato). */
   const foodItems = useMemo(() => itemsWithBadge(badges, BADGE_FOOD), [badges]);
+  /** Comer: só o que tem `edible` (energia por unidade). */
+  const edibleItems = useMemo(() => itemsWithBadge(badges, BADGE_EDIBLE), [badges]);
   const forgingItems = useMemo(() => itemsWithBadge(badges, BADGE_FORGING), [badges]);
   const smeltingItems = useMemo(() => itemsWithBadge(badges, BADGE_SMELTING), [badges]);
-  const cookingItems = useMemo(() => {
-    const ids: string[] = [];
-    for (const station of stations) {
-      for (const stationTab of station.tabs) {
-        if (!isCookingTab(String(station.stationId), stationTab.name)) continue;
-        for (const row of stationTab.rows) for (const id of row) if (!ids.includes(id)) ids.push(id);
-      }
-    }
-    return ids;
-  }, [stations]);
-  const hasCookingTab = useMemo(
-    () => stations.some((s) => s.tabs.some((t) => isCookingTab(String(s.stationId), t.name))),
-    [stations],
-  );
+  const foodTag = (id: string) => (isEdibleItem(badges, id) ? 'comestível' : 'ingrediente');
 
   const nameOf = (id: string) => inventoryEntry(catalog, id)?.name ?? inventoryFallbackName(id);
   const thumbOf = (id: string) => inventoryEntry(catalog, id)?.thumb ?? null;
@@ -290,12 +281,14 @@ export function SkillsEnergyPage() {
     onChange: (id: string, value: number) => void,
     suffix: string,
     empty: string,
+    tagOf?: (id: string) => string | null,
   ) =>
     ids.length === 0 ? (
       <p className="py-2 text-[11px] text-slate-500">{empty}</p>
     ) : (
       ids.map((id) => {
         const thumb = thumbOf(id);
+        const tag = tagOf?.(id) ?? null;
         return (
           <Row
             key={id}
@@ -303,6 +296,15 @@ export function SkillsEnergyPage() {
               <span className="flex items-center gap-2">
                 {thumb && <CatalogThumb thumb={thumb} size={24} />}
                 <span className="truncate">{nameOf(id)}</span>
+                {tag && (
+                  <span
+                    className={`shrink-0 rounded border px-1 py-px text-[9px] font-mono uppercase tracking-wide ${
+                      tag === 'comestível' ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-300' : 'border-slate-600/50 bg-slate-700/30 text-slate-400'
+                    }`}
+                  >
+                    {tag}
+                  </span>
+                )}
               </span>
             }
             detail={id}
@@ -312,6 +314,11 @@ export function SkillsEnergyPage() {
         );
       })
     );
+
+  const renameSkill = (id: SkillId, name: string) => update((d) => { d.skills.names[id] = name; });
+  const skillTitle = (id: SkillId) => (
+    <SkillNameEditor id={id} value={skillName(config.skills, id)} disabled={disabled} onCommit={(name) => renameSkill(id, name)} />
+  );
 
   const levelPreview = useMemo(() => {
     const rows: Array<{ level: number; xp: number }> = [];
@@ -537,18 +544,18 @@ export function SkillsEnergyPage() {
             <div className="xl:col-span-2">
               <Section
                 title="Comidas"
-                subtitle="Itens com a badge `food` (definida em /admin/craft). Comer = arrastar para a hotbar e clicar: cada unidade repõe esta energia; o jogador come só o necessário até encher."
+                subtitle="Itens com a badge `edible` (comestíveis, definida em /admin/craft). Itens só com `food` são ingredientes e não podem ser comidos. Comer = arrastar para a hotbar e clicar: cada unidade repõe esta energia; o jogador come só o necessário até encher."
                 icon={<div className="rounded-lg border border-emerald-500/30 bg-emerald-500/10 p-2"><Drumstick className="h-4 w-4 text-emerald-300" /></div>}
               >
                 <Block title="Energia por unidade" hint="0 = alimento ainda sem energia (não dá para comer).">
                   {itemRows(
-                    foodItems,
+                    edibleItems,
                     config.energy.foods,
                     0,
                     FOOD_ENERGY_RANGE,
                     (id, v) => update((d) => { d.energy.foods[id] = v; }),
                     'energia',
-                    'Nenhum item com a badge `food` ainda. Adicione a badge em /admin/craft.',
+                    'Nenhum item com a badge `edible` ainda. Adicione `food` + `edible` em /admin/craft.',
                   )}
                 </Block>
               </Section>
@@ -588,7 +595,7 @@ export function SkillsEnergyPage() {
               </Section>
             </div>
 
-            <Section title="Mineração (Mining)" subtitle="XP por nó mineral quebrado." icon={<SkillIcon />}>
+            <Section title={skillTitle('mining')} subtitle="XP por nó mineral quebrado." icon={<SkillIcon />}>
               <Block title="Por mineral">
                 {MINING_RESOURCE_KEYS.map((key) => (
                   <Row key={key} label={resourceLabel(key)} detail={key}>
@@ -598,7 +605,7 @@ export function SkillsEnergyPage() {
               </Block>
             </Section>
 
-            <Section title="Lenhador (Woodcutting)" subtitle="XP por árvore derrubada." icon={<SkillIcon />}>
+            <Section title={skillTitle('woodcutting')} subtitle="XP por árvore derrubada." icon={<SkillIcon />}>
               <Block title="Por árvore">
                 {WOODCUTTING_RESOURCE_KEYS.map((key) => (
                   <Row key={key} label={resourceLabel(key)} detail={key}>
@@ -608,7 +615,7 @@ export function SkillsEnergyPage() {
               </Block>
             </Section>
 
-            <Section title="Combate (Fighting)" subtitle="XP ao terminar uma luta." icon={<SkillIcon />}>
+            <Section title={skillTitle('fighting')} subtitle="XP ao terminar uma luta." icon={<SkillIcon />}>
               <Block title="Contra jogadores">
                 <Row label="Vencer" detail="skills.fighting.pvpWin">
                   <NumberField value={config.skills.fighting.pvpWin} range={XP_VALUE_RANGE} onChange={(v) => update((d) => { d.skills.fighting.pvpWin = v; })} disabled={disabled} suffix="XP" label="PvP vencer" />
@@ -629,17 +636,17 @@ export function SkillsEnergyPage() {
               </div>
             </Section>
 
-            <Section title="Caça (Hunting)" subtitle="Sem regras por enquanto." icon={<SkillIcon muted />}>
+            <Section title={skillTitle('hunting')} subtitle="Sem regras por enquanto." icon={<SkillIcon muted />}>
               <p className="text-xs text-slate-500">Habilidade reservada — aparece no personagem no nível 1, sem forma de ganhar XP ainda.</p>
             </Section>
 
-            <Section title="Forja (Forging)" subtitle="Itens com a badge `forging`: XP ao forjar (× quantidade)." icon={<SkillIcon />}>
+            <Section title={skillTitle('forging')} subtitle="Itens com a badge `forging`: XP ao forjar (× quantidade)." icon={<SkillIcon />}>
               <Block title="Por item">
                 {itemRows(forgingItems, config.skills.forging, DEFAULT_CRAFT_XP, XP_VALUE_RANGE, (id, v) => update((d) => { d.skills.forging[id] = v; }), 'XP', 'Nenhum item com a badge `forging`. Adicione em /admin/craft.')}
               </Block>
             </Section>
 
-            <Section title="Fundição (Smelting)" subtitle="Itens com a badge `smelting`: XP ao fundir (× quantidade)." icon={<SkillIcon />}>
+            <Section title={skillTitle('smelting')} subtitle="Itens com a badge `smelting`: XP ao fundir (× quantidade)." icon={<SkillIcon />}>
               <Block title="Por item">
                 {itemRows(smeltingItems, config.skills.smelting, DEFAULT_CRAFT_XP, XP_VALUE_RANGE, (id, v) => update((d) => { d.skills.smelting[id] = v; }), 'XP', 'Nenhum item com a badge `smelting`. Adicione em /admin/craft.')}
               </Block>
@@ -647,46 +654,100 @@ export function SkillsEnergyPage() {
 
             <div className="xl:col-span-2">
               <Section
-                title="Culinária (Cooking)"
-                subtitle="Cozinhar na fornalha, coletar comida do chão e comer."
+                title={skillTitle('cooking')}
+                subtitle="Todo item com pelo menos a badge `food` — prato ou ingrediente. O XP é por unidade obtida: ao cozinhar (× quantidade, em qualquer estação) ou ao coletar do chão (ex.: carne crua)."
                 icon={<SkillIcon />}
               >
-                <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
-                  <Block title='Itens da aba "Cozinhar" da fornalha' hint="XP ao criar cada item (× quantidade). A aba é reconhecida pelo nome (Cozinhar/Cooking/Culinária).">
+                <div className="grid grid-cols-1 gap-3 md:grid-cols-[3fr_2fr]">
+                  <Block title="Itens com a badge `food`" hint="`comestível` = também tem `edible` (pode ser comido); `ingrediente` = só `food`.">
                     {itemRows(
-                      cookingItems,
-                      config.skills.cooking.craft,
-                      DEFAULT_CRAFT_XP,
+                      foodItems,
+                      config.skills.cooking.items,
+                      DEFAULT_COOKING_XP,
                       XP_VALUE_RANGE,
-                      (id, v) => update((d) => { d.skills.cooking.craft[id] = v; }),
+                      (id, v) => update((d) => { d.skills.cooking.items[id] = v; }),
                       'XP',
-                      hasCookingTab ? 'A aba de cozinhar ainda não tem itens.' : 'A fornalha ainda não tem uma aba chamada "Cozinhar" (Stations Controller).',
+                      'Nenhum item com a badge `food` ainda. Adicione em /admin/craft.',
+                      foodTag,
                     )}
                   </Block>
-                  <div className="space-y-3">
-                    <Block title="Comer">
-                      <Row label="XP a cada vez que come" detail="skills.cooking.eat">
-                        <NumberField value={config.skills.cooking.eat} range={XP_VALUE_RANGE} onChange={(v) => update((d) => { d.skills.cooking.eat = v; })} disabled={disabled} suffix="XP" label="Comer: XP" />
-                      </Row>
-                    </Block>
-                    <Block title="Coletar comida do chão" hint="Itens com a badge `food` que caem de nós/animais: XP por unidade coletada.">
-                      {itemRows(foodItems, config.skills.cooking.pickup, DEFAULT_FOOD_PICKUP_XP, XP_VALUE_RANGE, (id, v) => update((d) => { d.skills.cooking.pickup[id] = v; }), 'XP', 'Nenhum item com a badge `food` ainda.')}
-                    </Block>
-                  </div>
+                  <Block title="Comer">
+                    <Row label="XP a cada vez que come" detail="skills.cooking.eat">
+                      <NumberField value={config.skills.cooking.eat} range={XP_VALUE_RANGE} onChange={(v) => update((d) => { d.skills.cooking.eat = v; })} disabled={disabled} suffix="XP" label="Comer: XP" />
+                    </Row>
+                  </Block>
                 </div>
               </Section>
             </div>
 
-            <Section title="Alquimia (Alchemy)" subtitle="Itens com a badge `potion` — sem regras por enquanto." icon={<SkillIcon muted />}>
+            <Section title={skillTitle('alchemy')} subtitle="Itens com a badge `potion` — sem regras por enquanto." icon={<SkillIcon muted />}>
               <p className="text-xs text-slate-500">Reservada: o servidor já reconhece a badge `potion`, mas ainda não concede XP.</p>
             </Section>
-            <Section title="Comércio (Trading)" subtitle="Sem regras por enquanto." icon={<SkillIcon muted />}>
+            <Section title={skillTitle('trading')} subtitle="Sem regras por enquanto." icon={<SkillIcon muted />}>
               <p className="text-xs text-slate-500">Reservada para o futuro sistema de trocas.</p>
             </Section>
           </div>
         )}
       </div>
     </div>
+  );
+}
+
+/**
+ * Nome da habilidade editável no lugar: clique vira input; Enter/blur salva no
+ * rascunho (entra no documento com o botão Salvar), Esc cancela, vazio volta
+ * ao nome anterior.
+ */
+function SkillNameEditor({ id, value, disabled, onCommit }: { id: SkillId; value: string; disabled: boolean; onCommit: (name: string) => void }) {
+  const [draft, setDraft] = useState<string | null>(null);
+  const editing = draft !== null;
+  const commit = () => {
+    if (draft === null) return;
+    const name = draft.trim().replace(/\s+/g, ' ').slice(0, SKILL_NAME_MAX_LEN);
+    setDraft(null);
+    if (name.length > 0 && name !== value) onCommit(name);
+  };
+  const onKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
+    if (event.key === 'Enter') {
+      event.preventDefault();
+      commit();
+    } else if (event.key === 'Escape') {
+      event.preventDefault();
+      setDraft(null);
+    }
+  };
+  const isDefault = value === SKILL_LABELS[id];
+  return (
+    <span className="flex flex-wrap items-center gap-2">
+      {editing ? (
+        <input
+          autoFocus
+          value={draft}
+          maxLength={SKILL_NAME_MAX_LEN}
+          onChange={(event) => setDraft(event.target.value)}
+          onBlur={commit}
+          onKeyDown={onKeyDown}
+          aria-label={`Nome da habilidade ${id}`}
+          className={`${inputClass} w-44 py-1 text-sm font-semibold`}
+        />
+      ) : (
+        <button
+          type="button"
+          onClick={() => setDraft(value)}
+          disabled={disabled}
+          title="Clique para renomear a habilidade"
+          data-testid={`skill-name-${id}`}
+          className="group inline-flex items-center gap-1.5 rounded-md border border-transparent px-1 py-0.5 text-left text-sm font-semibold text-slate-100 transition-colors hover:border-slate-700/70 hover:bg-slate-800/70 disabled:cursor-not-allowed disabled:opacity-60"
+        >
+          <span>{value}</span>
+          <Pencil className="h-3 w-3 text-slate-500 opacity-60 transition-opacity group-hover:opacity-100" />
+        </button>
+      )}
+      <span className="font-mono text-[10px] text-slate-500">
+        {id}
+        {!isDefault && <span className="ml-1 text-slate-600">· padrão: {SKILL_LABELS[id]}</span>}
+      </span>
+    </span>
   );
 }
 

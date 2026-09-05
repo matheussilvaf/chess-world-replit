@@ -7,7 +7,7 @@
  * inventário), porque a janela pode estar fechada.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { AlertTriangle, Backpack, X } from 'lucide-react';
+import { AlertTriangle, Backpack, Sparkles, X } from 'lucide-react';
 import { usePlayerCharacterStore } from '../../stores/playerCharacterStore';
 import { useCollectionInventoryStore, weaponSlotIndex } from '../../stores/collectionInventoryStore';
 import { useInventoryUiStore } from '../../stores/inventoryUiStore';
@@ -17,7 +17,7 @@ import { canEat, eat } from '../../game/progress/eatBridge';
 import { loadCraftBadges, useInventoryVisualCatalog } from '../../lib/inventory/inventoryVisualCatalog';
 import { toolDurabilityView } from '../../lib/inventory/toolDurability';
 import { isPlaceableStationItemKey } from '../../shared/craft/PlaceableStations';
-import { BADGE_FOOD, itemHasBadge, type CraftBadgeMap } from '../../shared/craft/CraftBadges';
+import { isEdibleItem, type CraftBadgeMap } from '../../shared/craft/CraftBadges';
 import { durabilityLabel } from './inventory/DurabilityBar';
 import { EnergyBar } from './EnergyBar';
 import { InventorySlotCell } from './inventory/InventorySlotCell';
@@ -73,6 +73,8 @@ export function ToolHotbar() {
   const eatingKey = useProgressStore((s) => s.eatingKey);
   const setEating = useProgressStore((s) => s.setEating);
   const foods = useProgressStore((s) => s.config.energy.foods);
+  const skillsOpen = useProgressStore((s) => s.skillsOpen);
+  const toggleSkills = useProgressStore((s) => s.toggleSkills);
   const [badges, setBadges] = useState<CraftBadgeMap | null>(null);
   const barRef = useRef<HTMLDivElement | null>(null);
   const eatTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -82,10 +84,11 @@ export function ToolHotbar() {
     if (character && ready) ensureLoaded();
   }, [character, ready, ensureLoaded]);
 
-  // Badges (`food`) decidem o que o clique faz num item comum.
+  // Badges decidem o que o clique faz num item comum: só `edible` come
+  // (`food` sozinha é ingrediente e se comporta como item normal).
   useEffect(() => {
     let cancelled = false;
-    loadCraftBadges().then((map) => { if (!cancelled) setBadges(map); }).catch(() => { /* sem badges: nada é comida */ });
+    loadCraftBadges().then((map) => { if (!cancelled) setBadges(map); }).catch(() => { /* sem badges: nada é comestível */ });
     return () => { cancelled = true; };
   }, []);
   useEffect(() => () => { if (eatTimerRef.current) clearTimeout(eatTimerRef.current); }, []);
@@ -132,7 +135,7 @@ export function ToolHotbar() {
 
   if (!character || !ready) return null;
 
-  const isFood = (key: string) => !!badges && itemHasBadge(badges, key, BADGE_FOOD);
+  const isEdible = (key: string) => !!badges && isEdibleItem(badges, key);
 
   /** Comer: loader de EAT_MS no slot e SÓ então o pedido vai à sala. */
   const startEating = (key: string) => {
@@ -171,7 +174,7 @@ export function ToolHotbar() {
       send?.(live !== key, key);
       return;
     }
-    if (isFood(key)) {
+    if (isEdible(key)) {
       startEating(key);
       return;
     }
@@ -212,7 +215,7 @@ export function ToolHotbar() {
               const hint = key
                 ? isTool(key)
                   ? live === key ? 'Ferramenta equipada — clique para guardar' : 'Clique para equipar a ferramenta'
-                  : isFood(key)
+                  : isEdible(key)
                     ? eatingKey === key ? 'Comendo…' : `Clique para comer${foods[key] ? ` (+${foods[key]} energia cada)` : ''}`
                     : undefined
                 : 'Slot vazio';
@@ -251,6 +254,21 @@ export function ToolHotbar() {
           >
             <Backpack className="h-4 w-4" />
             <span>Bolsa</span>
+          </button>
+          <button
+            type="button"
+            onClick={toggleSkills}
+            aria-pressed={skillsOpen}
+            data-testid="skills-button"
+            title={skillsOpen ? 'Fechar habilidades' : 'Abrir habilidades'}
+            className={`flex w-11 flex-col items-center justify-center gap-0.5 rounded-xl border-[3px] text-[9px] font-bold uppercase tracking-wide shadow-[0_0_0_1px_#1a0f07,0_10px_28px_rgba(0,0,0,.6)] transition-colors sm:w-12 ${
+              skillsOpen
+                ? 'border-amber-400/80 bg-[#4a2e15] text-amber-100'
+                : 'border-[#8a5a2b] bg-[#2a1a0e] text-amber-200/80 hover:bg-[#33200f] hover:text-amber-100'
+            }`}
+          >
+            <Sparkles className="h-4 w-4" />
+            <span>Skills</span>
           </button>
         </div>
       </div>

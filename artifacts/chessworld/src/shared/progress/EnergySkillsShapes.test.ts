@@ -5,10 +5,12 @@ import {
   MINING_RESOURCE_KEYS,
   SKILL_IDS,
   WOODCUTTING_RESOURCE_KEYS,
+  SKILL_LABELS,
+  SKILL_NAME_MAX_LEN,
   evaluateEnergyState,
-  isCookingTab,
   parseActivityEvents,
   parseEnergySkillsConfig,
+  skillName,
   skillProgressFromXp,
   xpToNextLevel,
 } from './EnergySkillsShapes';
@@ -78,6 +80,43 @@ describe('parseEnergySkillsConfig', () => {
     expect(parseEnergySkillsConfig(null).ok).toBe(false);
     expect(parseEnergySkillsConfig('x').ok).toBe(false);
   });
+
+  it('nomes das habilidades: aparados, faltando = padrão, vazio/longo = erro', () => {
+    const ok = parseEnergySkillsConfig({ skills: { names: { mining: '  Minerar   pedras ', cooking: 'Cozinha' } } });
+    expect(ok.ok).toBe(true);
+    if (!ok.ok) return;
+    expect(ok.config.skills.names.mining).toBe('Minerar pedras');
+    expect(ok.config.skills.names.cooking).toBe('Cozinha');
+    expect(ok.config.skills.names.forging).toBe(SKILL_LABELS.forging);
+    expect(skillName(ok.config.skills, 'mining')).toBe('Minerar pedras');
+    expect(skillName({ names: { ...SKILL_LABELS, trading: '   ' } }, 'trading')).toBe(SKILL_LABELS.trading);
+
+    const bad = parseEnergySkillsConfig({ skills: { names: { mining: '', hunting: 'x'.repeat(SKILL_NAME_MAX_LEN + 1), trading: 5 } } });
+    expect(bad.ok).toBe(false);
+    if (bad.ok) return;
+    expect(bad.errors.join('\n')).toMatch(/skills\.names\.mining/);
+    expect(bad.errors.join('\n')).toMatch(/skills\.names\.hunting/);
+    expect(bad.errors.join('\n')).toMatch(/skills\.names\.trading/);
+  });
+
+  it('culinária: um XP por item; documento antigo (craft + pickup) é fundido', () => {
+    const current = parseEnergySkillsConfig({ skills: { cooking: { items: { beef: 7 }, eat: 3 } } });
+    expect(current.ok).toBe(true);
+    if (current.ok) expect(current.config.skills.cooking).toEqual({ items: { beef: 7 }, eat: 3 });
+
+    const legacy = parseEnergySkillsConfig({ skills: { cooking: { craft: { 'stew': 12, beef: 9 }, pickup: { beef: 1, egg: 2 } } } });
+    expect(legacy.ok).toBe(true);
+    if (legacy.ok) expect(legacy.config.skills.cooking.items).toEqual({ beef: 9, egg: 2, 'stew': 12 });
+
+    const invalid = parseEnergySkillsConfig({ skills: { cooking: { items: { '../x': 1 } } } });
+    expect(invalid.ok).toBe(false);
+    if (!invalid.ok) expect(invalid.errors.join('\n')).toMatch(/skills\.cooking\.items: chave desconhecida/);
+
+    // Campo legado malformado não é descartado em silêncio.
+    const brokenLegacy = parseEnergySkillsConfig({ skills: { cooking: { craft: 7, pickup: { beef: 1 } } } });
+    expect(brokenLegacy.ok).toBe(false);
+    if (!brokenLegacy.ok) expect(brokenLegacy.errors.join('\n')).toMatch(/skills\.cooking\.craft: esperado um objeto/);
+  });
 });
 
 describe('evaluateEnergyState', () => {
@@ -134,15 +173,5 @@ describe('parseActivityEvents', () => {
     expect(parseActivityEvents([{ kind: 'node_broken', key: 'mineral:nada', count: 1 }]).ok).toBe(false);
     expect(parseActivityEvents([{ kind: 'tool_strike', key: 'axe', count: 0 }]).ok).toBe(false);
     expect(parseActivityEvents([{ kind: 'tool_strike', key: 'axe', count: 1.5 }]).ok).toBe(false);
-  });
-});
-
-describe('isCookingTab', () => {
-  it('só a fornalha com aba de nome culinário conta', () => {
-    expect(isCookingTab('fornalha', 'Cozinhar')).toBe(true);
-    expect(isCookingTab('fornalha', 'cooking')).toBe(true);
-    expect(isCookingTab('fornalha', 'Culinária')).toBe(true);
-    expect(isCookingTab('fornalha', 'Fundir')).toBe(false);
-    expect(isCookingTab('forja', 'Cozinhar')).toBe(false);
   });
 });

@@ -28,6 +28,7 @@ import { AttackButton } from './game/AttackButton';
 import { CharacterCreationModal } from './character-creation/CharacterCreationModal';
 import { ToolHotbar } from './game/ToolHotbar';
 import { CollectionInventoryPanel } from './game/CollectionInventoryPanel';
+import { SkillsPanel } from './game/SkillsPanel';
 import { InventoryDropPlacement } from './game/inventory/InventoryDropPlacement';
 import { PerformanceHud } from './game/PerformanceHud';
 import { usePlayerCharacterStore } from '../stores/playerCharacterStore';
@@ -64,6 +65,7 @@ export function GameCanvas() {
   /** Estação portátil posicionada que abriu o card atual (craft privado). */
   const [stationPlacedId, setStationPlacedId] = useState<string | null>(null);
   const inventoryOpen = useInventoryUiStore((s) => s.open);
+  const skillsOpen = useProgressStore((s) => s.skillsOpen);
   const dropPlacementActive = useInventoryUiStore((s) => !!s.placement);
   const closeStationPanel = useCallback(() => {
     setStationId(null);
@@ -1135,6 +1137,7 @@ export function GameCanvas() {
       {showCreation && <CharacterCreationModal />}
       <ToolHotbar />
       {inventoryOpen && <CollectionInventoryPanel />}
+      {skillsOpen && <SkillsPanel />}
       {dropPlacementActive && <InventoryDropPlacement />}
       {stationId && (
         <StationGamePanel

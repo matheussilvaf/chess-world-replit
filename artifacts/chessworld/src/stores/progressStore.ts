@@ -18,7 +18,7 @@ import {
   ACTIVITY_MAX_COUNT,
   ACTIVITY_MAX_ENTRIES,
   DEFAULT_ENERGY_SKILLS_CONFIG,
-  SKILL_LABELS,
+  skillName,
   type ActivityEvent,
   type ActivityKind,
   type EnergySkillsConfig,
@@ -26,6 +26,7 @@ import {
   type SkillId,
 } from '../shared/progress/EnergySkillsShapes';
 import { useAuthStore } from './authStore';
+import { useInventoryUiStore } from './inventoryUiStore';
 
 export interface XpGainTick {
   id: number;
@@ -45,10 +46,14 @@ interface ProgressState {
   ticks: XpGainTick[];
   /** Aviso curto do HUD (ex.: "Fraco demais para usar a picareta"). */
   notice: string | null;
+  /** Painel de habilidades (botão "Skills" ao lado da bolsa). */
+  skillsOpen: boolean;
   applySnapshot: (snapshot: ProgressSnapshot) => void;
   setEating: (itemKey: string | null) => void;
   setNotice: (notice: string | null) => void;
   dismissTick: (id: number) => void;
+  toggleSkills: () => void;
+  closeSkills: () => void;
   reset: () => void;
 }
 
@@ -64,13 +69,15 @@ export const useProgressStore = create<ProgressState>((set, get) => ({
   eatingKey: null,
   ticks: [],
   notice: null,
+  skillsOpen: false,
   applySnapshot: (snapshot) => {
     const previous = get().snapshot;
     const ticks = [...get().ticks];
+    const names = get().config.skills;
     for (const gain of snapshot.gains ?? []) {
       const before = previous?.skills[gain.skill]?.level ?? 1;
       const after = snapshot.skills[gain.skill]?.level ?? 1;
-      const tick: XpGainTick = { id: ++tickSeq, skill: gain.skill, label: SKILL_LABELS[gain.skill], xp: gain.xp, levelUp: after > before ? after : null };
+      const tick: XpGainTick = { id: ++tickSeq, skill: gain.skill, label: skillName(names, gain.skill), xp: gain.xp, levelUp: after > before ? after : null };
       ticks.push(tick);
       setTimeout(() => get().dismissTick(tick.id), TICK_TTL_MS);
     }
@@ -89,12 +96,25 @@ export const useProgressStore = create<ProgressState>((set, get) => ({
     }
   },
   dismissTick: (id) => set((s) => ({ ticks: s.ticks.filter((t) => t.id !== id) })),
+  toggleSkills: () =>
+    set((s) => {
+      // Um painel de cada vez: os dois moram no mesmo canto da tela.
+      if (!s.skillsOpen) useInventoryUiStore.getState().closeInventory();
+      return { skillsOpen: !s.skillsOpen };
+    }),
+  closeSkills: () => set({ skillsOpen: false }),
   reset: () => {
     pendingActivity = new Map();
     unconfirmed = null;
-    set({ snapshot: null, eatingKey: null, ticks: [], notice: null });
+    set({ snapshot: null, eatingKey: null, ticks: [], notice: null, skillsOpen: false });
   },
 }));
+
+// Abrir o inventário (botão, tecla ou fim de um drop) fecha o painel de
+// habilidades — os dois ocupam o mesmo canto e dividem o Esc.
+useInventoryUiStore.subscribe((state, previous) => {
+  if (state.open && !previous.open) useProgressStore.getState().closeSkills();
+});
 
 // ------------------------------------------------------------ carregamento
 

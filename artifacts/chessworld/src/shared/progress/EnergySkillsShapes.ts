@@ -66,7 +66,7 @@ export interface EnergyConfig {
   thresholds: EnergyThreshold[];
   /** Velocidade de andar quando fraco (% da normal). */
   weakSpeedPercent: number;
-  /** itemId (badge `food`) → energia por unidade comida. */
+  /** itemId (badge `edible` — comestível) → energia por unidade comida. */
   foods: Record<string, number>;
 }
 
@@ -85,6 +85,7 @@ export const SKILL_IDS = [
 ] as const;
 export type SkillId = (typeof SKILL_IDS)[number];
 
+/** Nomes padrão; o admin pode renomear cada habilidade em `skills.names`. */
 export const SKILL_LABELS: Record<SkillId, string> = {
   mining: 'Mineração',
   fighting: 'Combate',
@@ -101,6 +102,13 @@ export function isSkillId(v: unknown): v is SkillId {
   return typeof v === 'string' && (SKILL_IDS as readonly string[]).includes(v);
 }
 
+export const SKILL_NAME_MAX_LEN = 24;
+
+/** Nome exibido da habilidade (o salvo pelo admin, senão o padrão). */
+export function skillName(skills: Pick<SkillsConfig, 'names'>, id: SkillId): string {
+  return skills.names[id]?.trim() || SKILL_LABELS[id];
+}
+
 export interface FightingXp {
   pvpWin: number;
   pvpLoss: number;
@@ -109,15 +117,19 @@ export interface FightingXp {
 }
 
 export interface CookingXp {
-  /** itemId (aba "cozinhar" da fornalha) → XP por craft. */
-  craft: Record<string, number>;
-  /** itemId (badge `food`) → XP ao coletar do chão. */
-  pickup: Record<string, number>;
+  /**
+   * itemId (pelo menos a badge `food`: ingrediente ou prato) → XP por unidade
+   * obtida — ao cozinhar (craft × quantidade) ou ao coletar do chão (ex.:
+   * carne crua que cai de um animal).
+   */
+  items: Record<string, number>;
   /** XP a cada vez que come. */
   eat: number;
 }
 
 export interface SkillsConfig {
+  /** Nome exibido de cada habilidade (o admin renomeia clicando no nome). */
+  names: Record<SkillId, string>;
   /** XP para sair do nível 1 (Base da fórmula). */
   baseXp: number;
   /** Taxa da fórmula: XP_Necessário = Base * (Taxa ^ (Nível − 1)). */
@@ -149,7 +161,8 @@ export const WOODCUTTING_RESOURCE_KEYS: readonly string[] = RESOURCE_KEYS.filter
 /** XP usado quando um item/recurso ainda não tem valor próprio salvo. */
 export const DEFAULT_NODE_XP = 5;
 export const DEFAULT_CRAFT_XP = 10;
-export const DEFAULT_FOOD_PICKUP_XP = 1;
+/** Item de culinária (badge `food`) por unidade obtida — cozinhada ou coletada. */
+export const DEFAULT_COOKING_XP = 5;
 
 export const DEFAULT_ENERGY_SKILLS_CONFIG: EnergySkillsConfig = {
   configId: ENERGY_SKILLS_CONFIG_ID,
@@ -176,6 +189,7 @@ export const DEFAULT_ENERGY_SKILLS_CONFIG: EnergySkillsConfig = {
     foods: {},
   },
   skills: {
+    names: { ...SKILL_LABELS },
     baseXp: 100,
     rate: 1.5,
     maxLevel: 99,
@@ -184,7 +198,7 @@ export const DEFAULT_ENERGY_SKILLS_CONFIG: EnergySkillsConfig = {
     fighting: { pvpWin: 50, pvpLoss: 10, pveWin: 20, pveLoss: 5 },
     forging: {},
     smelting: {},
-    cooking: { craft: {}, pickup: {}, eat: 2 },
+    cooking: { items: {}, eat: 2 },
   },
 };
 
@@ -199,16 +213,6 @@ export const XP_VALUE_RANGE = { min: 0, max: 1_000_000 } as const;
 export const BASE_XP_RANGE = { min: 1, max: 1_000_000_000 } as const;
 export const XP_RATE_RANGE = { min: 1, max: 100 } as const;
 export const MAX_LEVEL_RANGE = { min: 2, max: 999 } as const;
-
-// ---------------------------------------------------------------- culinária
-
-/** Aba da fornalha cujos crafts contam como culinária (nome "Cozinhar", "Cooking"…). */
-export const COOKING_TAB_NAME_RE = /cozinh|cook|culin/i;
-export const COOKING_STATION_ID: StationId = 'fornalha';
-
-export function isCookingTab(stationId: string, tabName: string): boolean {
-  return stationId === COOKING_STATION_ID && COOKING_TAB_NAME_RE.test(tabName);
-}
 
 // --------------------------------------------------------------- validação
 
@@ -333,7 +337,42 @@ export function parseEnergySkillsConfig(input: unknown): EnergySkillsParseResult
     if (n === null) errors.push(`skills.rate: número ${XP_RATE_RANGE.min}..${XP_RATE_RANGE.max}`);
     else rate = Math.round(n * 1000) / 1000;
   }
+  const names = {} as Record<SkillId, string>;
+  const namesIn = isRecord(skillsIn.names) ? skillsIn.names : {};
+  for (const id of SKILL_IDS) {
+    const raw = namesIn[id];
+    if (raw === undefined) {
+      names[id] = SKILL_LABELS[id];
+      continue;
+    }
+    const name = typeof raw === 'string' ? raw.trim().replace(/\s+/g, ' ') : '';
+    if (name.length === 0 || name.length > SKILL_NAME_MAX_LEN) {
+      errors.push(`skills.names.${id}: texto de 1 a ${SKILL_NAME_MAX_LEN} caracteres`);
+      names[id] = SKILL_LABELS[id];
+      continue;
+    }
+    names[id] = name;
+  }
+  // Documentos antigos tinham `cooking.craft` (aba da fornalha) e `cooking.pickup`
+  // (coleta) separados — hoje é UM valor por item com a badge `food`. Na
+  // migração, `craft` prevalece sobre `pickup`; campo legado malformado é erro
+  // (não se descarta regra salva em silêncio).
+  let cookingItemsIn: unknown = cookingIn.items;
+  if (cookingItemsIn === undefined && (cookingIn.craft !== undefined || cookingIn.pickup !== undefined)) {
+    const merged: Record<string, unknown> = {};
+    for (const field of ['pickup', 'craft'] as const) {
+      const legacy = cookingIn[field];
+      if (legacy === undefined) continue;
+      if (!isRecord(legacy)) {
+        errors.push(`skills.cooking.${field}: esperado um objeto {itemId: XP}`);
+        continue;
+      }
+      Object.assign(merged, legacy);
+    }
+    cookingItemsIn = merged;
+  }
   const skills: SkillsConfig = {
+    names,
     baseXp: readInt(skillsIn.baseXp, BASE_XP_RANGE, 'skills.baseXp', d.skills.baseXp),
     rate,
     maxLevel: readInt(skillsIn.maxLevel, MAX_LEVEL_RANGE, 'skills.maxLevel', d.skills.maxLevel),
@@ -348,8 +387,7 @@ export function parseEnergySkillsConfig(input: unknown): EnergySkillsParseResult
     forging: readItemMap(skillsIn.forging, 'skills.forging', XP_VALUE_RANGE, isItemId),
     smelting: readItemMap(skillsIn.smelting, 'skills.smelting', XP_VALUE_RANGE, isItemId),
     cooking: {
-      craft: readItemMap(cookingIn.craft, 'skills.cooking.craft', XP_VALUE_RANGE, isItemId),
-      pickup: readItemMap(cookingIn.pickup, 'skills.cooking.pickup', XP_VALUE_RANGE, isItemId),
+      items: readItemMap(cookingItemsIn, 'skills.cooking.items', XP_VALUE_RANGE, isItemId),
       eat: readInt(cookingIn.eat, XP_VALUE_RANGE, 'skills.cooking.eat', d.skills.cooking.eat),
     },
   };

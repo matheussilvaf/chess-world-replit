@@ -1,7 +1,11 @@
 /**
- * Badges de itens de craft — etiquetas de texto livres (`food`, `forging`,
- * `smelting`, `potion`…) que outras telas usam para FILTRAR itens: comida dá
- * energia, `forging`/`smelting`/`potion` dão XP das respectivas habilidades.
+ * Badges de itens de craft — etiquetas de texto livres (`food`, `edible`,
+ * `forging`, `smelting`, `potion`…) que outras telas usam para FILTRAR itens:
+ *   - `food`: item de culinária (ingrediente OU prato) — dá XP de Culinária ao
+ *     ser obtido (cozinhado ou coletado do chão). Sozinha NÃO deixa comer.
+ *   - `edible`: comestível — o clique na hotbar come e repõe energia. Normalmente
+ *     vem junto com `food` (`food` sem `edible` = ingrediente).
+ *   - `forging`/`smelting`/`potion`: XP das respectivas habilidades.
  *
  * Valem para QUALQUER id da página de receitas (gen refs, recursos e drops,
  * craft items custom), por isso moram numa tabela própria e não em craft_items.
@@ -15,10 +19,11 @@ export const MAX_CRAFT_BADGES_PER_ITEM = 20;
 
 /** Badges com significado no jogo (as demais são só filtros do admin). */
 export const BADGE_FOOD = 'food';
+export const BADGE_EDIBLE = 'edible';
 export const BADGE_FORGING = 'forging';
 export const BADGE_SMELTING = 'smelting';
 export const BADGE_POTION = 'potion';
-export const SUGGESTED_CRAFT_BADGES: readonly string[] = [BADGE_FOOD, BADGE_FORGING, BADGE_SMELTING, BADGE_POTION];
+export const SUGGESTED_CRAFT_BADGES: readonly string[] = [BADGE_FOOD, BADGE_EDIBLE, BADGE_FORGING, BADGE_SMELTING, BADGE_POTION];
 
 /** itemId → badges (sem repetição, em ordem de inserção). */
 export type CraftBadgeMap = Record<string, string[]>;
@@ -56,6 +61,11 @@ export function isBadgeableItemId(id: unknown): id is string {
 
 export function itemHasBadge(map: CraftBadgeMap | null | undefined, itemId: string, badge: string): boolean {
   return !!map?.[itemId]?.includes(badge);
+}
+
+/** Só a badge `edible` libera a ação de comer; `food` sozinha é ingrediente. */
+export function isEdibleItem(map: CraftBadgeMap | null | undefined, itemId: string): boolean {
+  return itemHasBadge(map, itemId, BADGE_EDIBLE);
 }
 
 /** Ids que carregam a badge (ordem estável por id). */

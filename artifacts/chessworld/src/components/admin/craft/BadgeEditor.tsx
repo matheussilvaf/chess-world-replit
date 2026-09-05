@@ -1,6 +1,6 @@
 /**
  * Editor de badges de um item (chips de texto livre). Enter/vírgula/botão
- * adicionam; × remove; as sugestões com significado no jogo (`food`,
+ * adicionam; × remove; as sugestões com significado no jogo (`food`, `edible`,
  * `forging`, `smelting`, `potion`) aparecem como atalhos. Cada mudança é
  * salva na hora pelo pai (`onChange`).
  */
@@ -14,7 +14,8 @@ import {
 } from '../../../shared/craft/CraftBadges';
 
 const BADGE_HINTS: Record<string, string> = {
-  food: 'Comida: dá energia ao comer (config em Skills and Character Energy)',
+  food: 'Culinária: ingrediente ou prato — XP de Cooking ao cozinhar/coletar. Sozinha NÃO deixa comer',
+  edible: 'Comestível: clique na hotbar come e repõe energia (energia por unidade em Skills and Character Energy)',
   forging: 'Forjar: XP de Forging ao criar',
   smelting: 'Fundir: XP de Smelting ao criar',
   potion: 'Poção: XP de Alchemy (em breve)',
@@ -24,6 +25,8 @@ export function badgeChipClass(badge: string): string {
   switch (badge) {
     case 'food':
       return 'bg-emerald-500/15 text-emerald-300 border-emerald-500/40';
+    case 'edible':
+      return 'bg-lime-500/15 text-lime-300 border-lime-500/40';
     case 'forging':
       return 'bg-orange-500/15 text-orange-300 border-orange-500/40';
     case 'smelting':

@@ -10,12 +10,22 @@
  */
 import { useEffect, useState } from 'react';
 import { CollectionInventoryPanel } from '../game/CollectionInventoryPanel';
+import { SkillsPanel } from '../game/SkillsPanel';
 import { ToolHotbar } from '../game/ToolHotbar';
 import { useCollectionInventoryStore } from '../../stores/collectionInventoryStore';
 import { useInventoryUiStore } from '../../stores/inventoryUiStore';
+import { useProgressStore } from '../../stores/progressStore';
 import { usePlayerCharacterStore } from '../../stores/playerCharacterStore';
 import { emptySlots, weaponSlotIndex } from '../../lib/inventory/inventorySlots';
 import type { PlayerCharacterConfigV1 } from '../../shared/characters/PlayerCharacterShapes';
+import {
+  DEFAULT_ENERGY_SKILLS_CONFIG,
+  SKILL_IDS,
+  evaluateEnergyState,
+  skillProgressFromXp,
+  type ProgressSnapshot,
+  type SkillId,
+} from '../../shared/progress/EnergySkillsShapes';
 
 const CAPACITY = 25;
 const PICKAXE = 'gen:crafttools/pickaxe/stone';
@@ -90,10 +100,29 @@ function seedStores(durabilityColumnMissing: boolean) {
   });
 }
 
+function fakeProgressSnapshot(): ProgressSnapshot {
+  const { energy, skills: skillsConfig } = DEFAULT_ENERGY_SKILLS_CONFIG;
+  const xpById: Partial<Record<SkillId, number>> = { mining: 340, woodcutting: 120, fighting: 60, forging: 15, cooking: 230 };
+  const skills = {} as ProgressSnapshot['skills'];
+  for (const id of SKILL_IDS) skills[id] = skillProgressFromXp(skillsConfig, xpById[id] ?? 0);
+  const current = Math.round(energy.maxEnergy * 0.7);
+  return {
+    energy: current,
+    maxEnergy: energy.maxEnergy,
+    maxHp: energy.maxHp,
+    weakSpeedPercent: energy.weakSpeedPercent,
+    state: evaluateEnergyState(energy, current),
+    skills,
+    gains: [{ skill: 'cooking', xp: 10 }],
+    persisted: true,
+  };
+}
+
 export function InventoryBenchPage() {
   const [columnMissing, setColumnMissing] = useState(false);
   const [seeded, setSeeded] = useState(false);
   const open = useInventoryUiStore((s) => s.open);
+  const skillsOpen = useProgressStore((s) => s.skillsOpen);
   const openInventory = useInventoryUiStore((s) => s.openInventory);
 
   useEffect(() => {
@@ -102,7 +131,15 @@ export function InventoryBenchPage() {
   }, [columnMissing]);
 
   useEffect(() => {
-    if (seeded) openInventory();
+    if (!seeded) return;
+    openInventory();
+    // `?skills=1` abre o painel de habilidades (no lugar do inventário — são
+    // exclusivos) com um progresso fictício, já que sem sala não há snapshot.
+    if (new URLSearchParams(window.location.search).has('skills')) {
+      const progress = useProgressStore.getState();
+      progress.applySnapshot(fakeProgressSnapshot());
+      if (!progress.skillsOpen) progress.toggleSkills();
+    }
   }, [seeded, openInventory]);
 
   if (!seeded) return null;
@@ -137,6 +174,7 @@ export function InventoryBenchPage() {
         </button>
       </div>
       {open && <CollectionInventoryPanel />}
+      {skillsOpen && <SkillsPanel />}
       <ToolHotbar />
     </div>
   );

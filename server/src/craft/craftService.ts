@@ -48,7 +48,7 @@ export async function executePlayerCraft(
   if (snapshot.error || snapshot.tableMissing) return { ok: false, message: snapshot.error ?? 'Inventário indisponível após craft' };
   // Energia (por estação + construir estação portátil) e XP (forja/fundição/
   // culinária) — depois do inventário confirmar; nunca bloqueia o craft.
-  progressService.recordCraft(userId, { stationId, targetId, quantity, tabName: tab.name }).catch((error: unknown) => {
+  progressService.recordCraft(userId, { stationId, targetId, quantity }).catch((error: unknown) => {
     console.warn(`[craft] progresso do craft não registrado: ${error instanceof Error ? error.message : String(error)}`);
   });
   return { ok: true, items: snapshot.items };

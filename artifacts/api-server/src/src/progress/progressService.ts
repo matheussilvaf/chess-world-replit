@@ -13,17 +13,16 @@
  */
 import { applyInventoryDeltas, getInventory, type InventoryItem } from '../collection/inventoryRepository.js';
 import { getCraftBadgesCached } from '../craft/craftBadgeRepository.js';
-import { BADGE_FOOD, BADGE_FORGING, BADGE_SMELTING, itemHasBadge } from '../shared/craft/CraftBadges.js';
+import { BADGE_FOOD, BADGE_FORGING, BADGE_SMELTING, isEdibleItem, itemHasBadge } from '../shared/craft/CraftBadges.js';
 import { placeableStationFor } from '../shared/craft/PlaceableStations.js';
 import { isStationId } from '../shared/craft/StationShapes.js';
 import {
   DEFAULT_CRAFT_XP,
-  DEFAULT_FOOD_PICKUP_XP,
+  DEFAULT_COOKING_XP,
   DEFAULT_NODE_XP,
   ENERGY_TOOL_KINDS,
   SKILL_IDS,
   evaluateEnergyState,
-  isCookingTab,
   skillProgressFromXp,
   type ActivityEvent,
   type ActivityKind,
@@ -81,7 +80,6 @@ export interface CraftProgressInfo {
   targetId: string;
   /** Execuções da receita (o "quantity" do craft). */
   quantity: number;
-  tabName: string;
 }
 
 export type EatResult =
@@ -157,7 +155,7 @@ class ProgressService {
     return admitted;
   }
 
-  /** Craft concluído (estação pública ou portátil): energia por estação + construir estação + XP por badge/aba. */
+  /** Craft concluído (estação pública ou portátil): energia por estação + construir estação + XP por badge. */
   async recordCraft(userId: string, info: CraftProgressInfo): Promise<void> {
     const badges = await getCraftBadgesCached();
     await this.mutate(userId, (state, config, gains) => {
@@ -171,8 +169,9 @@ class ProgressService {
       if (itemHasBadge(badges, info.targetId, BADGE_SMELTING)) {
         this.addXp(state, gains, 'smelting', (skills.smelting[info.targetId] ?? DEFAULT_CRAFT_XP) * quantity);
       }
-      if (isCookingTab(info.stationId, info.tabName)) {
-        this.addXp(state, gains, 'cooking', (skills.cooking.craft[info.targetId] ?? DEFAULT_CRAFT_XP) * quantity);
+      // Culinária: qualquer item com a badge `food` (prato ou ingrediente), em qualquer estação.
+      if (itemHasBadge(badges, info.targetId, BADGE_FOOD)) {
+        this.addXp(state, gains, 'cooking', (skills.cooking.items[info.targetId] ?? DEFAULT_COOKING_XP) * quantity);
       }
     });
   }
@@ -199,7 +198,7 @@ class ProgressService {
     if (foods.length === 0) return;
     await this.mutate(userId, (state, config, gains) => {
       for (const item of foods) {
-        this.addXp(state, gains, 'cooking', (config.skills.cooking.pickup[item.itemKey] ?? DEFAULT_FOOD_PICKUP_XP) * item.qty);
+        this.addXp(state, gains, 'cooking', (config.skills.cooking.items[item.itemKey] ?? DEFAULT_COOKING_XP) * item.qty);
       }
     });
   }
@@ -217,7 +216,13 @@ class ProgressService {
    */
   async eat(userId: string, itemKey: string): Promise<EatResult> {
     const badges = await getCraftBadgesCached();
-    if (!itemHasBadge(badges, itemKey, BADGE_FOOD)) return { ok: false, message: 'Este item não é comida' };
+    // `edible` decide; `food` sozinha é ingrediente (vira comida numa receita).
+    if (!isEdibleItem(badges, itemKey)) {
+      return {
+        ok: false,
+        message: itemHasBadge(badges, itemKey, BADGE_FOOD) ? 'Este item é um ingrediente — não dá para comer' : 'Este item não é comestível',
+      };
+    }
     const state = this.stateFor(userId);
     return this.run(state, async (): Promise<EatResult> => {
       const config = await this.ensureLoaded(state);

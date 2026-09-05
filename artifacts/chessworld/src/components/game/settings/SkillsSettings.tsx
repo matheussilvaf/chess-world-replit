@@ -6,17 +6,13 @@
 import { useEffect } from 'react';
 import { Drumstick } from 'lucide-react';
 import { refreshMyProgress, useProgressStore } from '../../../stores/progressStore';
-import { SKILL_IDS, SKILL_LABELS } from '../../../shared/progress/EnergySkillsShapes';
+import { SKILL_IDS, skillName } from '../../../shared/progress/EnergySkillsShapes';
+import { SKILL_NOTES } from '../../../lib/progress/skillNotes';
 import { energyTone } from '../EnergyBar';
-
-const SKILL_NOTES: Partial<Record<(typeof SKILL_IDS)[number], string>> = {
-  hunting: 'Em breve',
-  alchemy: 'Em breve',
-  trading: 'Em breve',
-};
 
 export function SkillsSettings() {
   const snapshot = useProgressStore((s) => s.snapshot);
+  const skillsConfig = useProgressStore((s) => s.config.skills);
 
   useEffect(() => {
     if (!snapshot) void refreshMyProgress();
@@ -64,7 +60,7 @@ export function SkillsSettings() {
               <li key={id} className="rounded-lg border border-slate-700 bg-slate-800/60 px-3 py-2">
                 <div className="flex items-center justify-between text-sm">
                   <span className="font-medium text-white">
-                    {SKILL_LABELS[id]}
+                    {skillName(skillsConfig, id)}
                     {note && <span className="ml-2 text-[10px] font-normal uppercase tracking-wide text-slate-500">{note}</span>}
                   </span>
                   <span className="text-amber-300">Nível {level}</span>
