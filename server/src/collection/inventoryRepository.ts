@@ -188,6 +188,23 @@ function mergeLegacyItems(userId: string): Promise<boolean> {
   });
 }
 
+/**
+ * Zera o inventário inteiro do jogador (morte por fome): apaga todas as linhas
+ * — pilhas, ferramentas com durabilidade e estações portáteis carregadas —
+ * na fila serializada do usuário, para não cruzar com um crédito em voo.
+ */
+export async function clearInventory(userId: string): Promise<InventoryWriteResult> {
+  return serializeUser(userId, async () => {
+    const client = getServiceClient();
+    if (!client) return { ok: false, items: [], tableMissing: false, error: PERSISTENCE_UNAVAILABLE };
+    const { error } = await client.from('collection_inventory').delete().eq('user_id', userId);
+    if (error) return isTableMissing(error.code)
+      ? { ok: false, items: [], tableMissing: true, error: null }
+      : { ok: false, items: [], tableMissing: false, error: error.message };
+    return { ok: true, items: [], tableMissing: false, error: null };
+  });
+}
+
 /** Applies positive and negative deltas as one serialized inventory operation. */
 export async function applyInventoryDeltas(userId: string, deltas: InventoryItem[]): Promise<InventoryWriteResult> {
   return serializeUser(userId, async () => {

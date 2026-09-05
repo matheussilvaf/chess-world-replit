@@ -71,18 +71,23 @@ export class CombatResolver {
     const target = this.room.state.players.get(sessionId);
     if (!target || this.isDead(sessionId)) return false;
     target.hp = 0; // o HP sincroniza pelo schema; não há `combat_hit` (ninguém golpeou)
-    this.killTarget(sessionId, target, null, causeName);
+    this.killTarget(sessionId, target, null, causeName, 'starvation');
     return true;
   }
 
-  /** Estado de morte + timer de revive (compartilhado por KO em combate e fome). */
-  private killTarget(sessionId: string, target: PlayerState, attacker: PlayerState | null, attackerName: string): void {
+  /**
+   * Estado de morte + timer de revive (compartilhado por KO em combate e fome).
+   * `cause` vai no `player_died` para o cliente distinguir fome (que tem
+   * penalidade de inventário) de KO em combate.
+   */
+  private killTarget(sessionId: string, target: PlayerState, attacker: PlayerState | null, attackerName: string, cause: 'combat' | 'starvation' = 'combat'): void {
     const reviveAt = Date.now() + COMBAT_RESPAWN_MS;
     this.deadUntil.set(sessionId, reviveAt);
     this.room.broadcast('player_died', {
       targetSessionId: sessionId,
       targetName: target.username,
       attackerName,
+      cause,
       respawnMs: COMBAT_RESPAWN_MS,
     });
     this.hooks.onKill?.(attacker, target);

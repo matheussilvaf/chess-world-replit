@@ -525,10 +525,10 @@ export function SkillsEnergyPage() {
                     <NumberField value={config.energy.damageTaken} range={ENERGY_COST_RANGE} onChange={(v) => update((d) => { d.energy.damageTaken = v; })} disabled={disabled} className="w-16" label="Levar dano: energia" />
                   </Row>
                 </Block>
-                <Block title="Criação" hint="Por craft executado (× quantidade). Vale para a estação pública e para a portátil da mesma família.">
+                <Block title="Criação" hint="Por USO da estação: 1 cobrança por execução, qualquer quantidade (10 de uma vez custam o mesmo que 1). Vale para a estação pública e para a portátil da mesma família. Receitas de comida (badge food — a aba Cozinhar) não gastam energia.">
                   {STATION_IDS.map((stationId) => (
                     <Row key={stationId} label={STATION_LABELS[stationId]} detail={`energy.craftByStation.${stationId}`}>
-                      <NumberField value={config.energy.craftByStation[stationId]} range={ENERGY_COST_RANGE} onChange={(v) => update((d) => { d.energy.craftByStation[stationId] = v; })} disabled={disabled} className="w-16" suffix="por craft" label={`${STATION_LABELS[stationId]}: energia por craft`} />
+                      <NumberField value={config.energy.craftByStation[stationId]} range={ENERGY_COST_RANGE} onChange={(v) => update((d) => { d.energy.craftByStation[stationId] = v; })} disabled={disabled} className="w-16" suffix="por uso" label={`${STATION_LABELS[stationId]}: energia por uso`} />
                     </Row>
                   ))}
                   <Row label="Peça do tabuleiro central" detail="energy.boardPieceCraft · ainda sem gancho no jogo">

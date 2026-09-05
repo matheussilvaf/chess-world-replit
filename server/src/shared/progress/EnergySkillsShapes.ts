@@ -57,7 +57,11 @@ export interface EnergyConfig {
   creatureStrike: StrikeEnergyCost;
   /** Por golpe recebido de qualquer criatura (personagem ou monstro). */
   damageTaken: number;
-  /** Por craft executado em cada estação (pública ou portátil da mesma família). */
+  /**
+   * Por USO de cada estação (pública ou portátil da mesma família): 1 cobrança
+   * por execução de craft, seja qual for a quantidade. Receitas de comida
+   * (badge `food` — a aba Cozinhar da fornalha) não gastam energia.
+   */
   craftByStation: Record<StationId, number>;
   /** Craft de peça do tabuleiro central (ainda sem gancho no jogo — só o campo). */
   boardPieceCraft: number;

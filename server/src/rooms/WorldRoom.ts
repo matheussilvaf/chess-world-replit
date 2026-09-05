@@ -21,7 +21,7 @@ import {
 import { verifySupabaseToken } from '../auth/supabaseAuth.js';
 import { isInventoryItemId } from '../shared/craft/CraftShapes.js';
 import { INVENTORY_DROP_MAX_DISTANCE, INVENTORY_PICKUP_MAX_DISTANCE, WORLD_DROP_TTL_MS, yieldItemKeyFor } from '../shared/collection/CollectionShapes.js';
-import { applyInventoryDeltas, getInventory, giveWithDurability, hasDurability, takeWithDurability } from '../collection/inventoryRepository.js';
+import { applyInventoryDeltas, clearInventory, getInventory, giveWithDurability, hasDurability, takeWithDurability } from '../collection/inventoryRepository.js';
 import { executePlayerCraft } from '../craft/craftService.js';
 import { PLACEABLE_STACK_LIMIT, placeableStationFor } from '../shared/craft/PlaceableStations.js';
 import { getCraftItemsCached } from '../craft/craftRepository.js';
@@ -77,8 +77,12 @@ export class WorldRoom extends Room<WorldState> {
     },
     onRevive: (target) => {
       if (!isAnonId(target.id)) void progressService.restoreEnergy(target.id).catch(logProgressError);
+      // Morreu de fome: acorda no spawn do mapa principal (KO em combate revive no lugar).
+      if (this.starvedSessions.delete(target.sessionId)) this.respawnAfterStarvation(target.sessionId, target);
     },
   });
+  /** Sessões cuja morte atual foi por fome (penalidade + respawn no mapa principal). */
+  private starvedSessions = new Set<string>();
   /** Assinatura do progresso (energia/skills) por sessão autenticada. */
   private progressUnsubs = new Map<string, () => void>();
   /** Último snapshot de progresso recebido por sessão (fome pendente, maxHp). */
@@ -771,6 +775,13 @@ export class WorldRoom extends Room<WorldState> {
       client.send(errorEvent, { requestId, message: 'requestId reutilizado com operação diferente' });
       return;
     }
+    // Desmaiado (KO ou fome): nada de mexer no inventário até reviver — senão
+    // um craft/pickup em voo recria itens depois do zeramento da fome.
+    // Replays de pedidos já feitos continuam devolvendo a resposta guardada.
+    if (!entry && this.combatResolver.isDead(client.sessionId)) {
+      client.send(errorEvent, { requestId, message: 'Você está desmaiado.' });
+      return;
+    }
     if (!entry) {
       if (cache.size >= 200) {
         const settledId = [...cache.entries()].find(([, candidate]) => candidate.settled)?.[0];
@@ -839,7 +850,80 @@ export class WorldRoom extends Room<WorldState> {
     if (!snapshot.state.dead || player.currentBoardId || this.combatResolver.isDead(sessionId)) return;
     if (this.combatResolver.killPlayer(sessionId, 'Fome')) {
       console.log(`[WorldRoom] ${player.username} morreu de fome`);
+      this.starvedSessions.add(sessionId);
+      void this.applyStarvationPenalty(sessionId, player).catch((error) => {
+        console.error(`[WorldRoom] fome: penalidade falhou para ${player.username}:`, error);
+      });
     }
+  }
+
+  /** Spawn do mapa principal — o mesmo ponto do onJoin fora do Mundo de Coleta. */
+  private static readonly MAIN_SPAWN = { x: 1273, y: 926 };
+
+  /**
+   * Penalidade da morte por FOME (só fome — KO em combate não perde nada): o
+   * inventário inteiro some (pilhas, ferramentas, estações carregadas) e a
+   * ferramenta equipada volta à arma padrão da classe. Skills/XP ficam
+   * intactos — o progressService não é tocado; a energia enche no revive.
+   * O respawn no mapa principal acontece no revive (respawnAfterStarvation).
+   */
+  private async applyStarvationPenalty(sessionId: string, player: PlayerState): Promise<void> {
+    if (isAnonId(player.id)) return;
+    const wiped = await clearInventory(player.id);
+    if (!wiped.ok) {
+      // Sem zerar no banco não se finge que zerou: o cliente segue com o que o servidor tem.
+      console.error(`[WorldRoom] fome: não zerou o inventário de ${player.username}: ${wiped.error ?? 'tabela ausente'}`);
+      return;
+    }
+    this.clients.find((c) => c.sessionId === sessionId)?.send('inventory_changed', { items: [] });
+    await this.resetWeaponToClassDefault(sessionId, player.id);
+  }
+
+  /**
+   * Ferramenta equipada sumiu com o inventário → arma padrão da classe (mão
+   * vazia se a classe não tem). A persistência acontece mesmo se o jogador
+   * saiu durante o await: o próximo login não pode acordar com a ferramenta
+   * que não existe mais. Só o estado vivo exige a sessão ainda presente.
+   */
+  private async resetWeaponToClassDefault(sessionId: string, userId: string): Promise<void> {
+    const config = this.playerCharacters.get(sessionId);
+    const equipped = this.state.players.get(sessionId)?.equippedWeapon ?? config?.equippedWeapon ?? '';
+    if (!equipped.startsWith('gen:crafttools/')) return;
+    // Mesma sequência do equip_weapon: um pedido mais novo do jogador vence este.
+    const seq = (this.equipSeq.get(sessionId) ?? 0) + 1;
+    this.equipSeq.set(sessionId, seq);
+    const categories = await getAssetCategoriesCached();
+    const current = this.equipSeq.get(sessionId);
+    if (current !== undefined && current !== seq) return; // equipar/desequipar mais novo venceu
+    const ref = config ? findClassWeaponRef(categories, config.classId) : null;
+    void this.persistEquippedWeapon(userId, ref);
+    const still = this.state.players.get(sessionId);
+    if (!still || this.equipSeq.get(sessionId) !== seq) return; // saiu durante o await
+    still.equippedWeapon = ref ?? '';
+    if (config) config.equippedWeapon = ref;
+  }
+
+  /**
+   * Reviveu depois de morrer de fome: acorda no spawn do mapa principal. Na
+   * própria sala principal o servidor reposiciona e manda o cliente encaixar
+   * (`starvation_respawn` com x/y); no Mundo de Coleta ou na arena (outras
+   * salas) só o cliente consegue trocar de mapa/sala, então recebe só o
+   * destino e viaja — o onJoin da sala principal dá o spawn padrão.
+   */
+  private respawnAfterStarvation(sessionId: string, player: PlayerState): void {
+    const client = this.clients.find((c) => c.sessionId === sessionId);
+    if (this.region.startsWith('craft:') || this.roomName === 'arena') {
+      client?.send('starvation_respawn', { world: 'main' });
+      return;
+    }
+    const { x, y } = WorldRoom.MAIN_SPAWN;
+    player.x = x;
+    player.y = y;
+    player.targetX = x;
+    player.targetY = y;
+    player.isMoving = false;
+    this.movementGuards.set(sessionId, performance.now());
+    client?.send('starvation_respawn', { world: 'main', x, y });
   }
 
   /** HP máximo global: no join o HP nasce cheio; depois só o teto muda (HP atual é limitado). */
@@ -1225,6 +1309,7 @@ export class WorldRoom extends Room<WorldState> {
     this.state.voiceParticipants.delete(client.sessionId);
     this.state.players.delete(client.sessionId);
     this.combatResolver.clearSession(client.sessionId);
+    this.starvedSessions.delete(client.sessionId);
     this.characterLoadSeq.delete(client.sessionId);
     this.playerCharacters.delete(client.sessionId);
     this.equipSeq.delete(client.sessionId);

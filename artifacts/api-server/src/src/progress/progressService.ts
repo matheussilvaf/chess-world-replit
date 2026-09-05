@@ -163,13 +163,22 @@ class ProgressService {
     return admitted;
   }
 
-  /** Craft concluído (estação pública ou portátil): energia por estação + construir estação + XP por badge. */
+  /**
+   * Craft concluído (estação pública ou portátil): energia por USO da estação,
+   * construir estação e XP por badge (o XP sim cresce com a quantidade).
+   *
+   * Energia da estação: 1 cobrança por execução, seja qual for a quantidade —
+   * 10 barras de uma vez custam o mesmo que 1 (regra do jogo: paga-se o uso da
+   * estação, não cada unidade). Receita de comida (badge `food`, a aba
+   * Cozinhar da fornalha) nunca gasta energia da estação.
+   */
   async recordCraft(userId: string, info: CraftProgressInfo): Promise<void> {
     const badges = await getCraftBadgesCached();
     await this.mutate(userId, (state, config, gains) => {
       const { energy, skills } = config;
       const quantity = Math.max(1, info.quantity);
-      if (isStationId(info.stationId)) this.spend(state, config, energy.craftByStation[info.stationId] * quantity);
+      const cooking = itemHasBadge(badges, info.targetId, BADGE_FOOD);
+      if (isStationId(info.stationId) && !cooking) this.spend(state, config, energy.craftByStation[info.stationId]);
       if (placeableStationFor(info.targetId)) this.spend(state, config, energy.buildStation * quantity);
       if (itemHasBadge(badges, info.targetId, BADGE_FORGING)) {
         this.addXp(state, gains, 'forging', (skills.forging[info.targetId] ?? DEFAULT_CRAFT_XP) * quantity);
@@ -178,7 +187,7 @@ class ProgressService {
         this.addXp(state, gains, 'smelting', (skills.smelting[info.targetId] ?? DEFAULT_CRAFT_XP) * quantity);
       }
       // Culinária: qualquer item com a badge `food` (prato ou ingrediente), em qualquer estação.
-      if (itemHasBadge(badges, info.targetId, BADGE_FOOD)) {
+      if (cooking) {
         this.addXp(state, gains, 'cooking', (skills.cooking.items[info.targetId] ?? DEFAULT_COOKING_XP) * quantity);
       }
     });

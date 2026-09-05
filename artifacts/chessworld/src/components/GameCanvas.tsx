@@ -1095,12 +1095,36 @@ export function GameCanvas() {
         `[Combat] ${isMe ? 'Você' : data.targetName || '?'} morreu` +
           `${data.attackerName ? ` (${data.attackerName})` : ''} — respawn em ${((data.respawnMs ?? 3000) / 1000).toFixed(0)}s`,
       );
+      // Fome (só fome, KO em combate não perde nada): o servidor zera o
+      // inventário (chega como inventory_changed vazio), devolve a arma padrão
+      // e, no revive, manda acordar no mapa principal. Skills ficam.
+      if (isMe && data.cause === 'starvation') {
+        closeStationPanel();
+        useInventoryUiStore.getState().closeInventory();
+        usePlacedStationsStore.getState().pushNotice(
+          'error',
+          'Você desmaiou de fome: perdeu tudo que carregava e a arma voltou à padrão. Suas habilidades continuam. Você acorda no mapa principal.',
+        );
+      }
     });
 
     // Combat: server revived a dead player at full HP
     room.onMessage('player_revived', (data: any) => {
       if (!data) return;
       scene.revivePlayer(data.sessionId === room.sessionId ? null : data.sessionId);
+    });
+
+    // Morte por fome: acordar no spawn do mapa principal. Na própria sala
+    // principal o servidor já reposicionou (x/y) e o sprite só encaixa; do
+    // Mundo de Coleta/arena é preciso viajar (troca de mapa + sala).
+    room.onMessage('starvation_respawn', (data: { world?: string; x?: number; y?: number } | null) => {
+      if (!data) return;
+      if (typeof data.x === 'number' && typeof data.y === 'number') {
+        scene.deactivateOverlayInteraction();
+        scene.teleportLocalPlayer(data.x, data.y);
+        return;
+      }
+      useGameStore.getState().setTravelRequest('main');
     });
 
     room.onMessage('chat', (data: any) => {

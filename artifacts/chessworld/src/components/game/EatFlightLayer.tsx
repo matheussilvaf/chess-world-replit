@@ -7,9 +7,13 @@
  * Cada voo anima o próprio elemento via requestAnimationFrame (transform e
  * opacity direto no DOM, sem re-render) e mira o personagem A CADA quadro —
  * se ele andar, a comida acompanha. Sem ponte com o mundo (bancada), o alvo
- * é o centro da janela. Com `prefers-reduced-motion`, nada voa.
+ * é o centro da janela; sem slot de origem, sai do rodapé (onde fica a
+ * hotbar). A camada vai num portal no <body>, fora de qualquer ancestral com
+ * transform/overflow, e NÃO respeita `prefers-reduced-motion`: é feedback de
+ * jogo curto, e o Windows com "efeitos de animação" desligado sumia com ele.
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { getInventoryBridge } from '../../game/inventory/inventoryBridge';
 import type { CraftCatalog } from '../../lib/craft/craftCatalog';
 import { EAT_FLIGHT_MS, eatFlightPose, eatFlightSchedule, type FlightPoint } from '../../lib/progress/eatFlight';
@@ -24,8 +28,9 @@ export interface EatFlight {
 const ICON_PX = 34;
 let flightSeq = 0;
 
-function prefersReducedMotion(): boolean {
-  return typeof window !== 'undefined' && typeof window.matchMedia === 'function' && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+/** Origem de emergência quando o slot não está no DOM: rodapé central, onde a hotbar mora. */
+function fallbackOrigin(): FlightPoint {
+  return { x: window.innerWidth / 2, y: window.innerHeight - 56 };
 }
 
 /** Onde o personagem está na tela agora (centro do sprite); sem mundo, o centro da janela. */
@@ -73,13 +78,14 @@ function FlyingItem({ flight, catalog, onDone }: { flight: EatFlight; catalog: C
 
 /** Camada fixa acima do HUD e da janela do inventário (z-500), abaixo do ghost de arrasto (z-1000). */
 export function EatFlightLayer({ flights, catalog, onDone }: { flights: EatFlight[]; catalog: CraftCatalog | null; onDone: (id: number) => void }) {
-  if (flights.length === 0) return null;
-  return (
+  if (flights.length === 0 || typeof document === 'undefined') return null;
+  return createPortal(
     <div className="pointer-events-none fixed inset-0 z-[600]" aria-hidden data-testid="eat-flight-layer">
       {flights.map((flight) => (
         <FlyingItem key={flight.id} flight={flight} catalog={catalog} onDone={onDone} />
       ))}
-    </div>
+    </div>,
+    document.body,
   );
 }
 
@@ -87,7 +93,7 @@ export function EatFlightLayer({ flights, catalog, onDone }: { flights: EatFligh
  * Dono da lista de voos. `launch` agenda `count` saídas ao longo de `eatMs`;
  * cada uma lê a origem na hora (`origin()`, o slot pode ter se movido) e avisa
  * `onLaunch(quantosJáSaíram)` — é isso que faz o número do slot descer um a
- * um. Com movimento reduzido só o aviso acontece. Timers morrem com o dono.
+ * um. Timers morrem com o dono.
  */
 export function useEatFlights() {
   const [flights, setFlights] = useState<EatFlight[]>([]);
@@ -102,12 +108,11 @@ export function useEatFlights() {
   const remove = useCallback((id: number) => setFlights((list) => list.filter((flight) => flight.id !== id)), []);
   const launch = useCallback(
     (itemKey: string, count: number, eatMs: number, origin: () => FlightPoint | null, onLaunch?: (launched: number) => void) => {
-      const reduced = prefersReducedMotion();
       eatFlightSchedule(count, eatMs).forEach((delay, i) => {
         const timer = setTimeout(() => {
           timers.current = timers.current.filter((t) => t !== timer);
-          const from = origin();
-          if (from && !reduced) setFlights((list) => [...list, { id: ++flightSeq, itemKey, from }]);
+          const from = origin() ?? fallbackOrigin();
+          setFlights((list) => [...list, { id: ++flightSeq, itemKey, from }]);
           onLaunch?.(i + 1);
         }, delay);
         timers.current.push(timer);
