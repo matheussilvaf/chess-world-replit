@@ -15,7 +15,7 @@
 import { Router, type Request, type Response } from 'express';
 import { requireSupabaseAdmin, requireSupabaseAuth } from '../auth/supabaseAuth.js';
 import { AppliedRequests } from '../collection/appliedRequests.js';
-import { parseActivityEvents, parseEnergySkillsConfig, type ProgressSnapshot } from '../shared/progress/EnergySkillsShapes.js';
+import { DEFAULT_ENERGY_SKILLS_CONFIG, parseActivityEvents, parseEnergySkillsConfig, type ProgressSnapshot } from '../shared/progress/EnergySkillsShapes.js';
 import {
   ENERGY_SKILLS_TABLE_SQL,
   getEnergySkillsConfig,
@@ -36,8 +36,11 @@ energySkillsAdminRouter.get('/', async (_req: Request, res: Response) => {
     res.status(500).json({ error: result.error });
     return;
   }
+  // Sem tabela/linha ainda: a página edita os DEFAULTS (é o que o jogo usa);
+  // `saved: false` avisa que nada foi persistido. Nunca mandar `config: null`.
   res.json({
-    config: result.config,
+    config: result.config ?? DEFAULT_ENERGY_SKILLS_CONFIG,
+    saved: result.config !== null,
     updatedAt: result.updatedAt,
     tableMissing: result.tableMissing,
     ...(result.tableMissing ? { tableSql: ENERGY_SKILLS_TABLE_SQL } : {}),

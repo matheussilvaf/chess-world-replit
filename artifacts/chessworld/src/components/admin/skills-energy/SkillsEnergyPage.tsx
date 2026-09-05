@@ -161,6 +161,8 @@ export function SkillsEnergyPage() {
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
   const [tableMissing, setTableMissing] = useState(false);
+  /** false = o banco ainda não tem linha: a tela mostra os defaults e "Salvar" grava-os mesmo sem mexer em nada. */
+  const [persisted, setPersisted] = useState(true);
   const [tableSql, setTableSql] = useState<string | null>(null);
   const [progressTableSql, setProgressTableSql] = useState<string | null>(null);
   const [badges, setBadges] = useState<CraftBadgeMap>({});
@@ -197,8 +199,14 @@ export function SkillsEnergyPage() {
         craftApi.badges.list().catch(() => null),
         stationsApi.list().catch(() => null),
       ]);
-      setConfig(clone(res.config));
-      setSaved(clone(res.config));
+      // `config` pode vir null (servidor antigo sem tabela/linha) ou fora do
+      // formato: normaliza pelo parser, que preenche os defaults.
+      const parsed = parseEnergySkillsConfig(res.config ?? DEFAULT_ENERGY_SKILLS_CONFIG);
+      const loadedConfig = parsed.ok ? parsed.config : DEFAULT_ENERGY_SKILLS_CONFIG;
+      if (!parsed.ok) setError(`Configuração salva no banco está inválida (usando os padrões): ${parsed.errors.join('; ')}`);
+      setConfig(clone(loadedConfig));
+      setSaved(clone(loadedConfig));
+      setPersisted(res.saved !== false && res.config !== null);
       setTableMissing(res.tableMissing);
       setTableSql(res.tableMissing ? (res.tableSql ?? null) : null);
       setProgressTableSql(res.progressTableSql ?? null);
@@ -240,6 +248,7 @@ export function SkillsEnergyPage() {
       const res = await energySkillsApi.save(parsed.config);
       setConfig(clone(res.config));
       setSaved(clone(res.config));
+      setPersisted(true);
       setTableMissing(false);
       setSuccess('Configuração salva. O servidor aplica na hora (cache de 30 s para o HUD).');
     } catch (cause) {
@@ -348,7 +357,8 @@ export function SkillsEnergyPage() {
             <button
               type="button"
               onClick={() => void save()}
-              disabled={disabled || tableMissing || !dirty || !validation.ok}
+              disabled={disabled || tableMissing || (!dirty && persisted) || !validation.ok}
+              title={!persisted && !dirty ? 'Nada salvo no banco ainda — grava os valores padrão' : undefined}
               className={`${buttonClass} bg-amber-500 text-slate-950 hover:bg-amber-400`}
               data-testid="save-energy-skills"
             >
@@ -372,6 +382,11 @@ export function SkillsEnergyPage() {
             text="A tabela de configuração de energia/habilidades ainda não existe. Rode uma vez no SQL editor do Supabase e clique em Recarregar:"
             sql={tableSql}
           />
+        )}
+        {loaded && !tableMissing && !persisted && (
+          <div className="mb-4 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-100">
+            Nada salvo no banco ainda — o jogo está usando os valores padrão mostrados abaixo. Clique em <strong>Salvar</strong> para gravá-los (ou ajuste antes).
+          </div>
         )}
         {loaded && progressTableSql && (
           <details className="mb-4 rounded-lg border border-slate-700/60 bg-slate-900/60 p-3 text-xs text-slate-300">

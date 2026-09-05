@@ -1,6 +1,6 @@
 /**
  * HTTP client da página /admin/skills-energy (Supabase JWT, admin):
- *   GET {base}/api/admin/energy-skills-config → { config, updatedAt, tableMissing, tableSql?, progressTableSql }
+ *   GET {base}/api/admin/energy-skills-config → { config, saved, updatedAt, tableMissing, tableSql?, progressTableSql }
  *   PUT {base}/api/admin/energy-skills-config → { config }
  */
 import { getColyseusHttpUrl } from '../../../config/colyseus';
@@ -9,7 +9,10 @@ import type { EnergySkillsConfig } from '../../../shared/progress/EnergySkillsSh
 import { RigApiError } from '../rig-editor/rigApi';
 
 export interface EnergySkillsConfigResponse {
-  config: EnergySkillsConfig;
+  /** Servidores antigos mandavam `null` quando não havia tabela/linha — tratar como defaults. */
+  config: EnergySkillsConfig | null;
+  /** false = nada persistido ainda (a página mostra os defaults). Ausente em servidores antigos. */
+  saved?: boolean;
   updatedAt: string | null;
   tableMissing: boolean;
   tableSql?: string;
