@@ -37,6 +37,9 @@ import { useInventoryUiStore } from '../stores/inventoryUiStore';
 import { loadInventoryVisualCatalog } from '../lib/inventory/inventoryVisualCatalog';
 import type { CraftThumb } from '../lib/craft/craftCatalog';
 import { clearStationCraftBridge, rejectStationCraft, resolveStationCraft, setStationCraftSender } from '../game/stations/stationCraftBridge';
+import { clearEatBridge, rejectEat, resolveEat, setEatSender, type EatResult } from '../game/progress/eatBridge';
+import { ensureProgressConfig, useProgressStore } from '../stores/progressStore';
+import type { ProgressSnapshot } from '../shared/progress/EnergySkillsShapes';
 import { StationGamePanel } from './game/StationGamePanel';
 import { PlacedStationOverlays } from './game/stations/PlacedStationOverlays';
 import { canUsePlacedStation, usePlacedStationsStore, type PlacedStationView } from '../stores/placedStationsStore';
@@ -610,6 +613,28 @@ export function GameCanvas() {
       sendStationAccessResponse: (placedId, requesterId, allow) => room.send('station_respond_access', { placedId, requesterId, allow }),
     });
     setStationCraftSender((payload) => room.send('craft_item', payload));
+    // Energia + habilidades: snapshot empurrado pela sala; comer via hotbar.
+    setEatSender((payload) => room.send('eat_item', payload));
+    void ensureProgressConfig();
+    const removeProgressUpdate = room.onMessage('progress_update', (data: ProgressSnapshot) => {
+      useProgressStore.getState().applySnapshot(data);
+    });
+    const removeEatResult = room.onMessage('eat_result', (data: EatResult & { requestId?: string }) => {
+      if (Array.isArray(data.items)) useCollectionInventoryStore.getState().applyServerTotals(data.items);
+      resolveEat(data.requestId, data);
+    });
+    // Fraco → anda mais devagar e ferramentas de coleta não batem (a cena avisa via onToolBlocked).
+    const applyEnergyState = (snapshot: ProgressSnapshot | null) => {
+      scene.setEnergyState({ weak: snapshot?.state.weak ?? false, speedPercent: snapshot?.weakSpeedPercent ?? 100 });
+    };
+    applyEnergyState(useProgressStore.getState().snapshot);
+    let lastProgressSnapshot = useProgressStore.getState().snapshot;
+    const unsubscribeProgress = useProgressStore.subscribe((next) => {
+      if (next.snapshot === lastProgressSnapshot) return;
+      lastProgressSnapshot = next.snapshot;
+      applyEnergyState(next.snapshot);
+    });
+    scene.onToolBlocked = () => useProgressStore.getState().setNotice('Você está fraco demais para usar ferramentas — coma algo.');
     const removeCraftResult = room.onMessage('craft_result', (data: { requestId: string; items: Array<{ itemKey: string; qty: number }> }) => {
       resolveStationCraft(data.requestId, { items: data.items });
     });
@@ -627,6 +652,11 @@ export function GameCanvas() {
     });
     const removeInventoryError = room.onMessage('inventory_error', (data: { requestId?: string; message?: string }) => {
       const message = data.message ?? 'Não foi possível alterar o inventário.';
+      // Refeição recusada (sem fome, item sem energia…): o hotbar mostra o aviso.
+      if (rejectEat(data.requestId, message)) {
+        useCollectionInventoryStore.getState().setInventoryError(message);
+        return;
+      }
       const placedStore = usePlacedStationsStore.getState();
       if (data.requestId && placedStore.pickupRequestId === data.requestId) {
         placedStore.setPickupRequestId(null);
@@ -737,11 +767,18 @@ export function GameCanvas() {
       if (typeof removeCraftError === 'function') removeCraftError();
       if (typeof removeAccessRequest === 'function') removeAccessRequest();
       if (typeof removeAccessUpdate === 'function') removeAccessUpdate();
+      if (typeof removeProgressUpdate === 'function') removeProgressUpdate();
+      if (typeof removeEatResult === 'function') removeEatResult();
+      unsubscribeProgress();
+      scene.onToolBlocked = null;
+      scene.setEnergyState({ weak: false, speedPercent: 100 });
+      useProgressStore.getState().setEating(null);
       detachDrops?.();
       detachPlaced?.();
       scene.onPlacedStationClick = null;
       setInventoryBridge(null);
       clearStationCraftBridge();
+      clearEatBridge();
     };
     // Personagem do jogador: equipar/desequipar arma + aviso de "receita
     // salva" (depois da criação, o servidor recarrega do banco e publica).

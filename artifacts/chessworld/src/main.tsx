@@ -43,6 +43,11 @@ const AssetsControllerPage = lazy(() =>
     default: m.AssetsControllerPage,
   })),
 );
+const SkillsEnergyPage = lazy(() =>
+  import('./components/admin/skills-energy/SkillsEnergyPage.tsx').then((m) => ({
+    default: m.SkillsEnergyPage,
+  })),
+);
 
 // Bancadas DEV (inventário: DnD/durabilidade; controles: configurações e
 // teclas) sem Phaser. Fora do DEV o `import.meta.env.DEV` é substituído
@@ -80,6 +85,7 @@ createRoot(document.getElementById('root')!).render(
         <Route path="/admin/stations" element={<StationsControllerPage />} />
         <Route path="/admin/mundo-coleta" element={<CollectionAdminPage />} />
         <Route path="/admin/assets-controller" element={<AssetsControllerPage />} />
+        <Route path="/admin/skills-energy" element={<SkillsEnergyPage />} />
         {/* Old editor URL — kept as a permanent redirect (spec §3) */}
         <Route path="/admin/characters" element={<Navigate to="/admin/rigs" replace />} />
         <Route path="/admin/character-generator" element={<CharacterGeneratorPage />} />

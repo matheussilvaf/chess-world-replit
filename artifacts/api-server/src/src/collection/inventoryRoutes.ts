@@ -23,6 +23,7 @@ import { DEFAULT_TOOL_DURABILITY, getWeaponVariantTool, type WeaponFamilyConfig 
 import { isInventoryItemId } from '../shared/craft/CraftShapes.js';
 import { getWeaponFamiliesCached } from '../rigs/weaponFamilyRepository.js';
 import { AppliedRequests } from './appliedRequests.js';
+import { progressService } from '../progress/progressService.js';
 import {
   INVENTORY_DURABILITY_SQL,
   INVENTORY_TABLE_SQL,
@@ -112,10 +113,8 @@ collectionInventoryRouter.post('/collect', async (req: Request, res: Response) =
     }
     totals.set(key, (totals.get(key) ?? 0) + qty);
   }
-  const result = await addToInventory(
-    userId,
-    [...totals.entries()].map(([itemKey, qty]) => ({ itemKey, qty })),
-  );
+  const collected = [...totals.entries()].map(([itemKey, qty]) => ({ itemKey, qty }));
+  const result = await addToInventory(userId, collected);
   if (!result.ok) {
     if (result.tableMissing) {
       res.status(503).json(TABLE_MISSING_BODY);
@@ -124,6 +123,10 @@ collectionInventoryRouter.post('/collect', async (req: Request, res: Response) =
     res.status(500).json({ error: result.error ?? 'Falha ao persistir' });
     return;
   }
+  // Comida (badge `food`) colhida do chão dá XP de culinária — fora do caminho crítico.
+  progressService.recordPickup(userId, collected).catch((error: unknown) => {
+    console.warn(`[collect] XP de coleta não registrado: ${error instanceof Error ? error.message : String(error)}`);
+  });
   // POST /collect historicamente é consumido como snapshot, não como patch:
   // leia tudo depois do crédito para não fazer o cliente esquecer itens antigos.
   const snapshot = await getInventory(userId);

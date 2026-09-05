@@ -33,6 +33,12 @@ import {
   publicAssetCategoryDataHandler,
 } from "./assets/assetCategoryRoutes.js";
 import { playerCharacterRouter } from "./characters/playerCharacterRoutes.js";
+import { craftBadgesAdminRouter } from "./craft/craftBadgeRoutes.js";
+import {
+  energySkillsAdminRouter,
+  progressRouter,
+  publicEnergySkillsConfigHandler,
+} from "./progress/energySkillsRoutes.js";
 
 const config: ConfigOptions = {
   // Explicit liveness probing: without app-level pings a half-open socket
@@ -176,6 +182,8 @@ const config: ConfigOptions = {
     app.get("/api/craft-data", publicCraftDataHandler);
     app.use("/api/admin/craft-items", craftItemsAdminRouter);
     app.use("/api/admin/craft-recipes", craftRecipesAdminRouter);
+    // Badges dos itens (food/forging/smelting/potion…) — filtros das outras telas.
+    app.use("/api/admin/craft-badges", craftBadgesAdminRouter);
 
     // Estações de criação (spec: /admin/stations): abas + layout por estação
     // e vínculo item→estação; GET público cacheado (painel de estação do jogo).
@@ -196,6 +204,12 @@ const config: ConfigOptions = {
 
     // Personagem jogável (criação/consulta do próprio) — exige Supabase JWT.
     app.use("/api/me/character", playerCharacterRouter);
+
+    // Energia do personagem + habilidades (spec: /admin/skills-energy):
+    // config única no admin, snapshot/atividade do próprio jogador, público cacheado.
+    app.get("/api/energy-skills-config", publicEnergySkillsConfigHandler);
+    app.use("/api/admin/energy-skills-config", energySkillsAdminRouter);
+    app.use("/api/progress", progressRouter);
 
     app.use("/api/tournament", tournamentRouter);
     app.use("/api/coordinator", coordinatorRouter);

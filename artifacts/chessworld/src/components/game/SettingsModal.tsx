@@ -1,7 +1,8 @@
 /**
  * Configurações do jogador (botão da engrenagem no HUD), em abas:
- *   Tema      → tabuleiro e peças (perfil)
- *   Controles → teclas de mover/atacar/interagir (aparelho)
+ *   Tema        → tabuleiro e peças (perfil)
+ *   Controles   → teclas de mover/atacar/interagir (aparelho)
+ *   Habilidades → nível/XP e energia (somente leitura)
  *
  * Diálogo modal de verdade: foco entra na aba ativa ao abrir, Tab circula só
  * dentro dele, Esc fecha (exceto durante a captura de tecla, que consome o Esc
@@ -10,15 +11,17 @@
 import { useEffect, useRef, useState, type ComponentType, type KeyboardEvent as ReactKeyboardEvent } from 'react';
 import { useAuthStore } from '../../stores/authStore';
 import { useGameStore } from '../../stores/gameStore';
-import { X, Settings, Palette, Gamepad2 } from 'lucide-react';
+import { X, Settings, Palette, Gamepad2, Sparkles } from 'lucide-react';
 import { ThemeSettings } from './settings/ThemeSettings';
 import { ControlsSettings } from './settings/ControlsSettings';
+import { SkillsSettings } from './settings/SkillsSettings';
 
-type SettingsTab = 'theme' | 'controls';
+type SettingsTab = 'theme' | 'controls' | 'skills';
 
 const TABS: Array<{ id: SettingsTab; label: string; icon: ComponentType<{ className?: string }> }> = [
   { id: 'theme', label: 'Tema', icon: Palette },
   { id: 'controls', label: 'Controles', icon: Gamepad2 },
+  { id: 'skills', label: 'Habilidades', icon: Sparkles },
 ];
 
 const FOCUSABLE = 'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
@@ -146,7 +149,7 @@ function SettingsDialog({ onClose }: { onClose: () => void }) {
           tabIndex={0}
           className="flex-1 overflow-y-auto p-6 focus:outline-none"
         >
-          {tab === 'theme' ? <ThemeSettings profile={profile} /> : <ControlsSettings />}
+          {tab === 'theme' ? <ThemeSettings profile={profile} /> : tab === 'controls' ? <ControlsSettings /> : <SkillsSettings />}
         </div>
       </div>
     </div>

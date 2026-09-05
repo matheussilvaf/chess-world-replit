@@ -1,0 +1,69 @@
+
+Bom, primeiro de tudo, eu queria que você fosse na página de receitas e nessa página de receita, para cada item, eu queria que você deixasse possível eu adicionar um badge. Um badge vai ser um nome, vai ser um texto, no caso. Eu posso adicionar um texto. Na realidade, eu posso adicionar vários badgezinhos textuais para cada item daquele. Por quê? Esses badgezinhos vão servir como identificação para que eu possa filtrar esse item posteriormente em outros lugares que você vai perceber. Então para cada item que tem lá na página de receitas, eu posso simplesmente adicionar um badgezinho textual para ele, vários badges, que eu quiser. Dito isso, vamos agora para um etapa muito importante do jogo. A gente vai implementar um sistema de gasto de energia do personagem e também um sistema de skills. Eu quero que os dois fiquem na mesma página, entendeu? Então você vai criar uma página em admin que se chama Skills and Character Energy, que vai ser, no caso, um controlador para eu definir tudo. Então o que vai acontecer? Na primeira parte da página, você vai configurar tudo em relação à energia. Primeiro, eu vou ter um campo, onde eu vou definir qual é a energia máxima de todos os personagens do jogo. Esse campo pode vir pré-preenchido com 250. E agora eu vou ter uma lista de condições em que vai significar o gasto de energia no jogo, e essas condições são reais e você deve levar em consideração no jogo mesmo. Agora eu vou te dar a lista de configurações e os campos. Primeira configuração: golpe com picareta. Nessa configuração, eu vou ter dois campos para definir: quanto de energia gasta e a cada quantos golpes. Agora vem a segunda configuração, que é o golpe com machado. A mesma coisa, quanto de energia gasta e a cada quantos golpes. Golpe com machete, a mesma coisa. Golpe com tesoura, a mesma coisa. Golpe com arma em criatura ou animal, a mesma coisa. Ou seja, cada vez que o personagem der um golpe em um animal, seja com a mão, ou seja... Nesse caso, você poderia mudar esse título dessa configuração para: golpe de arma ou mão em criatura ou animal. Exatamente. Ou seja, qualquer golpe que o personagem dê em animais, em criaturas, em monstros, e a configuração é a mesma coisa, menos um de energia. Desculpa, o campo onde eu possa definir quanto de energia gasta e a cada quantos golpes. Defina também uma configuração que é: levar dano de criatura. Desculpa, essa configuração poderia ser: levar dano de qualquer criatura, seja personagem ou monstros. E vai ter também um campo para eu definir quanto de energia gasta. O próximo item de configuração é: a cada vez que o personagem fundir qualquer coisa na fornalha, quando ele clicar no botão pra fundir qualquer coisa na estação fornalha, seja privada ou pública, eu também quero um botão de configuração de quanto de energia ele vai gastar. A mesma coisa você faz pra forja, a mesma coisa você faz pra estação de poções e a mesma coisa você faz pra crafting table, seja pública ou privada. Todas essas estações eu estou me referindo a públicas e privadas. Adicione também uma configuração que é craftar peça do tabuleiro central. Por enquanto, não existe nenhuma funcionalidade, mas adicione também o campo de gasto de energia. No futuro, a gente vai explicar como que funcionará. Construir estação privada. A cada vez que o jogador construir uma estação privada, que são aqueles itens que você já sabe, que é a fornalha, que é a bicórnia, que é o anvil. A estação de poções privada e também a crafting table privada. Quando ele craftar qualquer um desses itens, eu também quero definir quanto de energia vai ser gasto. Eu quero definir também as porcentagens de controle em relação à energia. Por exemplo, eu queria livremente criar condições. Por exemplo, eu vou conseguir adicionar condições, criar condições, e vai ser uma embaixo da outra, por exemplo. As opções, por enquanto, são: quando a energia atingir, aí tem o campo de porcentagem e depois vai ter o campo da ação, e você vai ter que considerar isso. No campo da ação, as opções vão ser: mostrar que está com fome, e a outra ação vai ser ficar fraco. E a outra ação vai ser morrer. Beleza? Nessa parte de energia, eu queria também que eu tivesse um campo pra dizer qual é o HP de todos os personagens do jogo. Entendeu? Então, no começo, onde eu defino a energia total, eu queria definir também um campo de HP para o personagem. Bom, onde você vai posicionar a barra de energia no jogo? Você vai posicionar ela logo acima do acesso rápido do inventário. Aquilo vai ser a barra de energia. E você vai customizar aquela barra de energia em cores diferentes, por exemplo, quando o personagem estiver com fome. E também com cor diferente quando o personagem estiver fraco. Outra coisa, eu quero que você crie uma configuração nessa mesma página que é a seguinte: quando o personagem estiver fraco, qual a velocidade que ele vai conseguir andar no jogo? Eu preciso ter uma barrinha, um range, um campo range, onde defina qual vai ser a velocidade do jogador quando ele estiver com fome. Quando o jogador estiver fraco, ele não pode utilizar picaretas pra coletar minerais, ele não pode utilizar machado para coletar árvores. Ele pode sim coletar coisas com a mão, como por exemplo, as pedras de mão, ele pode coletar arbusto, tudo que for de mão ele pode coletar. Agora, ele não pode utilizar as ferramentas. Ele pode utilizar sua arma principal para matar animais. Pode sim, está liberado. E se o personagem tentar utilizar essas ferramentas, fazer coisas que não pode, você tem que informar visualmente, seja de forma textual ou de forma visual apenas, que ele não pode fazer isso porque a energia está baixa, porque ele está fraco. Mas é só em relação às ferramentas. A animação da arma principal continua sendo a mesma. Nessa área também, de configuração de energia, eu quero que você liste todos os itens presentes lá na receita, no painel de receita, que tem o badge, que tem o texto do badge definido como food E para cada item desse, eu vou poder definir quanto de energia o personagem ganha ao comer esse item. Agora eu vou explicar a você como é que funciona a comida desse item. Todos os itens que podem ser comidos, consumidos pelo personagem e que dá energia, são esses itens que têm o badge food. Como vai funcionar para comer? O personagem que tem esse item food, que tem o badge de food no inventário, vai arrastar esse item para a área de acesso rápido e para comer, ele simplesmente vai clicar nesse item. Por exemplo, se ele arrastou três bifes para essa área de acesso rápido e ele clicar, ele vai comer três bifes. E você vai calcular baseado em quanta energia cada bife dá. Aí você vai colocar um loader. Qual que vai ser o loader? Vai ser um loader que vai carregar de baixo para cima, nessa caixinha do item do inventário do acesso rápido. É apenas uma caixinha da cor verde, que é exatamente igual a esse verde que você está utilizando na durabilidade das ferramentas, por exemplo. Só que vai ser um verde que vai carregar de baixo para cima, com uma opacidade um pouco reduzida, um efeito bem legal. Isso pode durar alguns segundos. Não tão demorado, tem que ser rápido. E quando carregar, o personagem vai simplesmente ter carregado energia.
+
+finalizado essa parte de energia, na mesma pagina voce cria o sistema de skills, que terao as seguintes skills:
+
+Mining
+Fighting
+Woodcutting
+Hunting
+Forging
+Smelting
+Cooking
+Alchemy
+Trading
+
+
+Mining
+1- List all minerals of the game, and i have to be able to define in number how much experience per mineral nó.
+ And the experience should be given para cada nó de mineral coletado.
+
+2
+
+
+Fighting
+You get fighting experience whenever you fight against anyone on the map, i have to be able to define number of experience of these situations:
+
+fighting against another player and winning
+fighting against another player and losing
+fighting against monster and winning
+fighting against monster and losing
+
+Woodcutting
+List with all trees and i have to be able to define number of experience for each tree 
+
+
+Hunting
+Cada vez que  o jogador concluir uma caçada
+aqui voce vai listar os monstros que tem a categoria "caça"
+
+por enquanto nao faça nada nessa categoria, pois eu ainda nao implementei sistema de monstros, quando eu implementar eu volto aqui e peço pra voce ajustar
+
+
+Forging
+Lista todos os itens que podem ser forjados, e o quanto de experiencia cada um deles vai dar
+A forja é o momento em que o jogador crie um item forjado, ou seja, um jogador forjou uma picareta, ou machado. enfim, os itens de forja sao aqueles que estao na estação de forja, os itens estao com badge chamado "forging"
+
+
+Smelting
+Lista todos os itens que podem ser fundidos na fornalha, e o quanto de experiencia cada um deles vai dar
+A fundição/smelting é o momento em que o jogador crie um item, ou seja, um jogador derreteu ouro e transformou em barra de ouro, entao nesse momento ele ganha experiência, enfim os itens de fornalha sao aqueles que estao na estação de Fornalha, os itens estao com badge chamado "smelting"
+
+Cooking
+Cada vez que o jogador utiliza a fornalha para cozinhar, na aba cozinhar, quanod ele criar algum item, voce vai computar a experiência
+
+E tambem voce deve computar experiência para cada vez que o personagem comer
+
+Entao aqui voce lista todos os itens que estao na aba cozinha, e eu vou poder definir quanto de experiência cada item dá
+
+E também voce deve listar aqui todos os itens que estão na pagina de receitas que tem o badge com nome de food, no caso desses itens voce deve acrescentar a experiência no momento que eles sao coletados do chao
+
+
+Alchemy
+Aqui você adiciona nenhum item nao faz nada por enquanto, posteriormente eu vou pedir, mas os itens estao com badge chamado "potion"
+
+Trading
+Aqui voce nao faz nada por enquanto, pois o mercado ainda nao esta funcionando
+
+
+Para cada skill vai ter um total de experiência base do Level 1, todos começam no level 1 de cada skills, e a formula para avançar pro próximo level é XP_Necessário = Base * (Taxa ^ (Nível_Atual - 1)), entao eu preciso definir um XP BASE geral nessa pagina, que serve como xp base geral de todos os niveis

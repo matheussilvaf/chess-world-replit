@@ -6,16 +6,20 @@
  * soltar no chão. Também é onde aparecem as recusas do servidor (equipar/
  * inventário), porque a janela pode estar fechada.
  */
-import { useCallback, useEffect, useMemo, useRef } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { AlertTriangle, Backpack, X } from 'lucide-react';
 import { usePlayerCharacterStore } from '../../stores/playerCharacterStore';
 import { useCollectionInventoryStore, weaponSlotIndex } from '../../stores/collectionInventoryStore';
 import { useInventoryUiStore } from '../../stores/inventoryUiStore';
+import { useProgressStore } from '../../stores/progressStore';
 import { getInventoryBridge } from '../../game/inventory/inventoryBridge';
-import { useInventoryVisualCatalog } from '../../lib/inventory/inventoryVisualCatalog';
+import { canEat, eat } from '../../game/progress/eatBridge';
+import { loadCraftBadges, useInventoryVisualCatalog } from '../../lib/inventory/inventoryVisualCatalog';
 import { toolDurabilityView } from '../../lib/inventory/toolDurability';
 import { isPlaceableStationItemKey } from '../../shared/craft/PlaceableStations';
+import { BADGE_FOOD, itemHasBadge, type CraftBadgeMap } from '../../shared/craft/CraftBadges';
 import { durabilityLabel } from './inventory/DurabilityBar';
+import { EnergyBar } from './EnergyBar';
 import { InventorySlotCell } from './inventory/InventorySlotCell';
 import { WeaponSlotCell } from './inventory/WeaponSlotCell';
 import { GHOST_SCALE, SlotDragGhost } from './inventory/SlotDragGhost';
@@ -24,6 +28,24 @@ import { useSlotFlip } from './inventory/useSlotFlip';
 
 const isTool = (key: string) => key.startsWith('gen:crafttools/');
 const NOTICE_MS = 5000;
+/** Duração do "loader" de comer: o slot enche e só então o servidor é acionado. */
+const EAT_MS = 1600;
+
+/** Sobreposição verde que enche o slot de baixo para cima enquanto o jogador come. */
+function EatingOverlay() {
+  return (
+    <span
+      aria-hidden
+      data-testid="eating-overlay"
+      className="pointer-events-none absolute inset-0 overflow-hidden rounded-[4px]"
+    >
+      <span
+        className="absolute inset-0 origin-bottom bg-emerald-400/55 mix-blend-screen"
+        style={{ animation: `eat-fill ${EAT_MS}ms linear forwards` }}
+      />
+    </span>
+  );
+}
 
 export function ToolHotbar() {
   const character = usePlayerCharacterStore((s) => s.character);
@@ -48,12 +70,25 @@ export function ToolHotbar() {
   const toggleInventory = useInventoryUiStore((s) => s.toggleInventory);
   const beginPlacement = useInventoryUiStore((s) => s.beginPlacement);
   const catalog = useInventoryVisualCatalog();
+  const eatingKey = useProgressStore((s) => s.eatingKey);
+  const setEating = useProgressStore((s) => s.setEating);
+  const foods = useProgressStore((s) => s.config.energy.foods);
+  const [badges, setBadges] = useState<CraftBadgeMap | null>(null);
   const barRef = useRef<HTMLDivElement | null>(null);
+  const eatTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Slots são populados pelo servidor — carregar assim que o mundo abrir, não só ao abrir a janela.
   useEffect(() => {
     if (character && ready) ensureLoaded();
   }, [character, ready, ensureLoaded]);
+
+  // Badges (`food`) decidem o que o clique faz num item comum.
+  useEffect(() => {
+    let cancelled = false;
+    loadCraftBadges().then((map) => { if (!cancelled) setBadges(map); }).catch(() => { /* sem badges: nada é comida */ });
+    return () => { cancelled = true; };
+  }, []);
+  useEffect(() => () => { if (eatTimerRef.current) clearTimeout(eatTimerRef.current); }, []);
 
   // Avisos somem sozinhos.
   const notice = equipError ?? inventoryError;
@@ -97,11 +132,47 @@ export function ToolHotbar() {
 
   if (!character || !ready) return null;
 
+  const isFood = (key: string) => !!badges && itemHasBadge(badges, key, BADGE_FOOD);
+
+  /** Comer: loader de EAT_MS no slot e SÓ então o pedido vai à sala. */
+  const startEating = (key: string) => {
+    if (eatingKey) return; // já mastigando
+    if (!canEat()) {
+      setInventoryError('Conexão com o mundo não está pronta.');
+      return;
+    }
+    if ((foods[key] ?? 0) <= 0) {
+      setInventoryError('Esse alimento ainda não tem energia configurada.');
+      return;
+    }
+    const snapshot = useProgressStore.getState().snapshot;
+    if (snapshot && snapshot.energy >= snapshot.maxEnergy) {
+      setInventoryError('Você não está com fome.');
+      return;
+    }
+    setEating(key);
+    eatTimerRef.current = setTimeout(() => {
+      eatTimerRef.current = null;
+      eat(key)
+        .catch((e: Error) => {
+          // Recusas com requestId já foram avisadas pelo GameCanvas; aqui só timeouts/rede.
+          if (!useCollectionInventoryStore.getState().error) setInventoryError(e.message);
+        })
+        .finally(() => {
+          if (useProgressStore.getState().eatingKey === key) setEating(null);
+        });
+    }, EAT_MS);
+  };
+
   const onCellClick = (key: string | null) => {
     if (consumeClick() || !key) return;
     if (isTool(key)) {
       selectItem(null);
       send?.(live !== key, key);
+      return;
+    }
+    if (isFood(key)) {
+      startEating(key);
       return;
     }
     selectItem(selectedItemKey === key ? null : key);
@@ -124,6 +195,7 @@ export function ToolHotbar() {
             </button>
           </div>
         )}
+        <EnergyBar />
         <div className="pointer-events-auto flex items-stretch gap-1.5">
           <div
             ref={barRef}
@@ -140,7 +212,9 @@ export function ToolHotbar() {
               const hint = key
                 ? isTool(key)
                   ? live === key ? 'Ferramenta equipada — clique para guardar' : 'Clique para equipar a ferramenta'
-                  : undefined
+                  : isFood(key)
+                    ? eatingKey === key ? 'Comendo…' : `Clique para comer${foods[key] ? ` (+${foods[key]} energia cada)` : ''}`
+                    : undefined
                 : 'Slot vazio';
               return (
                 <div key={index} className="w-12 sm:w-14">
@@ -156,6 +230,7 @@ export function ToolHotbar() {
                     ghosted={dragging?.from === index}
                     dropTarget={dragging?.over === index}
                     title={hint && view ? `${hint} · ${durabilityLabel(view)}` : hint}
+                    overlay={key && eatingKey === key ? <EatingOverlay /> : undefined}
                     onPointerDown={key ? (event) => handlePointerDown(index, key, event) : undefined}
                     onClick={() => onCellClick(key)}
                   />

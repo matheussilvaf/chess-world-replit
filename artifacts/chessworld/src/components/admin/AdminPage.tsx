@@ -2,7 +2,7 @@ import { useEffect, useState, useCallback } from 'react';
 import { supabase } from '../../lib/supabase';
 import { useInteractionStore } from '../../stores/interactionStore';
 import { getColyseusHttpUrl } from '../../config/colyseus';
-import { Settings, Gauge, ZoomIn, ArrowLeft, Crosshair, Bug, Waypoints, Monitor, Smartphone, MessageSquare, Wand2, Swords, Hammer, Boxes, Sprout, Factory } from 'lucide-react';
+import { Settings, Gauge, ZoomIn, ArrowLeft, Crosshair, Bug, Waypoints, Monitor, Smartphone, MessageSquare, Wand2, Swords, Hammer, Boxes, Sprout, Factory, Sparkles } from 'lucide-react';
 import { TournamentConfigSection } from './TournamentConfigSection';
 
 interface GameSettings {
@@ -224,6 +224,18 @@ export function AdminPage() {
             <div>
               <p className="text-sm font-medium text-white">Assets Controller</p>
               <p className="text-xs text-slate-400">Categorias de permissão dos assets</p>
+            </div>
+          </a>
+          <a
+            href="/admin/skills-energy"
+            className="flex items-center gap-3 rounded-xl border border-slate-800 bg-slate-900 hover:border-amber-500/50 hover:bg-slate-800/80 transition-colors p-4"
+          >
+            <div className="w-9 h-9 rounded-lg bg-amber-500/10 flex items-center justify-center">
+              <Sparkles className="w-4 h-4 text-amber-400" />
+            </div>
+            <div>
+              <p className="text-sm font-medium text-white">Skills and Character Energy</p>
+              <p className="text-xs text-slate-400">Energia, fome, comidas e XP das habilidades</p>
             </div>
           </a>
         </div>

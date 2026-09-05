@@ -3,25 +3,49 @@ import { getColyseusHttpUrl } from '../../config/colyseus';
 import { getGeneratorManifest } from '../../game/characters/appearanceRuntime';
 import { buildCraftCatalog, type CraftCatalog, type CraftCatalogEntry } from '../craft/craftCatalog';
 import type { CraftItemConfig } from '../../shared/craft/CraftShapes';
+import type { CraftBadgeMap } from '../../shared/craft/CraftBadges';
+
+interface CraftData {
+  items: Record<string, CraftItemConfig>;
+  badges: CraftBadgeMap;
+}
 
 let catalogPromise: Promise<CraftCatalog> | null = null;
-let craftItemsPromise: Promise<Record<string, CraftItemConfig>> | null = null;
+let craftDataPromise: Promise<CraftData> | null = null;
+/** Última resposta boa — leitura síncrona para o runtime (hotbar, comer). */
+let craftDataCache: CraftData | null = null;
 
-/** Craft items configurados no admin (nome, imagem, durabilidade das estações portáteis), cacheados. */
-export function loadCraftItems(): Promise<Record<string, CraftItemConfig>> {
-  if (craftItemsPromise) return craftItemsPromise;
-  craftItemsPromise = (async () => {
+/** GET /api/craft-data (itens + badges), cacheado por sessão de página. */
+function loadCraftData(): Promise<CraftData> {
+  if (craftDataPromise) return craftDataPromise;
+  craftDataPromise = (async () => {
     const base = getColyseusHttpUrl();
     if (!base) throw new Error('Catálogo indisponível');
     const response = await fetch(`${base.replace(/\/api$/, '')}/api/craft-data`);
     if (!response.ok) throw new Error('Catálogo indisponível');
-    const data = (await response.json()) as { items?: Record<string, CraftItemConfig> };
-    return data.items ?? {};
+    const data = (await response.json()) as { items?: Record<string, CraftItemConfig>; badges?: CraftBadgeMap };
+    craftDataCache = { items: data.items ?? {}, badges: data.badges ?? {} };
+    return craftDataCache;
   })().catch((error) => {
-    craftItemsPromise = null;
+    craftDataPromise = null;
     throw error;
   });
-  return craftItemsPromise;
+  return craftDataPromise;
+}
+
+/** Craft items configurados no admin (nome, imagem, durabilidade das estações portáteis), cacheados. */
+export function loadCraftItems(): Promise<Record<string, CraftItemConfig>> {
+  return loadCraftData().then((data) => data.items);
+}
+
+/** Badges (`food`, `forging`…) por item, cacheadas junto com os itens. */
+export function loadCraftBadges(): Promise<CraftBadgeMap> {
+  return loadCraftData().then((data) => data.badges);
+}
+
+/** Badges já carregadas (null antes do 1º load) — para checagens síncronas no jogo. */
+export function cachedCraftBadges(): CraftBadgeMap | null {
+  return craftDataCache?.badges ?? null;
 }
 
 export function loadInventoryVisualCatalog(): Promise<CraftCatalog> {

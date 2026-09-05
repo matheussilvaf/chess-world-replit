@@ -63,6 +63,8 @@ import {
 } from '../../shared/collection/CollectionShapes';
 import { sweepPath } from './moveSweep';
 import { queueCollect, queueToolWear } from '../../stores/collectionInventoryStore';
+import { queueActivity } from '../../stores/progressStore';
+import { ENERGY_TOOL_KINDS } from '../../shared/progress/EnergySkillsShapes';
 import { gatherAudio } from '../audio/gatherAudio';
 
 /**
@@ -1096,6 +1098,8 @@ export class CraftingMapRuntime {
     // (toolRef '') e arma da classe (gen:weapon/) não gastam. O servidor é
     // quem quebra a ferramenta; aqui só a barra desce na hora.
     if (hit.toolRef) queueToolWear(hit.toolRef);
+    // Energia: golpe de ferramenta que conecta (o servidor cobra a cada N golpes).
+    if (hit.toolKind && (ENERGY_TOOL_KINDS as readonly string[]).includes(hit.toolKind)) queueActivity('tool_strike', hit.toolKind);
     if (node.kind === 'animal') {
       const ag = this.animals.find((a) => a.sprite === node.sprite);
       if (!ag || ag.dead) return;
@@ -1108,6 +1112,7 @@ export class CraftingMapRuntime {
         return;
       }
       this.flashNode(spr, 0xffffff);
+      queueActivity('creature_strike', node.key); // energia: golpe de arma/mão em animal
       // HP do admin (resourceHp['animal:<id>']); a mão bate com handPower.
       if (node.hp < 0) node.hp = this.maxHpFor(node.key);
       const power = hit.toolKind === 'hand' ? this.handPower() : hit.power;
@@ -1150,6 +1155,7 @@ export class CraftingMapRuntime {
       node.broken = true;
       this.hideNodeHpBar(node);
       this.breakNode(node);
+      if (node.kind === 'mineral' || node.kind === 'tree') queueActivity('node_broken', node.key); // XP Mineração/Lenhador
     } else {
       this.showNodeHpBar(node);
       // Tremidinha de dano.

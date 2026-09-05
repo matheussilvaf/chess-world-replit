@@ -1,0 +1,53 @@
+Mining
+1- List all minerals of the game, and i have to be able to define in number how much experience per mineral nó.
+ And the experience should be given para cada nó de mineral coletado.
+
+2
+
+
+Fighting
+You get fighting experience whenever you fight against anyone on the map, i have to be able to define number of experience of these situations:
+
+fighting against another player and winning
+fighting against another player and losing
+fighting against monster and winning
+fighting against monster and losing
+
+Woodcutting
+List with all trees and i have to be able to define number of experience for each tree 
+
+
+Hunting
+Cada vez que  o jogador concluir uma caçada
+aqui voce vai listar os monstros que tem a categoria "caça"
+
+por enquanto nao faça nada nessa categoria, pois eu ainda nao implementei sistema de monstros, quando eu implementar eu volto aqui e peço pra voce ajustar
+
+
+Forging
+Lista todos os itens que podem ser forjados, e o quanto de experiencia cada um deles vai dar
+A forja é o momento em que o jogador crie um item forjado, ou seja, um jogador forjou uma picareta, ou machado. enfim, os itens de forja sao aqueles que estao na estação de forja, os itens estao com badge chamado "forging"
+
+
+Smelting
+Lista todos os itens que podem ser fundidos na fornalha, e o quanto de experiencia cada um deles vai dar
+A fundição/smelting é o momento em que o jogador crie um item, ou seja, um jogador derreteu ouro e transformou em barra de ouro, entao nesse momento ele ganha experiência, enfim os itens de fornalha sao aqueles que estao na estação de Fornalha, os itens estao com badge chamado "smelting"
+
+Cooking
+Cada vez que o jogador utiliza a fornalha para cozinhar, na aba cozinhar, quanod ele criar algum item, voce vai computar a experiência
+
+E tambem voce deve computar experiência para cada vez que o personagem comer
+
+Entao aqui voce lista todos os itens que estao na aba cozinha, e eu vou poder definir quanto de experiência cada item dá
+
+E também voce deve listar aqui todos os itens que estão na pagina de receitas que tem o badge com nome de food, no caso desses itens voce deve acrescentar a experiência no momento que eles sao coletados do chao
+
+
+Alchemy
+Aqui você adiciona nenhum item nao faz nada por enquanto, posteriormente eu vou pedir, mas os itens estao com badge chamado "potion"
+
+Trading
+Aqui voce nao faz nada por enquanto, pois o mercado ainda nao esta funcionando
+
+
+Para cada skill vai ter um total de experiência base do Level 1, todos começam no level 1 de cada skills, e a formula para avançar pro próximo level é XP_Necessário = Base * (Taxa ^ (Nível_Atual - 1)), entao eu preciso definir um XP BASE geral nessa pagina, que serve como xp base geral de todos os niveis

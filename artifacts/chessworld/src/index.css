@@ -95,6 +95,20 @@ canvas {
   to   { transform: translateY(0);    opacity: 1; }
 }
 
+/* ─── Energia / habilidades ────────────────────────────────────────────────
+   Ganho de XP sobe e some acima da barra de energia. */
+@keyframes energy-tick {
+  0%   { transform: translateY(6px); opacity: 0; }
+  12%  { transform: translateY(0);   opacity: 1; }
+  75%  { opacity: 1; }
+  100% { transform: translateY(-10px); opacity: 0; }
+}
+/* Comer: o slot da hotbar enche de baixo para cima (verde da durabilidade). */
+@keyframes eat-fill {
+  from { transform: scaleY(0); }
+  to   { transform: scaleY(1); }
+}
+
 /* ─── Inventário: arrastar-e-soltar ────────────────────────────────────────
    O ghost (SlotDragGhost) é movido por translate3d no wrapper externo; o
    interno centraliza no ponteiro e "levanta" (escala 1.1 = GHOST_SCALE, a

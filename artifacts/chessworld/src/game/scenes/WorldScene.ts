@@ -252,6 +252,13 @@ export class WorldScene extends Phaser.Scene {
   private arrowProjectiles: ArrowProjectiles | null = null;
   private currentDirection: Direction8 = 'down';
   private playerSpeed = MAP_CONFIG.playerSpeed;
+  /** Velocidade das configurações (sem o fator de fraqueza). */
+  private basePlayerSpeed = MAP_CONFIG.playerSpeed;
+  /** Fator de energia (fraco = weakSpeedPercent/100). */
+  private speedMultiplier = 1;
+  /** Fraco: ferramentas de coleta não golpeiam (aviso via onToolBlocked). */
+  private toolsBlocked = false;
+  public onToolBlocked: (() => void) | null = null;
   private showDebugVisuals = false;
   private playerFeetOffset = 0;
   private playerFeetOffsetX = 0;
@@ -2364,7 +2371,15 @@ export class WorldScene extends Phaser.Scene {
   }
 
   public setPlayerSpeed(speed: number) {
-    this.playerSpeed = speed;
+    this.basePlayerSpeed = speed;
+    this.playerSpeed = speed * this.speedMultiplier;
+  }
+
+  /** Estado de energia do HUD: fator de velocidade (fraco) e bloqueio de ferramentas. */
+  public setEnergyState(state: { weak: boolean; speedPercent: number }) {
+    this.speedMultiplier = state.weak ? Math.max(0.05, Math.min(1, state.speedPercent / 100)) : 1;
+    this.playerSpeed = this.basePlayerSpeed * this.speedMultiplier;
+    this.toolsBlocked = state.weak;
   }
 
   public setShowDebugVisuals(show: boolean) {
@@ -3598,6 +3613,11 @@ export class WorldScene extends Phaser.Scene {
     if (!def || !this.player) return false;
     if (this.movementLocked || this.inMatch || this.currentSeatInfo || this.seatTween) return false;
     if (Date.now() < this.deadUntil) return false; // corpses don't swing
+    // Fraco (energia baixa): ferramentas de coleta não batem — mão e arma seguem normais.
+    if (this.toolsBlocked && this.localWeaponRef?.startsWith('gen:crafttools/')) {
+      this.onToolBlocked?.();
+      return false;
+    }
     // Mirror of the SERVER cooldown (anim duration + pad) plus a jitter
     // margin: anything sent earlier is silently dropped by the server, which
     // would show a local-only "ghost swing" that deals no damage.

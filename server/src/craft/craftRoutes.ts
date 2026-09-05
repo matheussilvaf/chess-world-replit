@@ -39,6 +39,7 @@ import {
   saveCraftItem,
   saveCraftRecipe,
 } from './craftRepository.js';
+import { getCraftBadgesCached } from './craftBadgeRepository.js';
 
 const IMAGE_BUCKET = 'craft-items';
 const MAX_IMAGE_BYTES = 4 * 1024 * 1024; // 4MB
@@ -364,8 +365,8 @@ craftRecipesAdminRouter.delete('/:targetId', async (req: Request, res: Response)
 
 // ------------------------------------------------------------------ public
 
-/** Read-only cached snapshot for game clients (future player craft panel). */
+/** Read-only cached snapshot for game clients (painel de craft, hotbar, HUD). */
 export async function publicCraftDataHandler(_req: Request, res: Response): Promise<void> {
-  const [items, recipes] = await Promise.all([getCraftItemsCached(), getCraftRecipesCached()]);
-  res.json({ items, recipes });
+  const [items, recipes, badges] = await Promise.all([getCraftItemsCached(), getCraftRecipesCached(), getCraftBadgesCached()]);
+  res.json({ items, recipes, badges });
 }

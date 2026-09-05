@@ -10,10 +10,13 @@
  *   GET  {base}/api/admin/craft-recipes
  *   PUT  {base}/api/admin/craft-recipes/:targetId
  *   DELETE {base}/api/admin/craft-recipes/:targetId
+ *   GET  {base}/api/admin/craft-badges                   → { badges, tableMissing, tableSql? }
+ *   PUT  {base}/api/admin/craft-badges/:itemId           body { badges } (vazia = remove)
  */
 import { getColyseusHttpUrl } from '../../../config/colyseus';
 import { supabase } from '../../../lib/supabase';
 import type { CraftItemConfig, CraftRecipeConfig } from '../../../shared/craft/CraftShapes';
+import type { CraftBadgeMap } from '../../../shared/craft/CraftBadges';
 import { RigApiError } from '../rig-editor/rigApi';
 
 export interface CraftItemsResponse {
@@ -29,6 +32,12 @@ export interface CraftRecipesResponse {
   updatedAt: Record<string, string>;
   tableMissing: boolean;
   invalidIds: string[];
+  tableSql?: string;
+}
+
+export interface CraftBadgesResponse {
+  badges: CraftBadgeMap;
+  tableMissing: boolean;
   tableSql?: string;
 }
 
@@ -131,5 +140,10 @@ export const craftApi = {
       request<{ recipe: CraftRecipeConfig }>('PUT', `/api/admin/craft-recipes/${encodeURIComponent(config.targetId)}`, config),
     remove: (targetId: string): Promise<{ ok: boolean }> =>
       request<{ ok: boolean }>('DELETE', `/api/admin/craft-recipes/${encodeURIComponent(targetId)}`),
+  },
+  badges: {
+    list: (): Promise<CraftBadgesResponse> => request<CraftBadgesResponse>('GET', '/api/admin/craft-badges'),
+    save: (itemId: string, badges: string[]): Promise<{ itemId: string; badges: string[] }> =>
+      request<{ itemId: string; badges: string[] }>('PUT', `/api/admin/craft-badges/${encodeURIComponent(itemId)}`, { badges }),
   },
 };

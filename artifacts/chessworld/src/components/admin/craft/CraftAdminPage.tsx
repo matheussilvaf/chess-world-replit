@@ -71,6 +71,8 @@ import { isPlaceableStationItemKey } from '../../../shared/craft/PlaceableStatio
 import { stationsApi } from '../stations/stationsApi';
 import { craftApi } from './craftApi';
 import { CatalogThumb } from './CatalogThumb';
+import { BadgeEditor, badgeChipClass } from './BadgeEditor';
+import type { CraftBadgeMap } from '../../../shared/craft/CraftBadges';
 import { ItemFormModal, type ItemFormMode, type ItemFormValues } from './ItemFormModal';
 
 const btnCls =
@@ -102,6 +104,10 @@ export function CraftAdminPage() {
   const [error, setError] = useState<string | null>(null);
   const [tableMissing, setTableMissing] = useState(false);
   const [tableSql, setTableSql] = useState<string | null>(null);
+  /** Badges por item (tabela craft_item_badges). `badgeSql` = tabela ausente; null = rota indisponível. */
+  const [badgeMap, setBadgeMap] = useState<CraftBadgeMap>({});
+  const [badgesState, setBadgesState] = useState<'loading' | 'ready' | 'missing' | 'unavailable'>('loading');
+  const [badgeSql, setBadgeSql] = useState<string | null>(null);
   const [selectedTarget, setSelectedTarget] = useState<string | null>(null);
   /** Rascunhos por alvo — nada persiste até "Salvar receita". */
   const [recipeDrafts, setRecipeDrafts] = useState<Record<string, CraftIngredient[]>>({});
@@ -216,7 +222,72 @@ export function CraftAdminPage() {
       setBusy(false);
       setLoaded(true);
     }
+    // Badges: rota separada — servidor antigo (404) só desliga o editor.
+    try {
+      const badgesRes = await craftApi.badges.list();
+      setBadgeMap(badgesRes.badges ?? {});
+      setBadgesState(badgesRes.tableMissing ? 'missing' : 'ready');
+      setBadgeSql(badgesRes.tableMissing ? (badgesRes.tableSql ?? null) : null);
+    } catch (e) {
+      setBadgeMap({});
+      setBadgesState('unavailable');
+      setBadgeSql(null);
+      if (!(e instanceof RigApiError && e.status === 404)) applyApiError(e);
+    }
   }, [applyApiError]);
+
+  // Badges são salvas na hora, serializadas POR ITEM (fila + sequência) como
+  // as estações: edições rápidas nunca chegam fora de ordem no servidor (a
+  // fila espera a anterior) e a sequência pula gravações já superadas.
+  const badgeSeq = useRef<Record<string, number>>({});
+  const badgeChain = useRef<Record<string, Promise<void>>>({});
+  const handleBadgesChange = useCallback(
+    (itemId: string, next: string[]) => {
+      const seq = (badgeSeq.current[itemId] ?? 0) + 1;
+      badgeSeq.current[itemId] = seq;
+      let prev: string[] | undefined;
+      setBadgeMap((m) => {
+        prev = m[itemId];
+        const copy = { ...m };
+        if (next.length > 0) copy[itemId] = next;
+        else delete copy[itemId];
+        return copy;
+      });
+      const run = async () => {
+        if (badgeSeq.current[itemId] !== seq) return; // já superado por outra edição
+        try {
+          const res = await craftApi.badges.save(itemId, next);
+          if (badgeSeq.current[itemId] !== seq) return;
+          setBadgeMap((m) => {
+            const copy = { ...m };
+            if (res.badges.length > 0) copy[itemId] = res.badges;
+            else delete copy[itemId];
+            return copy;
+          });
+        } catch (e) {
+          if (badgeSeq.current[itemId] !== seq) return;
+          setBadgeMap((m) => {
+            const copy = { ...m };
+            if (prev && prev.length > 0) copy[itemId] = prev;
+            else delete copy[itemId];
+            return copy;
+          });
+          if (e instanceof RigApiError && e.tableMissing) {
+            setBadgesState('missing');
+            if (e.tableSql) setBadgeSql(e.tableSql);
+          }
+          setError(e instanceof Error ? e.message : String(e));
+        }
+      };
+      badgeChain.current[itemId] = (badgeChain.current[itemId] ?? Promise.resolve()).then(run);
+    },
+    [],
+  );
+  const knownBadges = useMemo(() => {
+    const all = new Set<string>();
+    for (const list of Object.values(badgeMap)) for (const b of list) all.add(b);
+    return [...all].sort();
+  }, [badgeMap]);
 
   useEffect(() => {
     void loadAll();
@@ -617,6 +688,30 @@ export function CraftAdminPage() {
           </div>
         )}
 
+        {badgesState === 'missing' && (
+          <div className="mb-4 rounded-lg border border-amber-500/40 bg-amber-500/10 p-3 text-xs text-amber-200">
+            <p className="font-medium mb-1.5">
+              A tabela de badges (craft_item_badges) ainda não existe no Supabase. Rode este SQL no SQL Editor e clique em
+              Recarregar:
+            </p>
+            {badgeSql && (
+              <div className="relative">
+                <pre className="bg-slate-950/70 border border-amber-500/20 rounded-md p-2.5 overflow-x-auto text-[10px] leading-relaxed text-amber-100/90">
+                  {badgeSql}
+                </pre>
+                <button
+                  type="button"
+                  title="Copiar SQL"
+                  className="absolute top-1.5 right-1.5 p-1.5 rounded-md bg-slate-800/90 hover:bg-slate-700 text-slate-300"
+                  onClick={() => void navigator.clipboard.writeText(badgeSql)}
+                >
+                  <Copy className="w-3.5 h-3.5" />
+                </button>
+              </div>
+            )}
+          </div>
+        )}
+
         <div className="grid grid-cols-1 lg:grid-cols-[minmax(300px,1.05fr)_minmax(380px,2fr)] gap-4 items-start">
           {/* ------------------------------------------- itens do jogo */}
           <section className="bg-slate-900/70 border border-slate-700/60 rounded-xl p-3">
@@ -698,6 +793,21 @@ export function CraftAdminPage() {
                                   {entry.detail && (
                                     <span className="block text-[10px] font-mono text-slate-500 truncate">
                                       {entry.detail}
+                                    </span>
+                                  )}
+                                  {(badgeMap[entry.id]?.length ?? 0) > 0 && (
+                                    <span className="mt-0.5 flex flex-wrap gap-1">
+                                      {badgeMap[entry.id].slice(0, 4).map((badge) => (
+                                        <span
+                                          key={badge}
+                                          className={`rounded-full border px-1.5 text-[9px] font-mono leading-4 ${badgeChipClass(badge)}`}
+                                        >
+                                          {badge}
+                                        </span>
+                                      ))}
+                                      {badgeMap[entry.id].length > 4 && (
+                                        <span className="text-[9px] font-mono text-slate-500">+{badgeMap[entry.id].length - 4}</span>
+                                      )}
                                     </span>
                                   )}
                                 </span>
@@ -835,6 +945,21 @@ export function CraftAdminPage() {
                     </span>
                   )}
                 </div>
+
+                {/* Badges do item — salvas na hora, independentes da receita */}
+                {badgesState !== 'unavailable' && (
+                  <div className="mb-4">
+                    <BadgeEditor
+                      badges={badgeMap[selectedEntry.id] ?? []}
+                      onChange={(next) => handleBadgesChange(selectedEntry.id, next)}
+                      disabled={busy || badgesState !== 'ready'}
+                      known={knownBadges}
+                    />
+                    {badgesState === 'missing' && (
+                      <p className="mt-1 text-[10px] text-amber-300/80">Crie a tabela de badges (aviso acima) para editar.</p>
+                    )}
+                  </div>
+                )}
 
                 {/* Grade 3×3 — até 9 ingredientes */}
                 <div className="grid grid-cols-3 gap-2 mb-3">

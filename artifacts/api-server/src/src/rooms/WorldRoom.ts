@@ -25,7 +25,10 @@ import { applyInventoryDeltas, getInventory, giveWithDurability, hasDurability, 
 import { executePlayerCraft } from '../craft/craftService.js';
 import { PLACEABLE_STACK_LIMIT, placeableStationFor } from '../shared/craft/PlaceableStations.js';
 import { getCraftItemsCached } from '../craft/craftRepository.js';
-import { PlacedStationManager, maxDurabilityForItem } from './PlacedStationManager.js';
+import { PlacedStationManager, maxDurabilityForItem, type PlacedReply } from './PlacedStationManager.js';
+import { progressService } from '../progress/progressService.js';
+import { getEnergySkillsConfigCached } from '../progress/energySkillsRepository.js';
+import type { ProgressSnapshot } from '../shared/progress/EnergySkillsShapes.js';
 
 interface JoinOptions {
   /** Legado — IGNORADO para identidade (era spoofável). Mantido só por compat. */
@@ -40,7 +43,11 @@ interface JoinOptions {
 }
 
 const activeGames = new Map<string, Chess>();
-type RoomReply = { event: 'inventory_changed' | 'inventory_error' | 'craft_result' | 'craft_error'; payload: Record<string, unknown> };
+const isAnonId = (playerId: string): boolean => playerId.startsWith('anon:');
+const logProgressError = (error: unknown): void => {
+  console.warn(`[WorldRoom] progresso não registrado: ${error instanceof Error ? error.message : String(error)}`);
+};
+type RoomReply = { event: 'inventory_changed' | 'inventory_error' | 'craft_result' | 'craft_error' | 'eat_result'; payload: Record<string, unknown> };
 interface RoomRequestEntry { kind: string; fingerprint: string; task: Promise<RoomReply>; settled: boolean; }
 
 export class WorldRoom extends Room<WorldState> {
@@ -56,7 +63,26 @@ export class WorldRoom extends Room<WorldState> {
   // matchId -> color of the player whose draw offer is currently awaiting an answer
   private pendingDrawOffers = new Map<string, 'w' | 'b'>();
   /** Server-authoritative combat (client only sends attack intents). */
-  private combatResolver = new CombatResolver(this);
+  private combatResolver = new CombatResolver(this, {
+    // Energia/XP de combate: golpe que conecta custa energia ao atacante e ao
+    // alvo (dano recebido); a morte dá XP de Combate a ambos; reviver enche a energia.
+    onHit: (attacker, target) => {
+      if (!isAnonId(attacker.id)) void progressService.recordCreatureHit(attacker.id).catch(logProgressError);
+      if (!isAnonId(target.id)) void progressService.recordDamageTaken(target.id).catch(logProgressError);
+    },
+    onKill: (attacker, target) => {
+      if (!attacker) return; // fome: sem vencedor
+      if (!isAnonId(attacker.id)) void progressService.recordFightResult(attacker.id, 'pvpWin').catch(logProgressError);
+      if (!isAnonId(target.id)) void progressService.recordFightResult(target.id, 'pvpLoss').catch(logProgressError);
+    },
+    onRevive: (target) => {
+      if (!isAnonId(target.id)) void progressService.restoreEnergy(target.id).catch(logProgressError);
+    },
+  });
+  /** Assinatura do progresso (energia/skills) por sessão autenticada. */
+  private progressUnsubs = new Map<string, () => void>();
+  /** Último snapshot de progresso recebido por sessão (fome pendente, maxHp). */
+  private progressBySession = new Map<string, ProgressSnapshot>();
   /** Personagem jogável carregado por sessão (classe/aparência/arma). */
   private playerCharacters = new Map<string, PlayerCharacterConfigV1>();
   /** Last-request-wins para loads assíncronos do personagem. */
@@ -89,6 +115,9 @@ export class WorldRoom extends Room<WorldState> {
     // Itens no chão expiram sozinhos; a varredura roda mesmo com a sala vazia
     // (ver holdRoomWhileDropsExist) para que o prazo seja o mesmo para todos.
     this.clock.setInterval(() => this.sweepExpiredDrops(), 250);
+    // HP máximo global (config do admin) e morte por fome de quem estava
+    // sentado/ocupado quando a energia zerou.
+    this.clock.setInterval(() => void this.syncProgressState(), 30_000);
 
     this.region = String(options.region || 'default');
     this.placedStations = new PlacedStationManager({
@@ -625,6 +654,11 @@ export class WorldRoom extends Room<WorldState> {
       const body = data as { requestId?: unknown; stationId?: unknown; targetId?: unknown; quantity?: unknown; placedId?: unknown };
       void this.runRoomRequest(client, 'craft_item', body?.requestId, JSON.stringify([body?.stationId, body?.targetId, body?.quantity, body?.placedId ?? null]), () => this.handleCraftItem(client, data));
     });
+    // Comer (badge `food`): o servidor consome só o necessário para encher a energia.
+    this.onMessage('eat_item', (client, data) => {
+      const body = data as { requestId?: unknown; itemKey?: unknown };
+      void this.runRoomRequest(client, 'eat_item', body?.requestId, JSON.stringify([body?.itemKey]), () => this.handleEatItem(client, data));
+    });
     // ---- Estações portáteis (ver PlacedStationManager) ----
     this.onMessage('station_place', (client, data) => {
       const body = data as { requestId?: unknown; itemKey?: unknown; x?: unknown; y?: unknown };
@@ -717,7 +751,7 @@ export class WorldRoom extends Room<WorldState> {
     void this.persistEquippedWeapon(player.id, null);
   }
 
-  private async inventorySnapshot(userId: string): Promise<RoomReply> {
+  private async inventorySnapshot(userId: string): Promise<PlacedReply> {
     const snapshot = await getInventory(userId);
     return snapshot.error || snapshot.tableMissing
       ? { event: 'inventory_error', payload: { message: snapshot.error ?? 'Inventário indisponível' } }
@@ -771,6 +805,59 @@ export class WorldRoom extends Room<WorldState> {
     return result.ok
       ? { event: 'craft_result', payload: { items: result.items } }
       : { event: 'craft_error', payload: { message: result.message } };
+  }
+
+  private async handleEatItem(client: Client, data: unknown): Promise<RoomReply> {
+    const player = this.state.players.get(client.sessionId);
+    const body = data as { itemKey?: unknown };
+    if (!player || isAnonId(player.id)) return { event: 'inventory_error', payload: { message: 'Autenticação obrigatória' } };
+    if (this.combatResolver.isDead(client.sessionId)) return { event: 'inventory_error', payload: { message: 'Você está desmaiado' } };
+    if (typeof body?.itemKey !== 'string' || !isInventoryItemId(body.itemKey)) return { event: 'inventory_error', payload: { message: 'Item inválido' } };
+    const result = await progressService.eat(player.id, body.itemKey);
+    if (!result.ok) return { event: 'inventory_error', payload: { message: result.message } };
+    return {
+      event: 'eat_result',
+      payload: { items: result.items, itemKey: body.itemKey, eaten: result.eaten, energy: result.snapshot.energy, maxEnergy: result.snapshot.maxEnergy },
+    };
+  }
+
+  /**
+   * Snapshot de progresso recebido para uma sessão: HP máximo global, envio
+   * ao cliente (`progress_update`) e morte por fome quando a condição "morrer"
+   * está ativa e o jogador não está sentado nem já desmaiado.
+   */
+  private onProgressSnapshot(sessionId: string, snapshot: ProgressSnapshot, initial: boolean): void {
+    const player = this.state.players.get(sessionId);
+    if (!player || player.sessionId !== sessionId) return;
+    this.progressBySession.set(sessionId, snapshot);
+    this.applyMaxHp(player, snapshot.maxHp, initial);
+    this.clients.find((c) => c.sessionId === sessionId)?.send('progress_update', snapshot);
+    this.maybeStarve(sessionId, player, snapshot);
+  }
+
+  private maybeStarve(sessionId: string, player: PlayerState, snapshot: ProgressSnapshot): void {
+    if (!snapshot.state.dead || player.currentBoardId || this.combatResolver.isDead(sessionId)) return;
+    if (this.combatResolver.killPlayer(sessionId, 'Fome')) {
+      console.log(`[WorldRoom] ${player.username} morreu de fome`);
+    }
+  }
+
+  /** HP máximo global: no join o HP nasce cheio; depois só o teto muda (HP atual é limitado). */
+  private applyMaxHp(player: PlayerState, maxHp: number, fillHp: boolean): void {
+    const next = Math.max(1, Math.floor(maxHp));
+    if (player.maxHp !== next) player.maxHp = next;
+    if (fillHp && player.hp > 0) player.hp = next;
+    else if (player.hp > next) player.hp = next;
+  }
+
+  private async syncProgressState(): Promise<void> {
+    if (this.state.players.size === 0) return;
+    const config = await getEnergySkillsConfigCached();
+    this.state.players.forEach((player, sessionId) => {
+      this.applyMaxHp(player, config.energy.maxHp, false);
+      const snapshot = this.progressBySession.get(sessionId);
+      if (snapshot) this.maybeStarve(sessionId, player, snapshot);
+    });
   }
 
   private isNearCraftStation(x: number, y: number, stationId: string): boolean {
@@ -1057,6 +1144,23 @@ export class WorldRoom extends Room<WorldState> {
     console.log(`[WorldRoom] Player joined: ${player.username} (${client.sessionId}) | total: ${this.state.players.size}`);
     if (!playerId.startsWith('anon:')) void this.inventorySnapshot(playerId).then((reply) => client.send(reply.event, reply.payload));
 
+    // Energia/habilidades: o 1º snapshot chega logo após o load e enche o HP
+    // com o máximo global; os seguintes viram `progress_update` ao cliente.
+    if (!isAnonId(playerId)) {
+      let initial = true;
+      const sessionId = client.sessionId;
+      this.progressUnsubs.get(sessionId)?.();
+      this.progressUnsubs.set(sessionId, progressService.subscribe(playerId, (snapshot) => {
+        this.onProgressSnapshot(sessionId, snapshot, initial);
+        initial = false;
+      }));
+    } else {
+      void getEnergySkillsConfigCached().then((config) => {
+        const still = this.state.players.get(client.sessionId);
+        if (still) this.applyMaxHp(still, config.energy.maxHp, true);
+      });
+    }
+
     // Personagem persistido (aparência/arma) chega de forma assíncrona — o
     // sprite só nasce visível nos outros clientes quando appearance preenche.
     void this.refreshPlayerCharacter(client.sessionId);
@@ -1126,6 +1230,9 @@ export class WorldRoom extends Room<WorldState> {
     this.equipSeq.delete(client.sessionId);
     this.inventoryRequests.delete(client.sessionId);
     this.movementGuards.delete(client.sessionId);
+    this.progressUnsubs.get(client.sessionId)?.();
+    this.progressUnsubs.delete(client.sessionId);
+    this.progressBySession.delete(client.sessionId);
     console.log(`[WorldRoom] Player removed: ${username} | remaining: ${this.state.players.size}`);
 
     const affected: [string, MatchState][] = [];

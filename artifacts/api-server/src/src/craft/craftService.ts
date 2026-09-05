@@ -3,6 +3,7 @@ import { mergeStationsWithDefaults, isStationId } from '../shared/craft/StationS
 import { PLACEABLE_STACK_LIMIT, placeableStationFor } from '../shared/craft/PlaceableStations.js';
 import { getCraftItemsCached, listCraftRecipes } from './craftRepository.js';
 import { listStationMembers, listStations } from './stationRepository.js';
+import { progressService } from '../progress/progressService.js';
 
 export type PlayerCraftResult = { ok: true; items: InventoryItem[] } | { ok: false; message: string };
 
@@ -23,8 +24,8 @@ export async function executePlayerCraft(
   }
   const recipe = recipes.records[targetId];
   const station = mergeStationsWithDefaults(stations.records).find((entry) => entry.stationId === stationId);
-  if (!recipe || members.records[targetId] !== stationId ||
-    !(station?.tabs.some((tab) => tab.rows.some((row) => row.includes(targetId))))) {
+  const tab = station?.tabs.find((entry) => entry.rows.some((row) => row.includes(targetId)));
+  if (!recipe || members.records[targetId] !== stationId || !tab) {
     return { ok: false, message: 'Item não pode ser criado nesta estação' };
   }
   const produced = (recipe.outputQuantity ?? 1) * quantity;
@@ -45,5 +46,10 @@ export async function executePlayerCraft(
   if (!changed.ok) return { ok: false, message: changed.error ?? 'Falha no inventário' };
   const snapshot = await getInventory(userId);
   if (snapshot.error || snapshot.tableMissing) return { ok: false, message: snapshot.error ?? 'Inventário indisponível após craft' };
+  // Energia (por estação + construir estação portátil) e XP (forja/fundição/
+  // culinária) — depois do inventário confirmar; nunca bloqueia o craft.
+  progressService.recordCraft(userId, { stationId, targetId, quantity, tabName: tab.name }).catch((error: unknown) => {
+    console.warn(`[craft] progresso do craft não registrado: ${error instanceof Error ? error.message : String(error)}`);
+  });
   return { ok: true, items: snapshot.items };
 }

@@ -43,12 +43,60 @@ export interface AttackIntent {
   characterId?: string;
 }
 
+/**
+ * Ganchos opcionais para quem cuida de energia/XP (WorldRoom → progressService).
+ * Todos são chamados DEPOIS do estado/broadcast já estarem consistentes.
+ */
+export interface CombatHooks {
+  /** `attacker` acertou `target` (um golpe que conectou). */
+  onHit?: (attacker: PlayerState, target: PlayerState) => void;
+  /** `target` morreu; `attacker` é null quando a causa não é outro jogador (fome). */
+  onKill?: (attacker: PlayerState | null, target: PlayerState) => void;
+  /** `target` reviveu (HP cheio). */
+  onRevive?: (target: PlayerState) => void;
+}
+
 export class CombatResolver {
   private cooldownUntil = new Map<string, number>();
   /** Sessions currently dead (KO'd): timestamp when the server revives them. */
   private deadUntil = new Map<string, number>();
 
-  constructor(private room: Room<WorldState>) {}
+  constructor(private room: Room<WorldState>, private hooks: CombatHooks = {}) {}
+
+  /**
+   * Morte por causa externa ao combate (fome): mesmo estado de cadáver,
+   * mesmo `player_died`/revive dos KOs. Ignorado se já estiver morto/sentado.
+   */
+  killPlayer(sessionId: string, causeName: string): boolean {
+    const target = this.room.state.players.get(sessionId);
+    if (!target || this.isDead(sessionId)) return false;
+    target.hp = 0; // o HP sincroniza pelo schema; não há `combat_hit` (ninguém golpeou)
+    this.killTarget(sessionId, target, null, causeName);
+    return true;
+  }
+
+  /** Estado de morte + timer de revive (compartilhado por KO em combate e fome). */
+  private killTarget(sessionId: string, target: PlayerState, attacker: PlayerState | null, attackerName: string): void {
+    const reviveAt = Date.now() + COMBAT_RESPAWN_MS;
+    this.deadUntil.set(sessionId, reviveAt);
+    this.room.broadcast('player_died', {
+      targetSessionId: sessionId,
+      targetName: target.username,
+      attackerName,
+      respawnMs: COMBAT_RESPAWN_MS,
+    });
+    this.hooks.onKill?.(attacker, target);
+    this.room.clock.setTimeout(() => {
+      // Stale-timer guard: only the timer of the CURRENT death revives.
+      if (this.deadUntil.get(sessionId) !== reviveAt) return;
+      this.deadUntil.delete(sessionId);
+      const still = this.room.state.players.get(sessionId);
+      if (!still) return; // left while dead
+      still.hp = Math.max(1, still.maxHp || DEFAULT_MAX_HP);
+      this.room.broadcast('player_revived', { sessionId, hp: still.hp });
+      this.hooks.onRevive?.(still);
+    }, COMBAT_RESPAWN_MS);
+  }
 
   /** True while a player is KO'd — dead players can't attack, be hit or move. */
   isDead(sessionId: string): boolean {
@@ -201,25 +249,10 @@ export class CombatResolver {
         targetHp: target.hp,
         targetMaxHp,
       });
+      this.hooks.onHit?.(attacker, target);
       if (target.hp <= 0) {
         // Death state: corpse for COMBAT_RESPAWN_MS, then revive at full HP.
-        const reviveAt = Date.now() + COMBAT_RESPAWN_MS;
-        this.deadUntil.set(sessionId, reviveAt);
-        this.room.broadcast('player_died', {
-          targetSessionId: sessionId,
-          targetName: target.username,
-          attackerName: attacker.username,
-          respawnMs: COMBAT_RESPAWN_MS,
-        });
-        this.room.clock.setTimeout(() => {
-          // Stale-timer guard: only the timer of the CURRENT death revives.
-          if (this.deadUntil.get(sessionId) !== reviveAt) return;
-          this.deadUntil.delete(sessionId);
-          const still = this.room.state.players.get(sessionId);
-          if (!still) return; // left while dead
-          still.hp = Math.max(1, still.maxHp || DEFAULT_MAX_HP);
-          this.room.broadcast('player_revived', { sessionId, hp: still.hp });
-        }, COMBAT_RESPAWN_MS);
+        this.killTarget(sessionId, target, attacker, attacker.username);
       }
     }
   }
