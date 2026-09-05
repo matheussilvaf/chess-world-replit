@@ -37,6 +37,8 @@ export type InventoryBridge = {
   worldToScreen: (x: number, y: number) => WorldPoint | null;
   /** Posição do sprite do jogador local (a mesma que o servidor conhece). */
   getPlayerPosition: () => WorldPoint | null;
+  /** Centro visual do sprite do jogador (alvo da comida que voa até ele ao comer). */
+  getPlayerCenter: () => WorldPoint | null;
   /** Anel com o alcance máximo do drop ao redor do jogador. */
   setDropRadiusVisible: (visible: boolean) => void;
   /** Marcador no ponto escolhido (null = remove). */

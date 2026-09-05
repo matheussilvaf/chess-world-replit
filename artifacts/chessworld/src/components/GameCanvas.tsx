@@ -604,6 +604,7 @@ export function GameCanvas() {
         return { x: frame.rect.left + point.x * frame.scaleX, y: frame.rect.top + point.y * frame.scaleY };
       },
       getPlayerPosition: () => scene.getPlayerSpritePosition(),
+      getPlayerCenter: () => scene.getPlayerSpriteCenter(),
       setDropRadiusVisible: (visible) => scene.setDropRadiusVisible(visible),
       setDropMarker: (point) => scene.setDropMarker(point),
       sendDrop: (request) => room.send('inventory_drop', request),

@@ -3,6 +3,8 @@
  *
  * O servidor é a fonte da verdade: a sala empurra `progress_update` (a cada
  * mudança) e o HTTP `/api/progress/me` cobre o carregamento fora da sala.
+ * Cada snapshot traz um `seq` crescente e só o mais novo entra — o mesmo
+ * snapshot chega pela resposta do lote de atividade E pela sala.
  * O runtime do mapa reporta o que só ele enxerga — golpes de ferramenta,
  * golpes em animal e nós quebrados — com `queueActivity(...)`: agregado num
  * lote e enviado com `requestId` (re-tentativa idempotente), mesmo desenho
@@ -14,6 +16,7 @@
 import { create } from 'zustand';
 import type { RigApiError } from '../components/admin/rig-editor/rigApi';
 import { fetchMyProgress, fetchPublicEnergySkillsConfig, postActivity } from '../lib/progressApi';
+import { isNewerProgressSnapshot } from '../lib/progress/snapshotOrder';
 import {
   ACTIVITY_MAX_COUNT,
   ACTIVITY_MAX_ENTRIES,
@@ -72,6 +75,8 @@ export const useProgressStore = create<ProgressState>((set, get) => ({
   skillsOpen: false,
   applySnapshot: (snapshot) => {
     const previous = get().snapshot;
+    // Repetido (HTTP + sala, re-tentativa) ou atrasado: nada a mostrar.
+    if (!isNewerProgressSnapshot(previous, snapshot)) return;
     const ticks = [...get().ticks];
     const names = get().config.skills;
     for (const gain of snapshot.gains ?? []) {

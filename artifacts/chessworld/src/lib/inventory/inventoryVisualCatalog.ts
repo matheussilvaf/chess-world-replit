@@ -33,6 +33,16 @@ function loadCraftData(): Promise<CraftData> {
   return craftDataPromise;
 }
 
+/**
+ * Bancada DEV: injeta itens + badges SEM rede (chamar antes do 1º load; um
+ * catálogo já montado é descartado para incluir os itens injetados).
+ */
+export function primeCraftData(data: CraftData): void {
+  craftDataCache = { items: { ...data.items }, badges: { ...data.badges } };
+  craftDataPromise = Promise.resolve(craftDataCache);
+  catalogPromise = null;
+}
+
 /** Craft items configurados no admin (nome, imagem, durabilidade das estações portáteis), cacheados. */
 export function loadCraftItems(): Promise<Record<string, CraftItemConfig>> {
   return loadCraftData().then((data) => data.items);

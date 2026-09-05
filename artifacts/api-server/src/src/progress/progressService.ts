@@ -73,6 +73,14 @@ interface PlayerProgressState {
   lastTouched: number;
   /** Janela deslizante de eventos aceitos por tipo (só memória; anti-farm). */
   activityWindow: Record<ActivityKind, { since: number; count: number }>;
+  /**
+   * `seq` do último snapshot construído. Só memória, ancorado no relógio
+   * (nunca menor que Date.now()): depois de um restart o processo novo parte
+   * do relógio atual, acima de tudo que o anterior emitiu — o cliente guarda
+   * o último `seq` visto e descarta os menores. Só relógio atrasado no
+   * servidor novo prende o cliente, e apenas pelo tamanho do atraso.
+   */
+  seq: number;
 }
 
 export interface CraftProgressInfo {
@@ -268,6 +276,7 @@ class ProgressService {
           creature_strike: { since: 0, count: 0 },
           node_broken: { since: 0, count: 0 },
         },
+        seq: Date.now(),
       };
       this.states.set(userId, state);
       this.ensureSweep();
@@ -357,11 +366,14 @@ class ProgressService {
     return clamped;
   }
 
+  /** Um snapshot por chamada, sempre com `seq` maior que o anterior (ver PlayerProgressState.seq). */
   private snapshot(state: PlayerProgressState, config: EnergySkillsConfig, gains: Gains): ProgressSnapshot {
     const energy = this.clampEnergy(state, config);
     const skills = {} as Record<SkillId, SkillProgress>;
     for (const id of SKILL_IDS) skills[id] = skillProgressFromXp(config.skills, state.record.skills[id] ?? 0);
+    state.seq = Math.max(state.seq + 1, Date.now());
     return {
+      seq: state.seq,
       energy,
       maxEnergy: config.energy.maxEnergy,
       maxHp: config.energy.maxHp,

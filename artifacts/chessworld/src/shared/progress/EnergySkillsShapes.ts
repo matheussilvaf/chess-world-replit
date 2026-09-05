@@ -492,6 +492,14 @@ export function parseActivityEvents(input: unknown): { ok: true; events: Activit
 // ------------------------------------------------------- snapshot p/ cliente
 
 export interface ProgressSnapshot {
+  /**
+   * Número crescente por jogador (cresce a cada snapshot novo). O MESMO
+   * snapshot chega ao cliente por dois caminhos — resposta HTTP do lote de
+   * atividade e `progress_update` da sala — e re-tentativas idempotentes o
+   * repetem; o cliente ignora o que não for mais novo que o último aplicado
+   * (senão o "+5 XP" aparece em dobro e um atrasado regride a tela).
+   */
+  seq: number;
   energy: number;
   maxEnergy: number;
   maxHp: number;

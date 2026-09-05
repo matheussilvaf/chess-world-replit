@@ -4453,6 +4453,15 @@ export class WorldScene extends Phaser.Scene {
     return this.getPlayerPosition();
   }
 
+  /** Centro visual do sprite do jogador (a origem fica nos pés) — alvo de efeitos do HUD, ex.: comida voando até o personagem. */
+  public getPlayerSpriteCenter(): { x: number; y: number } {
+    if (this.player) {
+      const center = this.player.getCenter();
+      return { x: center.x, y: center.y };
+    }
+    return this.getPlayerPosition();
+  }
+
   /** Espelha as estações portáteis posicionadas da sala (store → cena). */
   public syncPlacedStations(views: PlacedStationView[]) {
     this.placedStationLayer?.sync(views);

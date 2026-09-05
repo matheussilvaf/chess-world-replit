@@ -1,10 +1,11 @@
 /**
  * Hotbar (acesso rápido) fixa no rodapé: espelha a ÚLTIMA linha do inventário.
  * 1º slot = arma da classe (ícone real + estado equipada); os demais são slots
- * comuns — ferramentas equipam/desequipam ao clicar, itens só ficam
- * selecionados. Reordenar por arrasto; arrastar para fora entra no modo de
- * soltar no chão. Também é onde aparecem as recusas do servidor (equipar/
- * inventário), porque a janela pode estar fechada.
+ * comuns — ferramentas equipam/desequipam ao clicar, comestíveis (badge
+ * `edible`) são comidos (loader no slot + comida voando até o personagem),
+ * itens só ficam selecionados. Reordenar por arrasto; arrastar para fora
+ * entra no modo de soltar no chão. Também é onde aparecem as recusas do
+ * servidor (equipar/inventário), porque a janela pode estar fechada.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { AlertTriangle, Backpack, Sparkles, X } from 'lucide-react';
@@ -18,7 +19,9 @@ import { loadCraftBadges, useInventoryVisualCatalog } from '../../lib/inventory/
 import { toolDurabilityView } from '../../lib/inventory/toolDurability';
 import { isPlaceableStationItemKey } from '../../shared/craft/PlaceableStations';
 import { isEdibleItem, type CraftBadgeMap } from '../../shared/craft/CraftBadges';
+import { predictEatCount } from '../../lib/progress/eatFlight';
 import { durabilityLabel } from './inventory/DurabilityBar';
+import { EatFlightLayer, useEatFlights } from './EatFlightLayer';
 import { EnergyBar } from './EnergyBar';
 import { InventorySlotCell } from './inventory/InventorySlotCell';
 import { WeaponSlotCell } from './inventory/WeaponSlotCell';
@@ -28,8 +31,19 @@ import { useSlotFlip } from './inventory/useSlotFlip';
 
 const isTool = (key: string) => key.startsWith('gen:crafttools/');
 const NOTICE_MS = 5000;
-/** Duração do "loader" de comer: o slot enche e só então o servidor é acionado. */
+/**
+ * Duração do "loader" de comer: o slot enche e só então o servidor é acionado.
+ * Nesse tempo os ícones das unidades previstas voam do slot até o personagem
+ * (EatFlightLayer) e o número do slot desce um a um.
+ */
 const EAT_MS = 1600;
+
+/** Enquanto come: quantas unidades já "saíram" do slot (prévia; o servidor confirma no fim). */
+interface EatPreview {
+  key: string;
+  baseQty: number;
+  launched: number;
+}
 
 /** Sobreposição verde que enche o slot de baixo para cima enquanto o jogador come. */
 function EatingOverlay() {
@@ -76,8 +90,10 @@ export function ToolHotbar() {
   const skillsOpen = useProgressStore((s) => s.skillsOpen);
   const toggleSkills = useProgressStore((s) => s.toggleSkills);
   const [badges, setBadges] = useState<CraftBadgeMap | null>(null);
+  const [eatPreview, setEatPreview] = useState<EatPreview | null>(null);
   const barRef = useRef<HTMLDivElement | null>(null);
   const eatTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const { flights, launch: launchFlights, remove: removeFlight } = useEatFlights();
 
   // Slots são populados pelo servidor — carregar assim que o mundo abrir, não só ao abrir a janela.
   useEffect(() => {
@@ -136,8 +152,20 @@ export function ToolHotbar() {
   if (!character || !ready) return null;
 
   const isEdible = (key: string) => !!badges && isEdibleItem(badges, key);
+  /** Quantidade mostrada no slot: enquanto come, desce a cada ícone que voa. */
+  const shownQty = (key: string) =>
+    eatPreview?.key === key ? Math.max(0, Math.min(items[key] ?? 0, eatPreview.baseQty - eatPreview.launched)) : items[key];
+  /** Centro (tela) do slot onde a pilha está AGORA — ela pode ter sido movida pela janela do inventário. */
+  const stackCenter = (key: string) => {
+    const index = useCollectionInventoryStore.getState().slots.indexOf(key);
+    const rect = index >= 0 ? barRef.current?.querySelector<HTMLElement>(`[data-slot-index="${index}"]`)?.getBoundingClientRect() : undefined;
+    return rect ? { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 } : null;
+  };
 
-  /** Comer: loader de EAT_MS no slot e SÓ então o pedido vai à sala. */
+  /**
+   * Comer: loader de EAT_MS no slot e SÓ então o pedido vai à sala. Durante
+   * o loader, um ícone por unidade prevista voa do slot até o personagem.
+   */
   const startEating = (key: string) => {
     if (eatingKey) return; // já mastigando
     if (!canEat()) {
@@ -154,6 +182,12 @@ export function ToolHotbar() {
       return;
     }
     setEating(key);
+    const owned = useCollectionInventoryStore.getState().items[key] ?? 0;
+    const count = predictEatCount({ owned, perUnit: foods[key] ?? 0, energy: snapshot?.energy ?? null, maxEnergy: snapshot?.maxEnergy ?? null });
+    setEatPreview({ key, baseQty: owned, launched: 0 });
+    launchFlights(key, count, EAT_MS, () => stackCenter(key), (launched) => {
+      setEatPreview((preview) => (preview?.key === key ? { ...preview, launched } : preview));
+    });
     eatTimerRef.current = setTimeout(() => {
       eatTimerRef.current = null;
       eat(key)
@@ -163,6 +197,7 @@ export function ToolHotbar() {
         })
         .finally(() => {
           if (useProgressStore.getState().eatingKey === key) setEating(null);
+          setEatPreview((preview) => (preview?.key === key ? null : preview));
         });
     }, EAT_MS);
   };
@@ -224,17 +259,18 @@ export function ToolHotbar() {
                   <InventorySlotCell
                     index={index}
                     itemKey={key}
-                    qty={key ? items[key] : undefined}
+                    qty={key ? shownQty(key) : undefined}
                     catalog={catalog}
                     durability={view}
                     tone="quick"
                     thumbSize={36}
                     active={active}
-                    ghosted={dragging?.from === index}
+                    ghosted={dragging?.from === index || (!!key && eatPreview?.key === key && shownQty(key) === 0)}
                     dropTarget={dragging?.over === index}
                     title={hint && view ? `${hint} · ${durabilityLabel(view)}` : hint}
                     overlay={key && eatingKey === key ? <EatingOverlay /> : undefined}
-                    onPointerDown={key ? (event) => handlePointerDown(index, key, event) : undefined}
+                    // A pilha sendo comida não sai do lugar até o servidor responder.
+                    onPointerDown={key && eatingKey !== key ? (event) => handlePointerDown(index, key, event) : undefined}
                     onClick={() => onCellClick(key)}
                   />
                 </div>
@@ -282,6 +318,7 @@ export function ToolHotbar() {
           size={44}
         />
       )}
+      <EatFlightLayer flights={flights} catalog={catalog} onDone={removeFlight} />
     </>
   );
 }
