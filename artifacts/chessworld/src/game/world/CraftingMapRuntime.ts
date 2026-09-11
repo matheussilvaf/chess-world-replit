@@ -14,6 +14,7 @@ import {
   BUSH,
   BRANCH,
   craftDepthForY,
+  isBelowPlayerLayer,
   ANIMALS,
   ANIMAL_SHEET,
   ANIMAL_DIRECTIONS,
@@ -1422,7 +1423,9 @@ export class CraftingMapRuntime {
    * o pipeline padrão do Phaser/WorldScene pula esses casos.
    * Regra de profundidade: buckets do engine (0 chão / 200 acima do player);
    * camadas depois de um grupo "above player" de topo também vão para 200
-   * (ex.: "Portal Top" — o jogador passa entre as duas metades do portal).
+   * (ex.: "Portal Top" — o jogador passa entre as duas metades do portal),
+   * EXCETO camadas de piso (isBelowPlayerLayer: "bigchessboard", class
+   * floor/below_player, "(below)") — essas ficam em 0 onde quer que estejam.
    */
   private placeCollectionContent(tmj: any) {
     const scene = this.scene;
@@ -1444,17 +1447,18 @@ export class CraftingMapRuntime {
     };
 
     let seenTopLevelAboveGroup = false;
-    const walk = (layers: any[], parentAbove: boolean, topLevel: boolean) => {
+    const walk = (layers: any[], parentAbove: boolean, topLevel: boolean, parentBelow = false) => {
       for (const l of layers) {
         const cls = (l.class || '').toLowerCase();
-        const selfAbove =
+        const selfBelow = parentBelow || isBelowPlayerLayer(l);
+        const selfAbove = !selfBelow && (
           parentAbove || cls === 'above_player' || (l.name || '').toLowerCase().includes('(above)') ||
-          (topLevel && seenTopLevelAboveGroup);
+          (topLevel && seenTopLevelAboveGroup));
 
         if (l.type === 'group') {
-          const groupAbove = selfAbove || isAboveGroupName(l.name);
+          const groupAbove = selfAbove || (!selfBelow && isAboveGroupName(l.name));
           if (topLevel && isAboveGroupName(l.name)) seenTopLevelAboveGroup = true;
-          walk(l.layers || [], groupAbove, false);
+          walk(l.layers || [], groupAbove, false, selfBelow);
           continue;
         }
 

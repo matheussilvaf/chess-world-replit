@@ -227,3 +227,17 @@ export function craftDepthForY(y: number, mapHeightPx: number): number {
   const t = Math.max(0, Math.min(1, y / Math.max(1, mapHeightPx)));
   return 100 + t * 89; // 100..189 — abaixo de 200 (above) e acima do chão (0)
 }
+
+/**
+ * Camadas que são PISO (depth 0) mesmo quando o Tiled as lista depois de um
+ * grupo "above player": class `below_player`/`floor`, "(below)" no nome, ou o
+ * tabuleiro do Big Chess Board (`bigchessboard`) — jogador e peças (Y-sort
+ * 100..189) precisam andar/ficar por cima dele, nunca por baixo.
+ */
+export function isBelowPlayerLayer(layer: { name?: string; class?: string } | null | undefined): boolean {
+  if (!layer) return false;
+  const name = (layer.name || '').toLowerCase();
+  const cls = (layer.class || '').toLowerCase();
+  if (cls === 'below_player' || cls === 'floor' || name.includes('(below)')) return true;
+  return name.replace(/[\s_-]/g, '') === 'bigchessboard';
+}

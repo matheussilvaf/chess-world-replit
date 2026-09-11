@@ -1,7 +1,7 @@
 import Phaser from 'phaser';
 import decomp from 'poly-decomp';
 import { MAP_CONFIG } from '../config/mapConfig';
-import { CRAFTING_MAP } from '../config/craftingMapConfig';
+import { CRAFTING_MAP, isBelowPlayerLayer } from '../config/craftingMapConfig';
 import { CraftingMapRuntime } from '../world/CraftingMapRuntime';
 import { WORLD_TILESETS, ALL_TILESETS, EXTRA_TILESETS, findTilesetForGid, findTilesetForGidInMap, getTextureKeyForTileset } from '../config/worldAssets';
 import { ArenaModuleManager } from '../map/ArenaModuleManager';
@@ -960,7 +960,8 @@ export class WorldScene extends Phaser.Scene {
       for (const layerData of layers) {
         const lowerName = layerData.name.toLowerCase();
         const cls = (layerData.class || '').toLowerCase();
-        const layerAbove = isAbove || cls === 'above_player' || lowerName.includes('(above)');
+        // Piso declarado (tabuleiro, class floor) nunca sobe para 200.
+        const layerAbove = !isBelowPlayerLayer(layerData) && (isAbove || cls === 'above_player' || lowerName.includes('(above)'));
 
         if (layerData.type === 'group') {
           const nowAbove = layerAbove || lowerName === 'visual_above';
@@ -1063,7 +1064,7 @@ export class WorldScene extends Phaser.Scene {
       const fullName = prefix ? `${prefix}/${name}` : name;
       const lowerFull = fullName.toLowerCase();
       const cls = (l.class || '').toLowerCase();
-      const isAbove = parentAbove || cls === 'above_player' || lowerFull.includes('(above)');
+      const isAbove = !isBelowPlayerLayer(l) && (parentAbove || cls === 'above_player' || lowerFull.includes('(above)'));
 
       if (l.type === 'group') {
         const lowerGroup = name.toLowerCase();
@@ -3206,6 +3207,8 @@ export class WorldScene extends Phaser.Scene {
       // Character Rig Controller), frame a frame.
       this.craftingRuntime.setPlayerSwingQuery(() => this.currentSwingState());
       this.craftingRuntime.postBuild(map, tmjData);
+      // Peças que chegaram da sala durante o carregamento do mapa entram no Y-sort agora.
+      this.bigChessLayer?.refreshDepths();
     } else if (this.player) {
       this.player.setDepth(100); // restaura o depth fixo fora do Mundo de Coleta
     }

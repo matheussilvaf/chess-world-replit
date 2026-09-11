@@ -79,6 +79,18 @@ export class BigChessPieceLayer {
     return this.entries.size > 0;
   }
 
+  /**
+   * Recalcula as profundidades (peças e fantasma). Necessário quando as peças
+   * chegaram da sala ANTES de o mapa do Mundo de Coleta ficar ativo — nesse
+   * momento `depthForY` ainda devolvia o valor fixo de fora do Y-sort.
+   */
+  refreshDepths(): void {
+    for (const entry of this.entries.values()) {
+      entry.container.setDepth(this.depthForY(entry.rect.y + entry.rect.height));
+    }
+    this.ghost?.container.setDepth(this.depthForY(bigChessSquareRect('a1').y) + 1);
+  }
+
   /** Reconcilia com o store: cria, atualiza e remove. */
   sync(views: BigChessPieceView[]): void {
     if (!this.scene.sys?.displayList) return;
@@ -205,6 +217,8 @@ export class BigChessPieceLayer {
       const container = this.scene.add.container(0, 0).setDepth(this.depthForY(bigChessSquareRect('a1').y) + 1);
       const outline = this.scene.add.graphics().setName('outline');
       container.add(outline);
+      // Pulso suave nas casas candidatas: chama o olho para onde a peça pode ir.
+      this.scene.tweens.add({ targets: outline, alpha: { from: 1, to: 0.55 }, duration: 650, yoyo: true, repeat: -1, ease: 'Sine.easeInOut' });
       const holder = { container, itemKey: ghost.itemKey, image: null as Phaser.GameObjects.Image | null };
       this.ghost = holder;
       this.withTexture(def, () => {
@@ -220,18 +234,18 @@ export class BigChessPieceLayer {
       for (const square of bigChessSquaresForItem(ghost.itemKey)) {
         if (this.entries.has(square) || square === ghost.square) continue;
         const rect = bigChessSquareRect(square);
-        outline.fillStyle(0x4ade80, 0.14);
+        outline.fillStyle(0x4ade80, 0.3);
         outline.fillRect(rect.x, rect.y, rect.width, rect.height);
-        outline.lineStyle(1.5, 0x4ade80, 0.6);
-        outline.strokeRect(rect.x + 0.5, rect.y + 0.5, rect.width - 1, rect.height - 1);
+        outline.lineStyle(2, 0x4ade80, 0.9);
+        outline.strokeRect(rect.x + 1, rect.y + 1, rect.width - 2, rect.height - 2);
       }
       if (ghost.square) {
         const rect = bigChessSquareRect(ghost.square);
         const color = ghost.valid ? 0x4ade80 : 0xf87171;
-        outline.fillStyle(color, 0.28);
+        outline.fillStyle(color, 0.45);
         outline.fillRect(rect.x, rect.y, rect.width, rect.height);
-        outline.lineStyle(2, color, 0.95);
-        outline.strokeRect(rect.x + 1, rect.y + 1, rect.width - 2, rect.height - 2);
+        outline.lineStyle(3, color, 1);
+        outline.strokeRect(rect.x + 1.5, rect.y + 1.5, rect.width - 3, rect.height - 3);
       }
     }
     const image = this.ghost.image;
