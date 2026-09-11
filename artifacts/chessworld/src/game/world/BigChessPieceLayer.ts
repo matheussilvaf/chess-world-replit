@@ -52,7 +52,7 @@ export interface BigChessGhost {
 
 export class BigChessPieceLayer {
   private entries = new Map<string, Entry>();
-  private ghost: { container: Phaser.GameObjects.Container; itemKey: string; image: Phaser.GameObjects.Image | null } | null = null;
+  private ghost: { container: Phaser.GameObjects.Container; itemKey: string; image: Phaser.GameObjects.Image | null; pulse: Phaser.Tweens.Tween } | null = null;
   private lastGhost: BigChessGhost | null = null;
   private loading = new Set<string>();
   private onTexture = new Map<string, Array<() => void>>();
@@ -206,20 +206,20 @@ export class BigChessPieceLayer {
   setGhost(ghost: BigChessGhost | null): void {
     this.lastGhost = ghost;
     if (!ghost) {
-      this.ghost?.container.destroy();
-      this.ghost = null;
+      this.destroyGhost();
       return;
     }
     const def = bigChessPieceFor(ghost.itemKey);
     if (!def || !this.scene.sys?.displayList) return;
     if (!this.ghost || this.ghost.itemKey !== ghost.itemKey) {
-      this.ghost?.container.destroy();
+      this.destroyGhost();
       const container = this.scene.add.container(0, 0).setDepth(this.depthForY(bigChessSquareRect('a1').y) + 1);
       const outline = this.scene.add.graphics().setName('outline');
       container.add(outline);
       // Pulso suave nas casas candidatas: chama o olho para onde a peça pode ir.
-      this.scene.tweens.add({ targets: outline, alpha: { from: 1, to: 0.55 }, duration: 650, yoyo: true, repeat: -1, ease: 'Sine.easeInOut' });
-      const holder = { container, itemKey: ghost.itemKey, image: null as Phaser.GameObjects.Image | null };
+      // Tween infinito: guardado e removido em destroyGhost (senão vaza a cada troca de peça).
+      const pulse = this.scene.tweens.add({ targets: outline, alpha: { from: 1, to: 0.55 }, duration: 650, yoyo: true, repeat: -1, ease: 'Sine.easeInOut' });
+      const holder = { container, itemKey: ghost.itemKey, image: null as Phaser.GameObjects.Image | null, pulse };
       this.ghost = holder;
       this.withTexture(def, () => {
         if (!container.active || this.ghost !== holder) return;
@@ -336,6 +336,14 @@ export class BigChessPieceLayer {
       bar.lineStyle(1.5, 0xf87171, 0.9);
       bar.strokeCircle(0, -PIECE_MAX_H / 2, entry.rect.width / 2 - 2);
     }
+  }
+
+  /** Único ponto de descarte do fantasma: mata o tween do pulso antes do container. */
+  private destroyGhost(): void {
+    if (!this.ghost) return;
+    this.ghost.pulse.remove();
+    this.ghost.container.destroy();
+    this.ghost = null;
   }
 
   private redrawGhostOutline(): void {
