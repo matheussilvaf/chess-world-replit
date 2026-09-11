@@ -16,6 +16,7 @@ import {
   type CraftRecipeConfig,
 } from '../shared/craft/CraftShapes.js';
 import { PLACEABLE_STATIONS, isPlaceableStationItemKey } from '../shared/craft/PlaceableStations.js';
+import { BIGCHESS_PIECES, isBigChessPieceItemKey } from '../shared/bigchess/BigChessShapes.js';
 import { PERSISTENCE_UNAVAILABLE, getServiceClient, isTableMissing } from '../rigs/serviceSupabase.js';
 
 export const CRAFT_TABLES_SQL = `CREATE TABLE IF NOT EXISTS craft_items (
@@ -76,7 +77,16 @@ export function builtInCraftItems(): Record<string, CraftItemConfig> {
   for (const def of PLACEABLE_STATIONS) {
     records[def.itemId] = { itemId: def.itemId, name: def.name, imageUrl: null, durability: def.defaultDurability };
   }
+  // Peças do Big Chess Board: itens simples (sem durabilidade), imagem fixa do jogo.
+  for (const def of BIGCHESS_PIECES) {
+    records[def.itemId] = { itemId: def.itemId, name: def.name, imageUrl: null };
+  }
   return records;
+}
+
+/** Item embutido no jogo (estação portátil ou peça do Big Chess Board): sem exclusão nem troca de imagem. */
+export function isBuiltInCraftItemKey(itemId: unknown): itemId is string {
+  return isPlaceableStationItemKey(itemId) || isBigChessPieceItemKey(itemId);
 }
 
 /** Aplica uma linha salva por cima da definição embutida (campos travados preservados). */
@@ -105,7 +115,7 @@ export async function listCraftItems(): Promise<CraftListResult<CraftItemConfig>
     const validated = validateCraftItemConfig(row.config);
     const config = row.config as CraftItemConfig;
     if (validated.ok && config.itemId === row.item_id) {
-      result.records[row.item_id] = isPlaceableStationItemKey(row.item_id)
+      result.records[row.item_id] = isBuiltInCraftItemKey(row.item_id)
         ? mergeBuiltInCraftItem(result.records[row.item_id], config)
         : config;
       if (row.updated_at) result.updatedAt[row.item_id] = row.updated_at;

@@ -11,6 +11,7 @@ import { CRAFTTOOLS_CATEGORY, WEAPON_CATEGORY } from '../../shared/combat/Weapon
 import { yieldItemKeyFor } from '../../shared/collection/CollectionShapes';
 import type { CraftItemConfig } from '../../shared/craft/CraftShapes';
 import { PLACEABLE_STATIONS, placeableStationFor } from '../../shared/craft/PlaceableStations';
+import { BIGCHESS_PIECES, BIGCHESS_TYPE_LABELS, bigChessPieceFor } from '../../shared/bigchess/BigChessShapes';
 import {
   RESOURCE_DEFINITIONS,
   RESOURCE_DROP_ICONS,
@@ -27,6 +28,7 @@ export type CraftSectionId =
   | 'outros'
   | 'animais'
   | 'drops_animais'
+  | 'bigchess'
   | 'custom';
 
 /** Como desenhar a miniatura de uma entrada. */
@@ -183,7 +185,20 @@ export function buildCraftCatalog(
   for (const def of PLACEABLE_STATIONS) {
     if (!allCustom[def.itemId]) allCustom[def.itemId] = { itemId: def.itemId, name: def.name, imageUrl: null, durability: def.defaultDurability };
   }
+  // Peças do Big Chess Board: itens embutidos com seção própria (o admin define
+  // só a receita; imagem fixa do jogo, nome editável).
+  const bigChessEntries = BIGCHESS_PIECES.map((def): CraftCatalogEntry => ({
+    id: def.itemId,
+    name: allCustom[def.itemId]?.name ?? def.name,
+    detail: `${def.color === 'white' ? 'brancas' : 'pretas'} · ${BIGCHESS_TYPE_LABELS[def.type].toLowerCase()}`,
+    sectionId: 'bigchess',
+    thumb: { kind: 'image', url: withBase(encodeURI(def.imageUrl)) },
+  }));
+  sections.push({ id: 'bigchess', label: 'Big Chess Board Pieces', entries: bigChessEntries });
+  for (const entry of bigChessEntries) byId.set(entry.id, entry);
+
   const customEntries = Object.values(allCustom)
+    .filter((item) => !bigChessPieceFor(item.itemId))
     .sort((a, b) => a.name.localeCompare(b.name))
     .map((item): CraftCatalogEntry => {
       const repairs = item.repairsItemId ?? null;

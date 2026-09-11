@@ -15,15 +15,20 @@
  *
  * Estação sem durabilidade (0) não pode ser posicionada: o fluxo cai para o
  * modo 'drop' com o aviso na faixa.
+ *
+ * Modo 'chess' (peça do Big Chess Board): o ponto vira a CASA do tabuleiro sob
+ * o ponteiro; só a casa inicial daquela peça (cor + tipo), livre e perto do
+ * jogador é válida. A peça não pode ser solta no chão por aqui.
  */
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { AlertTriangle, ArrowDownToLine, Crosshair, Hammer, Loader2, Minus, Plus, Undo2, X } from 'lucide-react';
+import { AlertTriangle, ArrowDownToLine, Crosshair, Crown, Hammer, Loader2, Minus, Plus, Undo2, X } from 'lucide-react';
 import { useInventoryUiStore } from '../../../stores/inventoryUiStore';
 import { useCollectionInventoryStore } from '../../../stores/collectionInventoryStore';
 import { getInventoryBridge } from '../../../game/inventory/inventoryBridge';
 import { useInventoryVisualCatalog } from '../../../lib/inventory/inventoryVisualCatalog';
 import { toolDurabilityView } from '../../../lib/inventory/toolDurability';
 import { INVENTORY_DROP_MAX_DISTANCE } from '../../../shared/collection/CollectionShapes';
+import { BIGCHESS_INTERACT_DISTANCE, bigChessSquaresForItem } from '../../../shared/bigchess/BigChessShapes';
 import { InventoryItemName, InventoryItemThumb } from '../InventoryItemVisual';
 
 /** Margem para o ponto nunca cair fora do raio por atraso de posição no servidor. */
@@ -63,16 +68,19 @@ export function InventoryDropPlacement() {
   const broken = placement?.mode === 'place' && durability !== null && durability.remaining <= 0;
   // Estação sem durabilidade só pode ser solta.
   const placeMode = placement?.mode === 'place' && !broken;
+  const chessMode = placement?.mode === 'chess';
+  /** Casa escolhida (modo chess, fase confirm/sending). */
+  const chessSquare = placement?.square ?? null;
 
   // Anel de alcance enquanto o modo estiver ativo (independe da quantidade digitada).
   useEffect(() => {
     const bridge = getInventoryBridge();
     if (!active || !bridge) return;
-    bridge.setDropRadiusVisible(true);
+    bridge.setDropRadiusVisible(true, chessMode ? BIGCHESS_INTERACT_DISTANCE : undefined);
     return () => bridge.setDropRadiusVisible(false);
-  }, [active]);
+  }, [active, chessMode]);
 
-  // Marcador só na confirmação (modo drop). No modo place o fantasma fica no ponto.
+  // Marcador só na confirmação (modo drop). No modo place/chess o fantasma fica no ponto.
   useEffect(() => {
     const bridge = getInventoryBridge();
     if (!bridge || markerX === null || markerY === null) return;
@@ -81,14 +89,29 @@ export function InventoryDropPlacement() {
       bridge.setPlacementGhost({ itemKey, x: markerX, y: markerY, valid });
       return () => bridge.setPlacementGhost(null);
     }
+    if (chessMode && itemKey) {
+      const check = bridge.validateChessPlacement(itemKey, markerX, markerY);
+      bridge.setChessGhost({ itemKey, square: check.square, valid: check.ok });
+      return () => bridge.setChessGhost(null);
+    }
     bridge.setDropMarker({ x: markerX, y: markerY });
     return () => bridge.setDropMarker(null);
-  }, [markerX, markerY, placeMode, itemKey]);
+  }, [markerX, markerY, placeMode, chessMode, itemKey]);
+
+  // Modo chess, fase pick: as casas candidatas ficam realçadas mesmo antes de o ponteiro entrar no tabuleiro.
+  useEffect(() => {
+    const bridge = getInventoryBridge();
+    if (!bridge || !chessMode || phase !== 'pick' || !itemKey) return;
+    bridge.setChessGhost({ itemKey, square: null, valid: false });
+    return () => bridge.setChessGhost(null);
+  }, [chessMode, phase, itemKey]);
 
   // Fantasma some ao sair do modo.
   useEffect(() => {
     if (active) return;
-    getInventoryBridge()?.setPlacementGhost(null);
+    const bridge = getInventoryBridge();
+    bridge?.setPlacementGhost(null);
+    bridge?.setChessGhost(null);
     setSpotProblem(null);
   }, [active]);
 
@@ -149,7 +172,31 @@ export function InventoryDropPlacement() {
     return { bridge, x: Math.round(x), y: Math.round(y) };
   };
 
+  /** Modo chess: ponto do mundo SEM limitar ao raio (a validação cuida da distância). */
+  const rawWorldPoint = (clientX: number, clientY: number) => {
+    const bridge = getInventoryBridge();
+    if (!bridge) return null;
+    const world = bridge.screenToWorld(clientX, clientY);
+    if (!world) return null;
+    return { bridge, x: Math.round(world.x), y: Math.round(world.y) };
+  };
+
+  const pickChessSquare = (clientX: number, clientY: number) => {
+    const point = rawWorldPoint(clientX, clientY);
+    if (!point) { cancel(); return; }
+    const { bridge, x, y } = point;
+    const check = bridge.validateChessPlacement(itemKey, x, y);
+    if (!check.ok || !check.square) {
+      setSpotProblem(check.reason ?? 'Não dá para posicionar aqui');
+      return;
+    }
+    setSpotProblem(null);
+    const screen = bridge.worldToScreen(x, y) ?? { x: clientX, y: clientY };
+    choosePoint({ worldX: x, worldY: y, screenX: screen.x, screenY: screen.y, square: check.square });
+  };
+
   const pickPoint = (clientX: number, clientY: number) => {
+    if (chessMode) { pickChessSquare(clientX, clientY); return; }
     const point = clampedWorldPoint(clientX, clientY);
     if (!point) { cancel(); return; }
     const { bridge, x, y } = point;
@@ -167,7 +214,16 @@ export function InventoryDropPlacement() {
 
   const movePointer = (clientX: number, clientY: number) => {
     setPointer({ x: clientX, y: clientY });
-    if (!placeMode || phase !== 'pick') return;
+    if (phase !== 'pick') return;
+    if (chessMode) {
+      const point = rawWorldPoint(clientX, clientY);
+      if (!point) return;
+      const check = point.bridge.validateChessPlacement(itemKey, point.x, point.y);
+      point.bridge.setChessGhost({ itemKey, square: check.square, valid: check.ok });
+      setSpotProblem(check.ok || !check.square ? null : (check.reason ?? 'Não dá para posicionar aqui'));
+      return;
+    }
+    if (!placeMode) return;
     const point = clampedWorldPoint(clientX, clientY);
     if (!point) return;
     const check = point.bridge.validatePlacement(itemKey, point.x, point.y);
@@ -208,7 +264,22 @@ export function InventoryDropPlacement() {
     bridge.sendPlace({ requestId, itemKey, x, y });
   };
 
-  const confirm = () => (placeMode ? sendPlace() : sendDrop());
+  const sendChessPlace = () => {
+    if (sending || !chessMode) return;
+    const bridge = getInventoryBridge();
+    if (!bridge) { cancel(); return; }
+    const check = bridge.validateChessPlacement(itemKey, Math.round(placement.worldX), Math.round(placement.worldY));
+    if (!check.ok || !check.square) {
+      setSpotProblem(check.reason ?? 'Não dá para posicionar aqui');
+      repick();
+      return;
+    }
+    const requestId = crypto.randomUUID();
+    markSending(requestId);
+    bridge.sendChessPlace({ requestId, itemKey, square: check.square });
+  };
+
+  const confirm = () => (chessMode ? sendChessPlace() : placeMode ? sendPlace() : sendDrop());
 
   const commitQtyText = () => {
     const parsed = Math.floor(Number(qtyText));
@@ -222,9 +293,12 @@ export function InventoryDropPlacement() {
   const left = Math.min(Math.max(8, placement.screenX + 18), Math.max(8, vw - POPOVER_W - 8));
   const top = Math.min(Math.max(8, placement.screenY - POPOVER_H / 2), Math.max(8, vh - POPOVER_H - 8));
 
-  const pickHint = placeMode
-    ? 'Clique no chão, dentro do círculo, para escolher onde posicionar a estação.'
-    : 'Clique no chão, dentro do círculo, para escolher onde soltar.';
+  const chessTargets = chessMode ? bigChessSquaresForItem(itemKey) : [];
+  const pickHint = chessMode
+    ? `Clique na casa inicial da peça no tabuleiro (${chessTargets.join(', ')}), perto de você.`
+    : placeMode
+      ? 'Clique no chão, dentro do círculo, para escolher onde posicionar a estação.'
+      : 'Clique no chão, dentro do círculo, para escolher onde soltar.';
 
   return (
     <div className="fixed inset-0 z-[520]" data-testid="inventory-placement-overlay">
@@ -254,17 +328,19 @@ export function InventoryDropPlacement() {
             {broken ? (
               <div className="flex items-center gap-1 text-red-200"><AlertTriangle className="h-3 w-3 shrink-0" /> Sem durabilidade: não pode ser posicionada, só solta no chão.</div>
             ) : phase === 'pick' ? (
-              spotProblem && placeMode ? (
+              spotProblem && (placeMode || chessMode) ? (
                 <div className="flex items-center gap-1 text-red-200" role="status"><AlertTriangle className="h-3 w-3 shrink-0" /> {spotProblem}</div>
               ) : (
                 <div className="flex items-center gap-1 text-amber-200/80"><Crosshair className="h-3 w-3 shrink-0" /> {pickHint}</div>
               )
             ) : sending ? (
-              <div className="text-amber-200/80">{placeMode ? 'Posicionando…' : 'Soltando…'}</div>
-            ) : placeMode && spotProblem ? (
+              <div className="text-amber-200/80">{placeMode || chessMode ? 'Posicionando…' : 'Soltando…'}</div>
+            ) : (placeMode || chessMode) && spotProblem ? (
               <div className="flex items-center gap-1 text-red-200" role="status"><AlertTriangle className="h-3 w-3 shrink-0" /> {spotProblem} — clique em outro lugar.</div>
             ) : (
-              <div className="text-amber-200/80">{placeMode ? 'Confirme para posicionar aqui.' : 'Confirme a quantidade para soltar aqui.'}</div>
+              <div className="text-amber-200/80">
+                {chessMode ? `Confirme para colocar a peça em ${chessSquare ?? '?'}.` : placeMode ? 'Confirme para posicionar aqui.' : 'Confirme a quantidade para soltar aqui.'}
+              </div>
             )}
           </div>
           <button
@@ -297,7 +373,7 @@ export function InventoryDropPlacement() {
           className="absolute rounded-xl border-[3px] border-[#8a5a2b] bg-[#2a1a0e] p-3 text-amber-100 shadow-[0_0_0_1px_#1a0f07,0_18px_40px_rgba(0,0,0,.7)]"
           style={{ left, top, width: POPOVER_W }}
           role="dialog"
-          aria-label={placeMode ? 'Posicionar estação' : 'Quantidade a soltar'}
+          aria-label={chessMode ? 'Posicionar peça no tabuleiro' : placeMode ? 'Posicionar estação' : 'Quantidade a soltar'}
         >
           <div className="mb-2 flex items-center gap-2 border-b border-[#8a5a2b]/70 pb-2">
             <span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-md border-2 border-[#6d4622] bg-[#19100a]">
@@ -307,6 +383,8 @@ export function InventoryDropPlacement() {
               <div className="truncate text-sm font-bold text-amber-50"><InventoryItemName itemKey={itemKey} catalog={catalog} /></div>
               {placeMode && durability ? (
                 <div className="text-[11px] text-amber-200/70">Durabilidade <b className="text-amber-100">{durability.remaining}/{durability.max}</b></div>
+              ) : chessMode ? (
+                <div className="text-[11px] text-amber-200/70">Casa <b className="text-amber-100">{chessSquare ?? '?'}</b> · você tem <b className="text-amber-100">{max}</b></div>
               ) : (
                 <div className="text-[11px] text-amber-200/70">Você tem <b className="text-amber-100">{max}</b></div>
               )}
@@ -320,7 +398,44 @@ export function InventoryDropPlacement() {
             </div>
           )}
 
-          {placeMode ? (
+          {chessMode ? (
+            <>
+              <div className="text-[11px] leading-snug text-amber-200/80">
+                A peça fica no tabuleiro <b className="text-amber-100">até ser destruída</b> — não dá para recolher.
+                Ela rende Crowns e pontos enquanto dominar a casa.
+              </div>
+              <div className="mt-3 flex gap-1.5">
+                <button
+                  type="button"
+                  onClick={sendChessPlace}
+                  disabled={sending}
+                  data-testid="button-place-chess-piece"
+                  className="flex h-10 flex-1 items-center justify-center gap-1.5 rounded-md border-2 border-emerald-500 bg-emerald-600 text-sm font-bold text-white shadow hover:bg-emerald-500 disabled:cursor-wait disabled:opacity-70"
+                >
+                  {sending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Crown className="h-4 w-4" />}
+                  {sending ? 'Posicionando…' : `Colocar em ${chessSquare ?? '?'}`}
+                </button>
+                <button
+                  type="button"
+                  onClick={repick}
+                  disabled={sending}
+                  className="flex h-10 items-center justify-center rounded-md border-2 border-[#6d4622] bg-[#19100a] px-2.5 text-amber-100 hover:border-[#c08a4a] disabled:opacity-40"
+                  title="Escolher outra casa"
+                >
+                  <Undo2 className="h-4 w-4" />
+                </button>
+                <button
+                  type="button"
+                  onClick={cancel}
+                  disabled={sending}
+                  className="flex h-10 items-center justify-center rounded-md border-2 border-[#6d4622] bg-[#19100a] px-2.5 text-amber-100 hover:border-red-400 hover:text-red-200 disabled:opacity-40"
+                  title="Cancelar (Esc)"
+                >
+                  <X className="h-4 w-4" />
+                </button>
+              </div>
+            </>
+          ) : placeMode ? (
             <>
               <div className="text-[11px] leading-snug text-amber-200/80">
                 Fica sua por <b className="text-amber-100">5 minutos</b>; depois vira um item no chão que qualquer um pode pegar.

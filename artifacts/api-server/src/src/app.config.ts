@@ -39,6 +39,11 @@ import {
   progressRouter,
   publicEnergySkillsConfigHandler,
 } from "./progress/energySkillsRoutes.js";
+import {
+  bigChessAdminRouter,
+  publicBigChessConfigHandler,
+  walletRouter,
+} from "./bigchess/bigChessRoutes.js";
 
 const config: ConfigOptions = {
   // Explicit liveness probing: without app-level pings a half-open socket
@@ -210,6 +215,12 @@ const config: ConfigOptions = {
     app.get("/api/energy-skills-config", publicEnergySkillsConfigHandler);
     app.use("/api/admin/energy-skills-config", energySkillsAdminRouter);
     app.use("/api/progress", progressRouter);
+
+    // Big Chess Board (spec: /admin/bigchess): regras das peças/defesas no
+    // admin, carteira de Crowns do jogador, config pública cacheada.
+    app.get("/api/bigchess-config", publicBigChessConfigHandler);
+    app.use("/api/admin/bigchess-config", bigChessAdminRouter);
+    app.use("/api/me/wallet", walletRouter);
 
     app.use("/api/tournament", tournamentRouter);
     app.use("/api/coordinator", coordinatorRouter);

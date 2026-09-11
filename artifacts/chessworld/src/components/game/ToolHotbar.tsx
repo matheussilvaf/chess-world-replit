@@ -18,6 +18,7 @@ import { canEat, eat } from '../../game/progress/eatBridge';
 import { loadCraftBadges, useInventoryVisualCatalog } from '../../lib/inventory/inventoryVisualCatalog';
 import { toolDurabilityView } from '../../lib/inventory/toolDurability';
 import { isPlaceableStationItemKey } from '../../shared/craft/PlaceableStations';
+import { isBigChessPieceItemKey } from '../../shared/bigchess/BigChessShapes';
 import { isEdibleItem, type CraftBadgeMap } from '../../shared/craft/CraftBadges';
 import { predictEatCount } from '../../lib/progress/eatFlight';
 import { durabilityLabel } from './inventory/DurabilityBar';
@@ -141,7 +142,8 @@ export function ToolHotbar() {
       const qty = useCollectionInventoryStore.getState().items[itemKey] ?? 0;
       if (qty <= 0 || !getInventoryBridge()) return;
       // Estação portátil: arrastar para fora entra no modo "posicionar" (com opção de soltar).
-      beginPlacement(itemKey, qty, isPlaceableStationItemKey(itemKey) ? 'place' : 'drop');
+      // Peça do Big Chess Board: modo "casa do tabuleiro".
+      beginPlacement(itemKey, qty, isBigChessPieceItemKey(itemKey) ? 'chess' : isPlaceableStationItemKey(itemKey) ? 'place' : 'drop');
     },
   });
   const quick = useMemo(() => slots.slice(weaponIndex + 1, capacity), [slots, weaponIndex, capacity]);

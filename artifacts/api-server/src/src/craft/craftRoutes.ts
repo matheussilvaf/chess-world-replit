@@ -32,6 +32,7 @@ import {
   deleteCraftRecipe,
   getCraftItemsCached,
   builtInCraftItems,
+  isBuiltInCraftItemKey,
   mergeBuiltInCraftItem,
   getCraftRecipesCached,
   listCraftItems,
@@ -144,14 +145,15 @@ craftItemsAdminRouter.put('/:itemId', async (req: Request, res: Response) => {
     return;
   }
   // Normalized copy — never persist unknown fields into the jsonb.
-  const builtIn = isPlaceableStationItemKey(itemId);
+  const builtIn = isBuiltInCraftItemKey(itemId);
   const config: CraftItemConfig = {
     itemId,
     name: body.name.trim(),
-    // Estações portáteis embutidas: a imagem é a do jogo (resolvida pelo id), nunca uma URL salva.
+    // Itens embutidos (estações portáteis, peças do Big Chess Board): a imagem é a do jogo (resolvida pelo id), nunca uma URL salva.
     imageUrl: builtIn ? null : (body.imageUrl ?? null),
     repairsItemId: body.repairsItemId ?? null,
-    ...(builtIn && body.durability !== undefined && body.durability !== null ? { durability: body.durability } : {}),
+    // Só estações portáteis têm durabilidade; peças são itens simples.
+    ...(isPlaceableStationItemKey(itemId) && body.durability !== undefined && body.durability !== null ? { durability: body.durability } : {}),
   };
   const result = await saveCraftItem(config);
   if (!result.ok) {
@@ -164,8 +166,8 @@ craftItemsAdminRouter.put('/:itemId', async (req: Request, res: Response) => {
 craftItemsAdminRouter.delete('/:itemId', async (req: Request, res: Response) => {
   const itemId = String(req.params.itemId ?? '');
   if (badItemId(res, itemId)) return;
-  if (isPlaceableStationItemKey(itemId)) {
-    res.status(409).json({ error: `"${itemId}" é uma estação portátil embutida no jogo e não pode ser excluída` });
+  if (isBuiltInCraftItemKey(itemId)) {
+    res.status(409).json({ error: `"${itemId}" é um item embutido no jogo (estação portátil ou peça do Big Chess Board) e não pode ser excluído` });
     return;
   }
   // Never orphan recipes silently: block deletion while recipes reference it.
@@ -222,8 +224,8 @@ craftItemsAdminRouter.post(
   async (req: Request, res: Response) => {
   const itemId = String(req.params.itemId ?? '');
   if (badItemId(res, itemId)) return;
-  if (isPlaceableStationItemKey(itemId)) {
-    res.status(409).json({ error: `"${itemId}" é uma estação portátil embutida: a imagem é fixa (sprite do jogo)` });
+  if (isBuiltInCraftItemKey(itemId)) {
+    res.status(409).json({ error: `"${itemId}" é um item embutido no jogo: a imagem é fixa` });
     return;
   }
   if (!Buffer.isBuffer(req.body) || req.body.byteLength === 0) {

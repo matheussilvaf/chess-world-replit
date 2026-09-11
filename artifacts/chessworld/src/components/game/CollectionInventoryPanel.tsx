@@ -17,6 +17,7 @@ import { getInventoryBridge } from '../../game/inventory/inventoryBridge';
 import { useInventoryVisualCatalog } from '../../lib/inventory/inventoryVisualCatalog';
 import { toolDurabilityView } from '../../lib/inventory/toolDurability';
 import { isPlaceableStationItemKey } from '../../shared/craft/PlaceableStations';
+import { isBigChessPieceItemKey } from '../../shared/bigchess/BigChessShapes';
 import { INVENTORY_COLUMNS } from '../../shared/collection/CollectionShapes';
 import { InventorySlotCell } from './inventory/InventorySlotCell';
 import { WeaponSlotCell } from './inventory/WeaponSlotCell';
@@ -109,7 +110,8 @@ export function CollectionInventoryPanel() {
       const qty = useCollectionInventoryStore.getState().items[itemKey] ?? 0;
       if (qty <= 0 || !getInventoryBridge()) return;
       // Estação portátil: arrastar para fora entra no modo "posicionar" (com opção de soltar).
-      beginPlacement(itemKey, qty, isPlaceableStationItemKey(itemKey) ? 'place' : 'drop');
+      // Peça do Big Chess Board: modo "casa do tabuleiro".
+      beginPlacement(itemKey, qty, isBigChessPieceItemKey(itemKey) ? 'chess' : isPlaceableStationItemKey(itemKey) ? 'place' : 'drop');
     },
   });
 

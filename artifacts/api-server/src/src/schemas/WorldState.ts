@@ -5,6 +5,7 @@ import { MatchState } from './MatchState.js';
 import { VoiceParticipantState } from './VoiceParticipantState.js';
 import { WorldDropState } from './WorldDropState.js';
 import { PlacedStationState } from './PlacedStationState.js';
+import { BigChessPieceState } from './BigChessPieceState.js';
 
 export class WorldState extends Schema {
   players!: MapSchema<PlayerState>;
@@ -13,6 +14,8 @@ export class WorldState extends Schema {
   voiceParticipants!: MapSchema<VoiceParticipantState>;
   worldDrops!: MapSchema<WorldDropState>;
   placedStations!: MapSchema<PlacedStationState>;
+  /** Peças do Big Chess Board (chave = casa). */
+  bigChessPieces!: MapSchema<BigChessPieceState>;
 
   constructor() {
     super();
@@ -22,6 +25,7 @@ export class WorldState extends Schema {
     this.voiceParticipants = new MapSchema<VoiceParticipantState>();
     this.worldDrops = new MapSchema<WorldDropState>();
     this.placedStations = new MapSchema<PlacedStationState>();
+    this.bigChessPieces = new MapSchema<BigChessPieceState>();
   }
 }
 
@@ -32,4 +36,5 @@ defineTypes(WorldState, {
   voiceParticipants: { map: VoiceParticipantState },
   worldDrops: { map: WorldDropState },
   placedStations: { map: PlacedStationState },
+  bigChessPieces: { map: BigChessPieceState },
 });

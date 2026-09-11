@@ -30,6 +30,19 @@ export interface PlacementGhostView {
   valid: boolean;
 }
 
+export interface ChessPlacementCheck {
+  ok: boolean;
+  /** Casa sob o ponto (mesmo quando inválida — para o fantasma vermelho). */
+  square: string | null;
+  reason?: string;
+}
+
+export interface ChessGhostView {
+  itemKey: string;
+  square: string | null;
+  valid: boolean;
+}
+
 export type InventoryBridge = {
   /** Coordenada de tela (clientX/Y) → mundo; null se o canvas não existe. */
   screenToWorld: (clientX: number, clientY: number) => WorldPoint | null;
@@ -39,8 +52,8 @@ export type InventoryBridge = {
   getPlayerPosition: () => WorldPoint | null;
   /** Centro visual do sprite do jogador (alvo da comida que voa até ele ao comer). */
   getPlayerCenter: () => WorldPoint | null;
-  /** Anel com o alcance máximo do drop ao redor do jogador. */
-  setDropRadiusVisible: (visible: boolean) => void;
+  /** Anel com o alcance máximo do drop ao redor do jogador (raio opcional em px). */
+  setDropRadiusVisible: (visible: boolean, radius?: number) => void;
   /** Marcador no ponto escolhido (null = remove). */
   setDropMarker: (point: WorldPoint | null) => void;
   sendDrop: (request: InventoryDropRequest) => void;
@@ -51,6 +64,12 @@ export type InventoryBridge = {
   sendStationPickup: (request: { requestId: string; placedId: string }) => void;
   sendStationAccessRequest: (placedId: string) => void;
   sendStationAccessResponse: (placedId: string, requesterId: string, allow: boolean) => void;
+  /** Big Chess Board: casa sob um ponto do mundo, validação local, fantasma e mensagens da sala. */
+  validateChessPlacement: (itemKey: string, x: number, y: number) => ChessPlacementCheck;
+  setChessGhost: (ghost: ChessGhostView | null) => void;
+  sendChessPlace: (request: { requestId: string; itemKey: string; square: string }) => void;
+  sendChessCollect: (request: { requestId: string; square: string }) => void;
+  sendChessEquip: (request: { requestId: string; square: string; itemKey: string }) => void;
 };
 
 let bridge: InventoryBridge | null = null;

@@ -2,7 +2,7 @@ import { useEffect, useState, useCallback } from 'react';
 import { supabase } from '../../lib/supabase';
 import { useInteractionStore } from '../../stores/interactionStore';
 import { getColyseusHttpUrl } from '../../config/colyseus';
-import { Settings, Gauge, ZoomIn, ArrowLeft, Crosshair, Bug, Waypoints, Monitor, Smartphone, MessageSquare, Wand2, Swords, Hammer, Boxes, Sprout, Factory, Sparkles } from 'lucide-react';
+import { Settings, Gauge, ZoomIn, ArrowLeft, Crosshair, Bug, Waypoints, Monitor, Smartphone, MessageSquare, Wand2, Swords, Hammer, Boxes, Sprout, Factory, Sparkles, Crown } from 'lucide-react';
 import { TournamentConfigSection } from './TournamentConfigSection';
 
 interface GameSettings {
@@ -236,6 +236,18 @@ export function AdminPage() {
             <div>
               <p className="text-sm font-medium text-white">Skills and Character Energy</p>
               <p className="text-xs text-slate-400">Energia, fome, comidas e XP das habilidades</p>
+            </div>
+          </a>
+          <a
+            href="/admin/bigchess"
+            className="flex items-center gap-3 rounded-xl border border-slate-800 bg-slate-900 hover:border-yellow-500/50 hover:bg-slate-800/80 transition-colors p-4"
+          >
+            <div className="w-9 h-9 rounded-lg bg-yellow-500/10 flex items-center justify-center">
+              <Crown className="w-4 h-4 text-yellow-400" />
+            </div>
+            <div>
+              <p className="text-sm font-medium text-white">Controlador do Big Chessboard</p>
+              <p className="text-xs text-slate-400">HP, renda em Crowns, regeneração, capas e defesas das peças</p>
             </div>
           </a>
         </div>

@@ -44,6 +44,10 @@ import type { ProgressSnapshot } from '../shared/progress/EnergySkillsShapes';
 import { StationGamePanel } from './game/StationGamePanel';
 import { PlacedStationOverlays } from './game/stations/PlacedStationOverlays';
 import { canUsePlacedStation, usePlacedStationsStore, type PlacedStationView } from '../stores/placedStationsStore';
+import { useBigChessStore } from '../stores/bigChessStore';
+import { useWalletStore } from '../stores/walletStore';
+import { BigChessOverlays } from './game/bigchess/BigChessOverlays';
+import { bigChessPieceFor, parseBigChessSlots, type BigChessPieceView } from '../shared/bigchess/BigChessShapes';
 import { parseAllowedIds } from '../shared/craft/PlaceableStations';
 
 export function GameCanvas() {
@@ -605,7 +609,7 @@ export function GameCanvas() {
       },
       getPlayerPosition: () => scene.getPlayerSpritePosition(),
       getPlayerCenter: () => scene.getPlayerSpriteCenter(),
-      setDropRadiusVisible: (visible) => scene.setDropRadiusVisible(visible),
+      setDropRadiusVisible: (visible, radius) => scene.setDropRadiusVisible(visible, radius),
       setDropMarker: (point) => scene.setDropMarker(point),
       sendDrop: (request) => room.send('inventory_drop', request),
       validatePlacement: (itemKey, x, y) => scene.validateStationPlacement(itemKey, x, y),
@@ -614,7 +618,36 @@ export function GameCanvas() {
       sendStationPickup: (request) => room.send('station_pickup', request),
       sendStationAccessRequest: (placedId) => room.send('station_request_access', { placedId }),
       sendStationAccessResponse: (placedId, requesterId, allow) => room.send('station_respond_access', { placedId, requesterId, allow }),
+      validateChessPlacement: (itemKey, x, y) => scene.validateBigChessPlacement(itemKey, x, y),
+      setChessGhost: (ghost) => scene.setBigChessGhost(ghost),
+      sendChessPlace: (request) => room.send('bigchess_place', request),
+      sendChessCollect: (request) => {
+        useBigChessStore.getState().trackRequest(request.requestId, { kind: 'collect', square: request.square });
+        room.send('bigchess_collect', request);
+      },
+      sendChessEquip: (request) => {
+        useBigChessStore.getState().trackRequest(request.requestId, { kind: 'equip', square: request.square, itemKey: request.itemKey });
+        room.send('bigchess_equip', request);
+      },
     });
+    // Big Chess Board: clique numa peça abre o card; acerto local vira pedido de ataque à sala.
+    scene.onBigChessPieceClick = (square) => {
+      const chessStore = useBigChessStore.getState();
+      if (!chessStore.pieces[square]) return;
+      chessStore.setOpenSquare(square);
+    };
+    let lastBigChessAttackAt = 0;
+    scene.onBigChessLocalHit = (square) => {
+      const now = Date.now();
+      // Golpes multi-frame e várias flechas: no máximo um pedido a cada 250 ms.
+      // O servidor decide sozinho flecha × corpo a corpo, dano e alcance a
+      // partir do último golpe (`attack`) que ele mesmo aceitou.
+      if (now - lastBigChessAttackAt < 250) return;
+      lastBigChessAttackAt = now;
+      const requestId = crypto.randomUUID();
+      useBigChessStore.getState().trackRequest(requestId, { kind: 'attack', square });
+      room.send('bigchess_attack', { requestId, square });
+    };
     setStationCraftSender((payload) => room.send('craft_item', payload));
     // Energia + habilidades: snapshot empurrado pela sala; comer via hotbar.
     setEatSender((payload) => room.send('eat_item', payload));
@@ -644,9 +677,37 @@ export function GameCanvas() {
     const removeCraftError = room.onMessage('craft_error', (data: { requestId?: string; message?: string }) => {
       rejectStationCraft(data.requestId, data.message ?? 'Não foi possível criar o item.');
     });
-    const removeInventoryChanged = room.onMessage('inventory_changed', (data: { requestId?: string; items?: Array<{ itemKey: string; qty: number }>; placedId?: string }) => {
+    const removeInventoryChanged = room.onMessage('inventory_changed', (data: {
+      requestId?: string;
+      items?: Array<{ itemKey: string; qty: number }>;
+      placedId?: string;
+      square?: string;
+      collected?: number;
+      crowns?: number;
+      damage?: number;
+      destroyed?: boolean;
+    }) => {
       if (Array.isArray(data.items)) useCollectionInventoryStore.getState().applyServerTotals(data.items);
       useInventoryUiStore.getState().resolvePlacement(data.requestId, { ok: true });
+      // Big Chess Board: coletar / equipar / atacar respondidos pelo requestId.
+      const chessRequest = useBigChessStore.getState().takeRequest(data.requestId);
+      if (chessRequest) {
+        const chessStore = useBigChessStore.getState();
+        if (chessRequest.kind === 'collect') {
+          if (typeof data.crowns === 'number') useWalletStore.getState().setCrowns(data.crowns);
+          const collected = typeof data.collected === 'number' ? data.collected : 0;
+          chessStore.setCardFeedback({ kind: 'success', message: collected > 0 ? `+${collected} Crowns coletados.` : 'Nada para coletar ainda.', at: Date.now() });
+        } else if (chessRequest.kind === 'equip') {
+          chessStore.setCardFeedback({ kind: 'success', message: 'Item equipado na peça.', at: Date.now() });
+        } else if (chessRequest.kind === 'attack') {
+          const damage = typeof data.damage === 'number' ? data.damage : 0;
+          const destroyed = data.destroyed === true;
+          const square = typeof data.square === 'string' ? data.square : chessRequest.square;
+          chessStore.setLastHit({ square, damage, destroyed, at: Date.now() });
+          scene.flashBigChessHit(square, damage, destroyed);
+        }
+        return;
+      }
       const placedStore = usePlacedStationsStore.getState();
       if (data.requestId && placedStore.pickupRequestId === data.requestId) {
         placedStore.setPickupRequestId(null);
@@ -664,6 +725,13 @@ export function GameCanvas() {
       if (data.requestId && placedStore.pickupRequestId === data.requestId) {
         placedStore.setPickupRequestId(null);
         placedStore.pushNotice('error', message);
+        return;
+      }
+      // Big Chess Board: recusa de coletar/equipar aparece no card; ataque recusado vira aviso curto.
+      const chessRequest = useBigChessStore.getState().takeRequest(data.requestId);
+      if (chessRequest) {
+        if (chessRequest.kind === 'attack') placedStore.pushNotice('error', message);
+        else useBigChessStore.getState().setCardFeedback({ kind: 'error', message, at: Date.now() });
         return;
       }
       // Recusa do drop em andamento aparece no próprio popover; o resto vai para o aviso da hotbar.
@@ -727,6 +795,75 @@ export function GameCanvas() {
         scene.syncPlacedStations([]);
       };
     }
+    // Carteira (Crowns) e avisos do tabuleiro.
+    const removeWalletUpdate = room.onMessage('wallet_update', (data: { crowns?: number }) => {
+      if (typeof data?.crowns === 'number') useWalletStore.getState().setCrowns(data.crowns);
+    });
+    const removeBigChessDestroyed = room.onMessage('bigchess_destroyed', (data: { square?: string; pieceName?: string; ownerId?: string; ownerName?: string; attackerName?: string }) => {
+      const myId = useAuthStore.getState().user?.id ?? null;
+      const piece = data.pieceName ?? 'Peça';
+      const square = data.square ?? '?';
+      if (myId && data.ownerId === myId) {
+        usePlacedStationsStore.getState().pushNotice('error', `Sua ${piece} em ${square} foi destruída por ${data.attackerName ?? 'outro jogador'}.`);
+      } else {
+        usePlacedStationsStore.getState().pushNotice('info', `${piece} de ${data.ownerName ?? 'alguém'} em ${square} foi destruída${data.attackerName ? ` por ${data.attackerName}` : ''}.`);
+      }
+    });
+    // Peças do Big Chess Board (MapSchema → store → cena). Deploys antigos não têm o mapa.
+    const bigChessPieces = state.bigChessPieces;
+    let detachBigChess: (() => void) | undefined;
+    if (bigChessPieces && typeof bigChessPieces.onAdd === 'function') {
+      const toChessView = (piece: any, square: string): BigChessPieceView => ({
+        square,
+        itemKey: String(piece.itemKey),
+        ownerId: String(piece.ownerId),
+        ownerName: String(piece.ownerName ?? ''),
+        hp: Number(piece.hp),
+        maxHp: Number(piece.maxHp),
+        placedAt: Number(piece.placedAt),
+        nextRegenAt: Number(piece.nextRegenAt ?? 0),
+        incomeAccrued: Number(piece.incomeAccrued ?? 0),
+        incomeCollected: Number(piece.incomeCollected ?? 0),
+        incomePerDay: Number(piece.incomePerDay ?? 0),
+        points: Number(piece.points ?? 0),
+        pointsPerHour: Number(piece.pointsPerHour ?? 0),
+        cover: piece.coverItemKey ? { itemKey: String(piece.coverItemKey), expiresAt: Number(piece.coverExpiresAt ?? 0) } : null,
+        defenses: parseBigChessSlots(piece.defenses),
+        counterUntil: Number(piece.counterUntil ?? 0),
+        syncedAt: Number(piece.syncedAt ?? Date.now()),
+      });
+      // Handles de desinscrição: a troca de sala não pode deixar callbacks da
+      // sala antiga escrevendo no store depois do reset.
+      const pieceChangeOffs = new Map<string, () => void>();
+      const offAdd = bigChessPieces.onAdd((piece: any, square: string) => {
+        if (!bigChessPieceFor(piece.itemKey)) return;
+        useBigChessStore.getState().upsertPiece(toChessView(piece, square));
+        pieceChangeOffs.get(square)?.();
+        const off = piece.onChange?.(() => useBigChessStore.getState().upsertPiece(toChessView(piece, square)));
+        if (typeof off === 'function') pieceChangeOffs.set(square, off);
+      });
+      const offRemove = bigChessPieces.onRemove((_: any, square: string) => {
+        pieceChangeOffs.get(square)?.();
+        pieceChangeOffs.delete(square);
+        useBigChessStore.getState().removePiece(square);
+      });
+      let lastPieces = useBigChessStore.getState().pieces;
+      scene.syncBigChessPieces(Object.values(lastPieces));
+      const unsubscribeChess = useBigChessStore.subscribe((next) => {
+        if (next.pieces === lastPieces) return;
+        lastPieces = next.pieces;
+        scene.syncBigChessPieces(Object.values(next.pieces));
+      });
+      detachBigChess = () => {
+        if (typeof offAdd === 'function') offAdd();
+        if (typeof offRemove === 'function') offRemove();
+        pieceChangeOffs.forEach((off) => off());
+        pieceChangeOffs.clear();
+        unsubscribeChess();
+        useBigChessStore.getState().clearPieces();
+        scene.syncBigChessPieces([]);
+      };
+    }
     const removeEquipError = room.onMessage('equip_error', (data: { message?: string }) => {
       usePlayerCharacterStore.getState().setEquipError(data.message ?? 'Não foi possível equipar.');
     });
@@ -778,7 +915,14 @@ export function GameCanvas() {
       useProgressStore.getState().setEating(null);
       detachDrops?.();
       detachPlaced?.();
+      detachBigChess?.();
+      if (typeof removeWalletUpdate === 'function') removeWalletUpdate();
+      if (typeof removeBigChessDestroyed === 'function') removeBigChessDestroyed();
+      useBigChessStore.getState().reset();
+      scene.setBigChessGhost(null);
       scene.onPlacedStationClick = null;
+      scene.onBigChessPieceClick = null;
+      scene.onBigChessLocalHit = null;
       setInventoryBridge(null);
       clearStationCraftBridge();
       clearEatBridge();
@@ -1172,6 +1316,7 @@ export function GameCanvas() {
         />
       )}
       <PlacedStationOverlays />
+      <BigChessOverlays />
       <PerformanceHud />
     </div>
   );

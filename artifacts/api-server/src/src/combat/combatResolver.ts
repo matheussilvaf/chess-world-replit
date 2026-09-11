@@ -56,8 +56,20 @@ export interface CombatHooks {
   onRevive?: (target: PlayerState) => void;
 }
 
+/** Último golpe aceito de uma sessão (o Big Chess Board só conta acertos ancorados nele). */
+export interface SwingRecord {
+  /** 'attack' (corpo a corpo) ou 'shoot' (arco: a flecha voa depois da animação). */
+  movement: string;
+  /** Instante (servidor) em que o golpe foi aceito. */
+  at: number;
+  /** Fim do golpe + folga de cooldown. */
+  until: number;
+}
+
 export class CombatResolver {
   private cooldownUntil = new Map<string, number>();
+  /** Último golpe aceito por sessão (ver SwingRecord). */
+  private lastSwing = new Map<string, SwingRecord>();
   /** Sessions currently dead (KO'd): timestamp when the server revives them. */
   private deadUntil = new Map<string, number>();
 
@@ -103,14 +115,46 @@ export class CombatResolver {
     }, COMBAT_RESPAWN_MS);
   }
 
+  /**
+   * Dano de fonte NÃO-jogador (contra-ataque de peça do Big Chess Board):
+   * mesmo `combat_hit` (com `attackerSessionId` vazio) e mesmo KO/revive dos
+   * golpes. Jogadores mortos ou sentados não sofrem dano. Devolve o HP restante
+   * ou null quando o dano não se aplicou.
+   */
+  damagePlayer(sessionId: string, damage: number, attackerName: string): number | null {
+    const target = this.room.state.players.get(sessionId);
+    if (!target || target.currentBoardId || this.isDead(sessionId) || target.hp <= 0) return null;
+    const applied = Math.max(0, Math.round(damage));
+    if (applied <= 0) return target.hp;
+    const targetMaxHp = Math.max(1, target.maxHp || DEFAULT_MAX_HP);
+    target.hp = Math.max(0, target.hp - applied);
+    this.room.broadcast('combat_hit', {
+      attackerSessionId: '',
+      attackerName,
+      targetSessionId: sessionId,
+      targetName: target.username,
+      damage: applied,
+      targetHp: target.hp,
+      targetMaxHp,
+    });
+    if (target.hp <= 0) this.killTarget(sessionId, target, null, attackerName);
+    return target.hp;
+  }
+
   /** True while a player is KO'd — dead players can't attack, be hit or move. */
   isDead(sessionId: string): boolean {
     return Date.now() < (this.deadUntil.get(sessionId) ?? 0);
   }
 
+  /** Último golpe aceito da sessão (null = nunca golpeou / já saiu). */
+  lastSwingFor(sessionId: string): SwingRecord | null {
+    return this.lastSwing.get(sessionId) ?? null;
+  }
+
   /** Free per-session bookkeeping when a client leaves. */
   clearSession(sessionId: string): void {
     this.cooldownUntil.delete(sessionId);
+    this.lastSwing.delete(sessionId);
     this.deadUntil.delete(sessionId);
   }
 
@@ -141,6 +185,7 @@ export class CombatResolver {
       const frames = movement === 'shoot' ? COMPOSED_SHEET.shootFrames : COMPOSED_SHEET.attackFrames;
       const durationMs = (frames.length / FPS) * 1000;
       this.cooldownUntil.set(client.sessionId, now + durationMs + COOLDOWN_PAD_MS);
+      this.lastSwing.set(client.sessionId, { movement, at: now, until: now + durationMs + COOLDOWN_PAD_MS });
       this.room.broadcast('player_attack', {
         sessionId: client.sessionId,
         movement,
@@ -161,6 +206,7 @@ export class CombatResolver {
     const columns = config && assetKey ? config.assets[assetKey].columns : 4;
     const durationMs = (columns / FPS) * 1000;
     this.cooldownUntil.set(client.sessionId, now + durationMs + COOLDOWN_PAD_MS);
+    this.lastSwing.set(client.sessionId, { movement, at: now, until: now + durationMs + COOLDOWN_PAD_MS });
 
     // Everyone sees the swing animation, even without combat boxes configured.
     this.room.broadcast('player_attack', {

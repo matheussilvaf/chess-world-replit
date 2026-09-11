@@ -11,13 +11,14 @@
  */
 import { create } from 'zustand';
 
-export type PlacementMode = 'drop' | 'place';
+export type PlacementMode = 'drop' | 'place' | 'chess';
 
 export interface DropPlacement {
   itemKey: string;
   /**
    * 'drop' = soltar no chão (quantidade); 'place' = posicionar uma estação
-   * portátil (1 unidade, preview do corpo, com opção de soltar no chão).
+   * portátil (1 unidade, preview do corpo, com opção de soltar no chão);
+   * 'chess' = posicionar uma peça do Big Chess Board na casa inicial dela.
    */
   mode: PlacementMode;
   /** Saldo disponível (limite da quantidade). */
@@ -34,6 +35,8 @@ export interface DropPlacement {
   /** Mesmo ponto em coordenadas da tela — ancora o popover. */
   screenX: number;
   screenY: number;
+  /** Modo 'chess': casa escolhida (fase 'confirm'/'sending'). */
+  square?: string;
 }
 
 interface InventoryUiState {
@@ -43,7 +46,7 @@ interface InventoryUiState {
   closeInventory: () => void;
   toggleInventory: () => void;
   beginPlacement: (itemKey: string, max: number, mode?: PlacementMode) => void;
-  choosePoint: (point: { worldX: number; worldY: number; screenX: number; screenY: number }) => void;
+  choosePoint: (point: { worldX: number; worldY: number; screenX: number; screenY: number; square?: string }) => void;
   setPlacementQty: (qty: number) => void;
   /** Volta da confirmação para a escolha do ponto. */
   repickPoint: () => void;
@@ -76,7 +79,7 @@ export const useInventoryUiStore = create<InventoryUiState>((set, get) => ({
       mode,
       max,
       phase: 'pick',
-      qty: mode === 'place' ? 1 : clampQty(max, max),
+      qty: mode === 'drop' ? clampQty(max, max) : 1,
       worldX: 0, worldY: 0, screenX: 0, screenY: 0,
     },
   }),

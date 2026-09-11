@@ -23,7 +23,15 @@ export const BADGE_EDIBLE = 'edible';
 export const BADGE_FORGING = 'forging';
 export const BADGE_SMELTING = 'smelting';
 export const BADGE_POTION = 'potion';
-export const SUGGESTED_CRAFT_BADGES: readonly string[] = [BADGE_FOOD, BADGE_EDIBLE, BADGE_FORGING, BADGE_SMELTING, BADGE_POTION];
+/** Big Chess Board (ver shared/bigchess): capa, item de defesa e seus modificadores. */
+export const BADGE_COVER = 'cover';
+export const BADGE_DEFENSE_PIECE = 'defense-piece';
+export const BADGE_HP_PLUS = 'hp-plus';
+export const BADGE_COUNTER_ATTACK = 'counter-attack';
+export const SUGGESTED_CRAFT_BADGES: readonly string[] = [
+  BADGE_FOOD, BADGE_EDIBLE, BADGE_FORGING, BADGE_SMELTING, BADGE_POTION,
+  BADGE_COVER, BADGE_DEFENSE_PIECE, BADGE_HP_PLUS, BADGE_COUNTER_ATTACK,
+];
 
 /** itemId → badges (sem repetição, em ordem de inserção). */
 export type CraftBadgeMap = Record<string, string[]>;

@@ -26,6 +26,7 @@ import { executePlayerCraft } from '../craft/craftService.js';
 import { PLACEABLE_STACK_LIMIT, placeableStationFor } from '../shared/craft/PlaceableStations.js';
 import { getCraftItemsCached } from '../craft/craftRepository.js';
 import { PlacedStationManager, maxDurabilityForItem, type PlacedReply } from './PlacedStationManager.js';
+import { BIGCHESS_COUNTER_TICK_MS, BIGCHESS_TICK_MS, BigChessManager } from '../bigchess/BigChessManager.js';
 import { progressService } from '../progress/progressService.js';
 import { getEnergySkillsConfigCached } from '../progress/energySkillsRepository.js';
 import type { ProgressSnapshot } from '../shared/progress/EnergySkillsShapes.js';
@@ -100,6 +101,8 @@ export class WorldRoom extends Room<WorldState> {
   private dropLocks = new Map<string, Promise<void>>();
   /** Estações portáteis posicionadas no mapa (place/pickup/craft privado/permissões/expiração); criado em onCreate. */
   private placedStations!: PlacedStationManager;
+  /** Big Chess Board (peças posicionadas, renda, defesas, ataques); só ativo em salas `craft:*`. */
+  private bigChess!: BigChessManager;
   /** Last accepted client movement; performance.now is monotonic per process. */
   private movementGuards = new Map<string, number>();
   // Client MAP_CONFIG.playerSpeed is 120 px/s. 180 allows normal rounding,
@@ -135,6 +138,30 @@ export class WorldRoom extends Room<WorldState> {
       updateRoomHold: () => this.holdRoomWhileDropsExist(),
       inventorySnapshot: (userId) => this.inventorySnapshot(userId),
     });
+    this.bigChess = new BigChessManager({
+      state: this.state,
+      region: this.region,
+      clientByPlayerId: (playerId) => {
+        const sessionId = this.findSessionByPlayerId(playerId);
+        return sessionId ? this.clients.find((c) => c.sessionId === sessionId) : undefined;
+      },
+      withLock: (key, task) => this.withDropLock(key, task),
+      inventorySnapshot: (userId) => this.inventorySnapshot(userId),
+      broadcast: (event, payload) => this.broadcast(event, payload),
+      damagePlayer: (sessionId, damage, attackerName) => this.combatResolver.damagePlayer(sessionId, damage, attackerName),
+      isDead: (sessionId) => this.combatResolver.isDead(sessionId),
+      lastSwing: (sessionId) => this.combatResolver.lastSwingFor(sessionId),
+    });
+    if (this.bigChess.enabled) {
+      void this.bigChess.load().catch((e) => console.warn('[bigchess] load falhou:', e instanceof Error ? e.message : e));
+      this.clock.setInterval(() => {
+        void this.bigChess.tick().catch((e) => console.warn('[bigchess] tick falhou:', e instanceof Error ? e.message : e));
+      }, BIGCHESS_TICK_MS);
+      // Contra-ataque é dano POR SEGUNDO: relógio próprio, mais fino que o tick de renda/regen.
+      this.clock.setInterval(() => {
+        void this.bigChess.pulseCounters().catch((e) => console.warn('[bigchess] contra-ataque falhou:', e instanceof Error ? e.message : e));
+      }, BIGCHESS_COUNTER_TICK_MS);
+    }
 
     coordinator.registerWorldRoom(this);
 
@@ -679,6 +706,28 @@ export class WorldRoom extends Room<WorldState> {
     });
     this.onMessage('station_respond_access', (client, data) => {
       this.placedStations.handleRespondAccess(this.state.players.get(client.sessionId), data);
+    });
+
+    // ---- Big Chess Board (ver BigChessManager) ----
+    this.onMessage('bigchess_place', (client, data) => {
+      const body = data as { requestId?: unknown; itemKey?: unknown; square?: unknown } | undefined;
+      void this.runRoomRequest(client, 'bigchess_place', body?.requestId, JSON.stringify([body?.itemKey, body?.square]),
+        () => this.bigChess.handlePlace(this.state.players.get(client.sessionId), data));
+    });
+    this.onMessage('bigchess_collect', (client, data) => {
+      const body = data as { requestId?: unknown; square?: unknown } | undefined;
+      void this.runRoomRequest(client, 'bigchess_collect', body?.requestId, JSON.stringify([body?.square]),
+        () => this.bigChess.handleCollect(this.state.players.get(client.sessionId), data));
+    });
+    this.onMessage('bigchess_equip', (client, data) => {
+      const body = data as { requestId?: unknown; square?: unknown; itemKey?: unknown } | undefined;
+      void this.runRoomRequest(client, 'bigchess_equip', body?.requestId, JSON.stringify([body?.square, body?.itemKey]),
+        () => this.bigChess.handleEquip(this.state.players.get(client.sessionId), data));
+    });
+    this.onMessage('bigchess_attack', (client, data) => {
+      const body = data as { requestId?: unknown; square?: unknown } | undefined;
+      void this.runRoomRequest(client, 'bigchess_attack', body?.requestId, JSON.stringify([body?.square]),
+        () => this.bigChess.handleAttack(client.sessionId, this.state.players.get(client.sessionId), data));
     });
 
     // ---- Personagem jogável (aparência composta + arma da classe) ----
@@ -1227,6 +1276,12 @@ export class WorldRoom extends Room<WorldState> {
     this.movementGuards.set(client.sessionId, performance.now());
     console.log(`[WorldRoom] Player joined: ${player.username} (${client.sessionId}) | total: ${this.state.players.size}`);
     if (!playerId.startsWith('anon:')) void this.inventorySnapshot(playerId).then((reply) => client.send(reply.event, reply.payload));
+    // Carteira de Crowns (renda do Big Chess Board) — separada do inventário.
+    if (!playerId.startsWith('anon:')) {
+      void this.bigChess.walletFor(playerId)
+        .then((wallet) => client.send('wallet_update', wallet))
+        .catch((e) => console.warn('[bigchess] carteira indisponível:', e instanceof Error ? e.message : e));
+    }
 
     // Energia/habilidades: o 1º snapshot chega logo após o load e enche o HP
     // com o máximo global; os seguintes viram `progress_update` ao cliente.
@@ -1309,6 +1364,7 @@ export class WorldRoom extends Room<WorldState> {
     this.state.voiceParticipants.delete(client.sessionId);
     this.state.players.delete(client.sessionId);
     this.combatResolver.clearSession(client.sessionId);
+    this.bigChess.clearSession(client.sessionId);
     this.starvedSessions.delete(client.sessionId);
     this.characterLoadSeq.delete(client.sessionId);
     this.playerCharacters.delete(client.sessionId);
@@ -1432,7 +1488,7 @@ export class WorldRoom extends Room<WorldState> {
     }
   }
 
-  onDispose() {
+  async onDispose() {
     // Clear all disconnect grace timers so they don't fire after room disposal.
     this.disconnectTimers.forEach((timers) => timers.forEach((t) => clearTimeout(t)));
     this.disconnectTimers.clear();
@@ -1441,6 +1497,9 @@ export class WorldRoom extends Room<WorldState> {
     // here used to kill the other room's live matches.
     this.state.matches.forEach((_match, matchId) => activeGames.delete(matchId));
     coordinator.unregisterWorldRoom(this);
+    // Peças sujas do Big Chess Board (write-behind) vão para o Supabase antes de
+    // fechar — o Colyseus espera a Promise do onDispose.
+    await this.bigChess.flush().catch((e) => console.warn('[bigchess] flush no dispose falhou:', e instanceof Error ? e.message : e));
   }
 
   isBoardPlaying(boardId: string): boolean {

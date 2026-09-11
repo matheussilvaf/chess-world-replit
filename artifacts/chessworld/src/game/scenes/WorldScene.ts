@@ -34,7 +34,7 @@ import {
   weaponHitboxRectsFor,
 } from '../rigs/composedRigFrames';
 import { localRectToWorldRect, type LocalRectangle, type RigConfig, type RigDirection } from '../../shared/combat/RigShapes';
-import type { WeaponHitboxProfile } from '../../shared/combat/WeaponShapes';
+import { WEAPON_CATEGORY, type WeaponHitboxProfile } from '../../shared/combat/WeaponShapes';
 import {
   ATTACK_COOLDOWN_CLIENT_MARGIN_MS,
   ATTACK_COOLDOWN_PAD_MS,
@@ -54,6 +54,15 @@ import type { TableAnchors, TableRegistry } from '../config/tableAnchors';
 import { ChessOverlayManager } from '../overlay/ChessOverlayManager';
 import { playerTagBus, type PlayerTagEntry } from '../playerTagBus';
 import { PlacedStationLayer, type PlacementGhost } from '../world/PlacedStationLayer';
+import { BigChessPieceLayer, type BigChessGhost, type BigChessHitMode } from '../world/BigChessPieceLayer';
+import {
+  BIGCHESS_INTERACT_DISTANCE,
+  bigChessPieceFor,
+  bigChessSquareAt,
+  bigChessSquareCenter,
+  bigChessStartingPieceAt,
+  type BigChessPieceView,
+} from '../../shared/bigchess/BigChessShapes';
 import {
   PLACED_STATION_CLEARANCE,
   PUBLIC_STATION_RECTS,
@@ -164,6 +173,12 @@ type AttackSender = (data: {
 
 type CharacterSetSender = (characterId: string) => void;
 
+/** Só ARMA principal (gen:weapon/…) danifica peças do tabuleiro — ferramentas e mão limpa não (mesma regra do servidor). */
+function isBigChessWeaponRef(ref: string): boolean {
+  const parsed = parseWeaponRef(ref);
+  return !!parsed && parsed.category === WEAPON_CATEGORY;
+}
+
 export class WorldScene extends Phaser.Scene {
   private player!: Phaser.GameObjects.Sprite;
   private playerBody!: MatterJS.BodyType;
@@ -185,6 +200,12 @@ export class WorldScene extends Phaser.Scene {
   private placedStationTickAt = 0;
   /** Clique numa estação portátil posicionada (abre painel / pedido de permissão). */
   public onPlacedStationClick: ((placedId: string) => void) | null = null;
+  /** Peças do Big Chess Board (desenho + acerto local); criado em create(). */
+  private bigChessLayer: BigChessPieceLayer | null = null;
+  /** Clique numa peça do tabuleiro (abre o card). */
+  public onBigChessPieceClick: ((square: string) => void) | null = null;
+  /** Acerto local (golpe/flecha) numa peça — o GameCanvas manda `bigchess_attack` à sala. */
+  public onBigChessLocalHit: ((square: string, mode: BigChessHitMode) => void) | null = null;
   private inventoryPickupSender: ((dropId: string) => void) | null = null;
 
   // Debug graphics
@@ -532,6 +553,8 @@ export class WorldScene extends Phaser.Scene {
       if (this.interactionSystem?.hitTestPointer(worldPoint.x, worldPoint.y)) return;
       // Estação portátil posicionada: o clique abre o painel (zona interativa), não anda.
       if (this.placedStationLayer?.hitTest(worldPoint.x, worldPoint.y)) return;
+      // Peça do tabuleiro: o clique abre o card, não anda.
+      if (this.bigChessLayer?.hitTest(worldPoint.x, worldPoint.y)) return;
       if (this.inMatch) return;
       this.navigateTo(worldPoint.x, worldPoint.y);
     });
@@ -547,6 +570,13 @@ export class WorldScene extends Phaser.Scene {
       },
     );
 
+    this.bigChessLayer = new BigChessPieceLayer(
+      this,
+      (y) => (this.craftingRuntime.active ? this.craftingRuntime.depthForY(y) : 80),
+      (square) => this.onBigChessPieceClick?.(square),
+      (square, mode) => this.onBigChessLocalHit?.(square, mode),
+    );
+
     this.events.once('shutdown', () => {
       this.keyboardControls?.destroy();
       this.keyboardControls = null;
@@ -555,6 +585,8 @@ export class WorldScene extends Phaser.Scene {
       this.arrowProjectiles = null;
       this.placedStationLayer?.destroy();
       this.placedStationLayer = null;
+      this.bigChessLayer?.destroy();
+      this.bigChessLayer = null;
     });
 
     // Setup zoom controls
@@ -1479,11 +1511,17 @@ export class WorldScene extends Phaser.Scene {
       });
     }
 
-    // Flechas em voo: movem e (no mundo de coleta) testam contra os nós.
+    // Big Chess Board: golpe local (só ARMA principal) contra as casas com peça.
+    if (this.craftingRuntime.active && this.bigChessLayer?.hasAnyPiece()) {
+      const swing = this.currentSwingState();
+      if (swing && isBigChessWeaponRef(swing.toolRef)) this.bigChessLayer.pollSwing(swing);
+    }
+
+    // Flechas em voo: movem e (no mundo de coleta) testam contra os nós e as peças do tabuleiro.
     if (this.arrowProjectiles) {
       const tester = this.craftingRuntime.active
         ? (rects: Phaser.Geom.Rectangle[], x: number, y: number, damage: number) =>
-            this.craftingRuntime.tryProjectileHit(rects, x, y, damage)
+            this.craftingRuntime.tryProjectileHit(rects, x, y, damage) || (this.bigChessLayer?.tryProjectileHit(rects) ?? false)
         : null;
       this.arrowProjectiles.update(delta, tester);
     }
@@ -4472,6 +4510,46 @@ export class WorldScene extends Phaser.Scene {
     this.placedStationLayer?.setGhost(ghost);
   }
 
+  /** Espelha as peças do Big Chess Board da sala (store → cena). */
+  public syncBigChessPieces(views: BigChessPieceView[]) {
+    this.bigChessLayer?.sync(views);
+  }
+
+  /** Fantasma do posicionamento de peça (null = remove). */
+  public setBigChessGhost(ghost: BigChessGhost | null) {
+    this.bigChessLayer?.setGhost(ghost);
+  }
+
+  /** Resposta do servidor a um acerto nosso numa peça (pisca + número do dano). */
+  public flashBigChessHit(square: string, damage: number, destroyed: boolean) {
+    this.bigChessLayer?.flashHit(square, damage, destroyed);
+  }
+
+  /**
+   * Validação local do posicionamento de uma peça: casa sob o ponto, casa da
+   * posição inicial daquela peça (cor + tipo), livre, e jogador perto. O
+   * servidor repete as mesmas regras.
+   */
+  public validateBigChessPlacement(itemKey: string, x: number, y: number): { ok: boolean; square: string | null; reason?: string } {
+    const def = bigChessPieceFor(itemKey);
+    if (!def) return { ok: false, square: null, reason: 'Item não é uma peça do tabuleiro' };
+    if (!this.craftingRuntime.active) return { ok: false, square: null, reason: 'O tabuleiro fica no Mundo de Coleta' };
+    const square = bigChessSquareAt(x, y);
+    if (!square) return { ok: false, square: null, reason: 'Solte a peça em uma casa do tabuleiro' };
+    const start = bigChessStartingPieceAt(square);
+    if (!start || start.color !== def.color || start.type !== def.type) {
+      return { ok: false, square, reason: `${def.name} só pode ir para a casa inicial dela` };
+    }
+    if (this.bigChessLayer?.hasPiece(square)) return { ok: false, square, reason: 'Casa ocupada' };
+    if (this.player) {
+      const center = bigChessSquareCenter(square);
+      if (Phaser.Math.Distance.Between(this.player.x, this.player.y, center.x, center.y) > BIGCHESS_INTERACT_DISTANCE) {
+        return { ok: false, square, reason: 'Chegue mais perto da casa' };
+      }
+    }
+    return { ok: true, square };
+  }
+
   /**
    * Validação local do ponto de posicionamento (o servidor repete as regras
    * que consegue: distância, estações públicas/posicionadas, jogadores; as
@@ -4497,7 +4575,7 @@ export class WorldScene extends Phaser.Scene {
   }
 
   /** Anel tracejado com o alcance máximo do drop; acompanha o jogador no update(). */
-  public setDropRadiusVisible(visible: boolean) {
+  public setDropRadiusVisible(visible: boolean, radiusPx?: number) {
     if (!visible) {
       this.dropRadiusRing?.destroy();
       this.dropRadiusRing = null;
@@ -4505,7 +4583,7 @@ export class WorldScene extends Phaser.Scene {
     }
     if (this.dropRadiusRing || !this.player) return;
     const ring = this.add.graphics().setDepth(79);
-    const radius = INVENTORY_DROP_MAX_DISTANCE;
+    const radius = radiusPx ?? INVENTORY_DROP_MAX_DISTANCE;
     ring.fillStyle(0xf7d36a, 0.06);
     ring.fillCircle(0, 0, radius);
     ring.lineStyle(2, 0xf7d36a, 0.85);

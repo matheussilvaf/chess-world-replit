@@ -9,10 +9,11 @@ import { REGIONS } from '../../config/game';
 import { voiceClient } from '../../game/voice/livekitVoiceClient';
 import { leaveWorldRoom } from '../../game/network/colyseusClient';
 import {
-  User, MessageSquare, Users, Settings, DoorOpen, Mic, Maximize, Minimize, TreePine, Castle,
+  User, MessageSquare, Users, Settings, DoorOpen, Mic, Maximize, Minimize, TreePine, Castle, Crown,
 } from 'lucide-react';
 import { CollectionInventoryButton } from '../game/CollectionInventoryPanel';
 import { useInventoryUiStore } from '../../stores/inventoryUiStore';
+import { formatCrowns, useWalletStore } from '../../stores/walletStore';
 
 // iPhone Safari has no Fullscreen API for arbitrary elements — hide the button there.
 const FULLSCREEN_SUPPORTED =
@@ -20,7 +21,9 @@ const FULLSCREEN_SUPPORTED =
   typeof (document.documentElement as any).webkitRequestFullscreen === 'function';
 
 export function HUD() {
-  const { profile } = useAuthStore();
+  const { profile, user } = useAuthStore();
+  const crowns = useWalletStore((s) => s.crowns);
+  const refreshWallet = useWalletStore((s) => s.refresh);
   const { region, onlinePlayers, unreadChat, liveChatMessage, showChat, toggleChat, toggleProfile, toggleFriends, toggleSettings, toggleVoiceChat, currentWorld, setTravelRequest } = useGameStore();
   const { phase } = useColyseusStore();
   const matchId = useChessStore(s => s.matchId);
@@ -31,6 +34,13 @@ export function HUD() {
 
   const regionInfo = REGIONS.find(r => r.id === region);
   const inGame = !!matchId;
+
+  // Saldo de Crowns: a sala empurra `wallet_update` ao entrar/coletar; o GET cobre
+  // o caso de o servidor ainda não ter enviado (ou deploys sem a mensagem).
+  useEffect(() => {
+    if (!user?.id) return;
+    void refreshWallet();
+  }, [user?.id, refreshWallet]);
 
   // New-message preview balloon under the chat icon (auto-hides; admin-tunable).
   // Only liveChatMessage triggers it — the store sets that field exclusively on
@@ -119,6 +129,15 @@ export function HUD() {
                   🏆 {profile?.trophies}
                 </span>
               </div>
+            </div>
+            {/* Crowns — moeda principal (renda das peças do Big Chess Board) */}
+            <div
+              className="ml-1 flex items-center gap-1.5 rounded-lg border border-yellow-500/50 bg-yellow-500/10 px-2.5 py-1.5"
+              title="Crowns — moeda principal"
+              data-testid="hud-crowns"
+            >
+              <Crown className="h-4 w-4 text-yellow-300" />
+              <span className="font-mono text-sm font-bold text-yellow-100">{formatCrowns(crowns)}</span>
             </div>
           </div>
         )}
