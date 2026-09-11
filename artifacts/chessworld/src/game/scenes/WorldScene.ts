@@ -3,6 +3,7 @@ import decomp from 'poly-decomp';
 import { MAP_CONFIG } from '../config/mapConfig';
 import { CRAFTING_MAP, isBelowPlayerLayer } from '../config/craftingMapConfig';
 import { CraftingMapRuntime } from '../world/CraftingMapRuntime';
+import { tmjCollisionShape } from '../world/tmjCollisionShapes';
 import { WORLD_TILESETS, ALL_TILESETS, EXTRA_TILESETS, findTilesetForGid, findTilesetForGidInMap, getTextureKeyForTileset } from '../config/worldAssets';
 import { ArenaModuleManager } from '../map/ArenaModuleManager';
 import {
@@ -54,7 +55,7 @@ import type { TableAnchors, TableRegistry } from '../config/tableAnchors';
 import { ChessOverlayManager } from '../overlay/ChessOverlayManager';
 import { playerTagBus, type PlayerTagEntry } from '../playerTagBus';
 import { PlacedStationLayer, type PlacementGhost } from '../world/PlacedStationLayer';
-import { BigChessPieceLayer, type BigChessGhost, type BigChessHitMode } from '../world/BigChessPieceLayer';
+import { BigChessPieceLayer, type BigChessGhost, type BigChessHitMode, type BigChessRect } from '../world/BigChessPieceLayer';
 import {
   BIGCHESS_INTERACT_DISTANCE,
   bigChessPieceFor,
@@ -87,11 +88,13 @@ interface ChessArenaZone {
 }
 
 // ---------------------------------------------------------------------------
-// Barra de HP — REGRA DE TESTE: por enquanto a barra só aparece em jogadores
-// usando o personagem abaixo. Quando o sistema for aprovado, troque esta
-// regra por "sempre visível" (ou por config).
+// Barras acima dos jogadores. O próprio jogador vê o HP dele sempre. Nos
+// OUTROS jogadores a barra mostra a ENERGIA (fome) deles; o HP só aparece com
+// PvP ativo ou durante uma janela depois de o jogador sofrer dano (contra-
+// ataque de peça, monstro, golpe…) — depois volta a ser a energia.
 // ---------------------------------------------------------------------------
-const HP_BAR_TEST_CHARACTER = 'character01';
+/** Fora do PvP: por quanto tempo o HP do outro jogador fica visível após um dano. */
+const REMOTE_HP_SHOW_MS = 20_000;
 const HP_BAR_WIDTH = 28;
 const HP_BAR_HEIGHT = 4;
 /** Y offset of the HP bar above the sprite origin (name tags sit at -32). */
@@ -147,7 +150,14 @@ interface RemotePlayer {
   deadUntil: number;
   hp: number;
   maxHp: number;
-  /** HP bar inside the container (visibility: HP_BAR_TEST_CHARACTER rule). */
+  /** Energia (fome) — só chega de servidores que publicam energy/maxEnergy (0 = desconhecida). */
+  energy: number;
+  maxEnergy: number;
+  /** Último dano sofrido (ms) — abre a janela da barra de HP fora do PvP. */
+  lastDamageAt: number;
+  /** O que a barra está desenhando agora (evita redesenhar a cada frame). */
+  barMode: 'hp' | 'energy' | 'none';
+  /** Barra acima da cabeça (HP ou energia, conforme `barMode`). */
   hpBar: Phaser.GameObjects.Graphics;
   /** Receita canônica renderizada ('' / ausente = personagem legado). */
   appearanceRaw?: string;
@@ -197,6 +207,8 @@ export class WorldScene extends Phaser.Scene {
   /** Estações portáteis posicionadas (desenho + colisão); criado em create(). */
   private placedStationLayer: PlacedStationLayer | null = null;
   private placedStationRects: StationRect[] = [];
+  /** Casas do Big Chess Board ocupadas por peças (bloqueiam como as estações). */
+  private bigChessRects: BigChessRect[] = [];
   private placedStationTickAt = 0;
   /** Clique numa estação portátil posicionada (abre painel / pedido de permissão). */
   public onPlacedStationClick: ((placedId: string) => void) | null = null;
@@ -251,6 +263,8 @@ export class WorldScene extends Phaser.Scene {
   /** Vetores reutilizados na projeção tela→mundo do teclado (sem alocar por frame). */
   private readonly kbWorldA = new Phaser.Math.Vector2();
   private readonly kbWorldB = new Phaser.Math.Vector2();
+  /** PvP ativo: HP de todos sempre visível (será configurável; hoje só via setPvpMode). */
+  private pvpMode = false;
   private localHp = 100;
   private localMaxHp = 100;
   private localHpBar: Phaser.GameObjects.Graphics | null = null;
@@ -565,8 +579,7 @@ export class WorldScene extends Phaser.Scene {
       (placedId) => this.onPlacedStationClick?.(placedId),
       (rects) => {
         this.placedStationRects = rects;
-        // Rotas do jogador e dos animais desviam do corpo (mesma folga das paredes).
-        this.pathfinder?.setDynamicRects(rects, 12);
+        this.applyDynamicObstacles();
       },
     );
 
@@ -575,6 +588,10 @@ export class WorldScene extends Phaser.Scene {
       (y) => (this.craftingRuntime.active ? this.craftingRuntime.depthForY(y) : 80),
       (square) => this.onBigChessPieceClick?.(square),
       (square, mode) => this.onBigChessLocalHit?.(square, mode),
+      (rects) => {
+        this.bigChessRects = rects;
+        this.applyDynamicObstacles();
+      },
     );
 
     this.events.once('shutdown', () => {
@@ -1099,30 +1116,35 @@ export class WorldScene extends Phaser.Scene {
     if (!collisionObjects) return;
 
     for (const obj of collisionObjects) {
-      const props: any[] = obj.properties || [];
-      const labelData: Record<string, string> = {};
-      for (const p of props) {
-        labelData[p.name] = String(p.value);
-      }
       const label = obj.name || `collision_${obj.id}`;
+      // Rotação, elipse e polígono do Tiled resolvidos no helper (um retângulo
+      // girado ignorado era a "parede invisível" da estação de poções).
+      const shape = tmjCollisionShape(obj);
+      if (!shape) continue;
 
-      if (obj.polygon) {
-        // Tiled polygon vertices are relative to (obj.x, obj.y)
-        const absoluteVerts = obj.polygon.map((p: { x: number; y: number }) => ({
-          x: obj.x + p.x,
-          y: obj.y + p.y,
-        }));
-        this.collisionPolys.push(absoluteVerts);
-        this.createPolygonCollision(absoluteVerts, label);
-      } else if (obj.width && obj.height) {
-        this.collisionRects.push({ x: obj.x, y: obj.y, width: obj.width, height: obj.height });
-        const cx = obj.x + obj.width / 2;
-        const cy = obj.y + obj.height / 2;
-        const body = this.matter.add.rectangle(cx, cy, obj.width, obj.height, {
+      if (shape.kind === 'rect') {
+        const { rect } = shape;
+        this.collisionRects.push({ x: rect.x, y: rect.y, width: rect.width, height: rect.height });
+        const body = this.matter.add.rectangle(rect.x + rect.width / 2, rect.y + rect.height / 2, rect.width, rect.height, {
           isStatic: true,
           label,
         });
         if (body) this.mapCollisionBodies.push(body);
+        continue;
+      }
+
+      this.collisionPolys.push(shape.points);
+      if (shape.box) {
+        // Retângulo girado: corpo exato do Matter (centro + ângulo), sem decompor.
+        const { box } = shape;
+        const body = this.matter.add.rectangle(box.cx, box.cy, box.width, box.height, {
+          isStatic: true,
+          label,
+          angle: box.angle,
+        });
+        if (body) this.mapCollisionBodies.push(body);
+      } else {
+        this.createPolygonCollision(shape.points, label);
       }
     }
   }
@@ -1244,6 +1266,15 @@ export class WorldScene extends Phaser.Scene {
         });
       }
     }
+  }
+
+  /**
+   * Bloqueios dinâmicos na grade do A*: estações portáteis + casas com peça do
+   * Big Chess Board. Rotas do jogador e dos animais desviam deles (mesma folga
+   * das paredes); os corpos Matter de cada um vivem nas próprias camadas.
+   */
+  private applyDynamicObstacles() {
+    this.pathfinder?.setDynamicRects([...this.placedStationRects, ...this.bigChessRects], 12);
   }
 
   private buildPathfindingGrid(mapWidth: number, mapHeight: number) {
@@ -1512,8 +1543,10 @@ export class WorldScene extends Phaser.Scene {
       });
     }
 
-    // Big Chess Board: golpe local (só ARMA principal) contra as casas com peça.
+    // Big Chess Board: golpe local (só ARMA principal) contra as casas com peça
+    // e animação dos contra-ataques em curso (onda + tremor).
     if (this.craftingRuntime.active && this.bigChessLayer?.hasAnyPiece()) {
+      this.bigChessLayer.tick(Date.now());
       const swing = this.currentSwingState();
       if (swing && isBigChessWeaponRef(swing.toolRef)) this.bigChessLayer.pollSwing(swing);
     }
@@ -1550,9 +1583,9 @@ export class WorldScene extends Phaser.Scene {
     // Player visual position and camera are updated in lateUpdate (postupdate)
     // to guarantee they read the FINAL physics position for this frame.
 
+    const barsNow = Date.now();
     this.otherPlayers.forEach((remote) => {
-      // TESTE: barra de HP visível apenas para o personagem de teste.
-      remote.hpBar.setVisible(!remote.seated && remote.characterId === HP_BAR_TEST_CHARACTER);
+      this.updateRemoteBar(remote, barsNow);
       if (remote.seated) return;
       if (Date.now() < remote.deadUntil) return; // death pose owns the sprite
       if (remote.attackingUntil > 0 && Date.now() >= remote.attackingUntil) {
@@ -1828,7 +1861,7 @@ export class WorldScene extends Phaser.Scene {
     return this.currentMapKey;
   }
 
-  public handlePlayerJoined(p: { id: string; socketId: string; username: string; rating: number; region: string; x: number; y: number; targetX: number; targetY: number; direction: string; isMoving: boolean; characterId?: string; hp?: number; maxHp?: number; appearance?: string; equippedWeapon?: string }) {
+  public handlePlayerJoined(p: { id: string; socketId: string; username: string; rating: number; region: string; x: number; y: number; targetX: number; targetY: number; direction: string; isMoving: boolean; characterId?: string; hp?: number; maxHp?: number; energy?: number; maxEnergy?: number; appearance?: string; equippedWeapon?: string }) {
     if (p.id === this.localPlayerId) return;
     const sessionId = p.socketId;
     if (this.otherPlayers.has(sessionId)) return;
@@ -1892,7 +1925,7 @@ export class WorldScene extends Phaser.Scene {
     return this.otherPlayers.has(sessionId);
   }
 
-  public updateRemotePlayerState(sessionId: string, state: { x: number; y: number; targetX: number; targetY: number; direction: string; isMoving: boolean; characterId?: string; hp?: number; maxHp?: number; appearance?: string; equippedWeapon?: string }) {
+  public updateRemotePlayerState(sessionId: string, state: { x: number; y: number; targetX: number; targetY: number; direction: string; isMoving: boolean; characterId?: string; hp?: number; maxHp?: number; energy?: number; maxEnergy?: number; appearance?: string; equippedWeapon?: string }) {
     const remote = this.otherPlayers.get(sessionId);
     if (!remote) return;
     if (state.appearance) {
@@ -1908,9 +1941,20 @@ export class WorldScene extends Phaser.Scene {
       const hp = typeof state.hp === 'number' ? state.hp : remote.hp;
       const maxHp = typeof state.maxHp === 'number' && state.maxHp > 0 ? state.maxHp : remote.maxHp;
       if (hp !== remote.hp || maxHp !== remote.maxHp) {
+        // HP caiu = sofreu dano (qualquer fonte, mesmo sem broadcast): abre a janela da barra.
+        if (hp < remote.hp) remote.lastDamageAt = Date.now();
         remote.hp = hp;
         remote.maxHp = maxHp;
-        this.drawHpBar(remote.hpBar, hp, maxHp);
+        if (remote.barMode === 'hp') this.drawHpBar(remote.hpBar, hp, maxHp);
+      }
+    }
+    if (typeof state.energy === 'number' || typeof state.maxEnergy === 'number') {
+      const energy = typeof state.energy === 'number' ? state.energy : remote.energy;
+      const maxEnergy = typeof state.maxEnergy === 'number' ? state.maxEnergy : remote.maxEnergy;
+      if (energy !== remote.energy || maxEnergy !== remote.maxEnergy) {
+        remote.energy = energy;
+        remote.maxEnergy = maxEnergy;
+        if (remote.barMode === 'energy') this.drawEnergyBar(remote.hpBar, energy, maxEnergy);
       }
     }
     if (remote.seated) return;
@@ -2008,7 +2052,7 @@ export class WorldScene extends Phaser.Scene {
     }
   }
 
-  private addRemotePlayer(sessionId: string, p: { id: string; username: string; rating: number; x: number; y: number; direction: string; isMoving: boolean; characterId?: string; hp?: number; maxHp?: number }) {
+  private addRemotePlayer(sessionId: string, p: { id: string; username: string; rating: number; x: number; y: number; direction: string; isMoving: boolean; characterId?: string; hp?: number; maxHp?: number; energy?: number; maxEnergy?: number }) {
     const def = getWorldCharacter(p.characterId);
     if (!def) {
       console.error('[WorldScene] addRemotePlayer: no character definitions available');
@@ -2056,10 +2100,14 @@ export class WorldScene extends Phaser.Scene {
       deadUntil: 0,
       hp: typeof p.hp === 'number' ? p.hp : 100,
       maxHp: typeof p.maxHp === 'number' && p.maxHp > 0 ? p.maxHp : 100,
+      energy: typeof p.energy === 'number' ? p.energy : 0,
+      maxEnergy: typeof p.maxEnergy === 'number' ? p.maxEnergy : 0,
+      lastDamageAt: 0,
+      barMode: 'none',
       hpBar,
     };
-    this.drawHpBar(hpBar, remote.hp, remote.maxHp);
-    hpBar.setVisible(def.id === HP_BAR_TEST_CHARACTER);
+    // O modo certo (HP/energia/nada) é decidido no primeiro update (updateRemoteBar).
+    hpBar.setVisible(false);
     this.otherPlayers.set(sessionId, remote);
 
     // The remote may use a character whose sheets we haven't loaded yet
@@ -3187,8 +3235,9 @@ export class WorldScene extends Phaser.Scene {
     const mapHeight = tmjData.height * (tmjData.tileheight || MAP_CONFIG.tileSize);
     this.pathfinder = new AStarGrid(16);
     this.pathfinder.buildGrid(mapWidth, mapHeight, this.collisionRects, this.collisionPolys, 12);
-    // Estações portáteis que continuam posicionadas (mesma sala) voltam à grade nova.
+    // Estações portáteis e peças do tabuleiro que continuam na sala voltam à grade nova.
     this.placedStationLayer?.reattachBodies();
+    this.bigChessLayer?.reattachBodies();
 
     // Update Matter world bounds
     this.matter.world.setBounds(0, 0, mapWidth, mapHeight);
@@ -3472,7 +3521,7 @@ export class WorldScene extends Phaser.Scene {
       remote.deadUntil = 0;
       // HP is server-authoritative and re-synced on switch; redraw with the
       // new character's proportions right away.
-      this.drawHpBar(remote.hpBar, remote.hp, remote.maxHp);
+      this.redrawRemoteBar(remote);
       if (!remote.seated) this.restoreRemoteWalkTexture(remote);
     });
   }
@@ -3489,7 +3538,7 @@ export class WorldScene extends Phaser.Scene {
   /** Monta a folha composta de um remote e o adiciona à cena (assíncrono). */
   private async addAppearanceRemote(
     sessionId: string,
-    p: { id: string; username: string; rating: number; x: number; y: number; direction: string; isMoving: boolean; hp?: number; maxHp?: number; appearance?: string; equippedWeapon?: string },
+    p: { id: string; username: string; rating: number; x: number; y: number; direction: string; isMoving: boolean; hp?: number; maxHp?: number; energy?: number; maxEnergy?: number; appearance?: string; equippedWeapon?: string },
   ): Promise<void> {
     const appearanceRaw = p.appearance ?? '';
     const weaponRef = p.equippedWeapon || null;
@@ -3866,12 +3915,55 @@ export class WorldScene extends Phaser.Scene {
   /** Redraws an HP bar (centered on 0,0 of the graphics object). */
   private drawHpBar(gfx: Phaser.GameObjects.Graphics, hp: number, maxHp: number) {
     const pct = Math.max(0, Math.min(1, maxHp > 0 ? hp / maxHp : 0));
+    const color = pct > 0.5 ? 0x22c55e : pct > 0.25 ? 0xeab308 : 0xef4444;
+    this.drawOverheadBar(gfx, pct, color);
+  }
+
+  /** Barra de energia (fome) do outro jogador — azul, para não confundir com o HP. */
+  private drawEnergyBar(gfx: Phaser.GameObjects.Graphics, energy: number, maxEnergy: number) {
+    const pct = Math.max(0, Math.min(1, maxEnergy > 0 ? energy / maxEnergy : 0));
+    const color = pct > 0.25 ? 0x38bdf8 : 0xfb923c;
+    this.drawOverheadBar(gfx, pct, color);
+  }
+
+  private drawOverheadBar(gfx: Phaser.GameObjects.Graphics, pct: number, color: number) {
     gfx.clear();
     gfx.fillStyle(0x000000, 0.65);
     gfx.fillRect(-HP_BAR_WIDTH / 2 - 1, -HP_BAR_HEIGHT / 2 - 1, HP_BAR_WIDTH + 2, HP_BAR_HEIGHT + 2);
-    const color = pct > 0.5 ? 0x22c55e : pct > 0.25 ? 0xeab308 : 0xef4444;
     gfx.fillStyle(color, 1);
     gfx.fillRect(-HP_BAR_WIDTH / 2, -HP_BAR_HEIGHT / 2, HP_BAR_WIDTH * pct, HP_BAR_HEIGHT);
+  }
+
+  /**
+   * Barra acima do outro jogador: HP com PvP ativo ou por REMOTE_HP_SHOW_MS
+   * depois de um dano; fora disso, a energia dele (quando o servidor a publica).
+   */
+  private updateRemoteBar(remote: RemotePlayer, now: number) {
+    let mode: RemotePlayer['barMode'] = 'none';
+    if (!remote.seated) {
+      if (this.pvpMode || now - remote.lastDamageAt < REMOTE_HP_SHOW_MS) mode = 'hp';
+      else if (remote.maxEnergy > 0) mode = 'energy';
+    }
+    if (mode === remote.barMode) return;
+    remote.barMode = mode;
+    remote.hpBar.setVisible(mode !== 'none');
+    this.redrawRemoteBar(remote);
+  }
+
+  private redrawRemoteBar(remote: RemotePlayer) {
+    if (remote.barMode === 'hp') this.drawHpBar(remote.hpBar, remote.hp, remote.maxHp);
+    else if (remote.barMode === 'energy') this.drawEnergyBar(remote.hpBar, remote.energy, remote.maxEnergy);
+  }
+
+  /** Servidor confirmou dano num outro jogador (combat_hit): mostra o HP dele por um tempo. */
+  public noteRemoteDamage(sessionId: string) {
+    const remote = this.otherPlayers.get(sessionId);
+    if (remote) remote.lastDamageAt = Date.now();
+  }
+
+  /** PvP ativo = HP de todos sempre visível (gancho para a configuração futura). */
+  public setPvpMode(on: boolean) {
+    this.pvpMode = on;
   }
 
   /** Server-authoritative local HP (from the Colyseus player state). */
@@ -3891,11 +3983,14 @@ export class WorldScene extends Phaser.Scene {
       this.localHpBar = this.add.graphics().setDepth(100);
       this.drawHpBar(this.localHpBar, this.localHp, this.localMaxHp);
     }
-    // TESTE: barra de HP visível apenas para o personagem de teste.
-    const visible =
-      this.localDef?.id === HP_BAR_TEST_CHARACTER && !this.currentSeatInfo && !this.inMatch;
-    this.localHpBar.setVisible(!!visible);
-    if (visible) this.localHpBar.setPosition(this.player.x, this.player.y + HP_BAR_OFFSET_Y);
+    // Meu HP fica sempre à vista, exceto sentado numa mesa ou em partida.
+    const visible = !this.currentSeatInfo && !this.inMatch;
+    this.localHpBar.setVisible(visible);
+    if (visible) {
+      this.localHpBar.setPosition(this.player.x, this.player.y + HP_BAR_OFFSET_Y);
+      // Acompanha o Y-sort do personagem: quem está na frente dele cobre a barra, quem está atrás não.
+      this.localHpBar.setDepth(this.player.depth + 0.5);
+    }
   }
 
   /** Plays the 'hurt' animation on a confirmed hit (sessionId null = local). */

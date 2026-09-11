@@ -830,6 +830,7 @@ export function GameCanvas() {
         cover: piece.coverItemKey ? { itemKey: String(piece.coverItemKey), expiresAt: Number(piece.coverExpiresAt ?? 0) } : null,
         defenses: parseBigChessSlots(piece.defenses),
         counterUntil: Number(piece.counterUntil ?? 0),
+        counterRadius: Number(piece.counterRadius ?? 0),
         syncedAt: Number(piece.syncedAt ?? Date.now()),
       });
       // Handles de desinscrição: a troca de sala não pode deixar callbacks da
@@ -971,6 +972,8 @@ export function GameCanvas() {
         characterId: player.characterId || undefined,
         hp: typeof player.hp === 'number' ? player.hp : undefined,
         maxHp: typeof player.maxHp === 'number' ? player.maxHp : undefined,
+        energy: typeof player.energy === 'number' ? player.energy : undefined,
+        maxEnergy: typeof player.maxEnergy === 'number' ? player.maxEnergy : undefined,
         appearance: player.appearance || undefined,
         equippedWeapon: player.equippedWeapon || undefined,
       });
@@ -1001,6 +1004,8 @@ export function GameCanvas() {
           characterId: player.characterId || undefined,
           hp: typeof player.hp === 'number' ? player.hp : undefined,
           maxHp: typeof player.maxHp === 'number' ? player.maxHp : undefined,
+          energy: typeof player.energy === 'number' ? player.energy : undefined,
+          maxEnergy: typeof player.maxEnergy === 'number' ? player.maxEnergy : undefined,
           appearance: player.appearance || undefined,
           equippedWeapon: player.equippedWeapon || undefined,
         });
@@ -1225,6 +1230,8 @@ export function GameCanvas() {
       const isMe = data.targetSessionId === room.sessionId;
       scene.flashHitPlayer(isMe ? null : data.targetSessionId);
       scene.playHurt(isMe ? null : data.targetSessionId);
+      // Fora do PvP a barra de HP do outro jogador só aparece depois de ele sofrer dano.
+      if (!isMe && typeof data.targetSessionId === 'string') scene.noteRemoteDamage(data.targetSessionId);
       console.log(
         `[Combat] ${data.attackerName || '?'} acertou ${isMe ? 'você' : data.targetName || '?'} (-${data.damage} HP → ${data.targetHp})`,
       );

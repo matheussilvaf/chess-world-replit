@@ -173,6 +173,7 @@ export class BigChessManager {
     state.defenses = serializeBigChessSlots(view.defenses);
     state.counterUntil = view.counterUntil;
     state.syncedAt = view.syncedAt;
+    state.counterRadius = view.counterRadius;
   }
 
   private publish(record: BigChessPieceRecord, config: BigChessConfig, now: number): void {

@@ -20,6 +20,9 @@ export class PlayerState extends Schema {
   appearance!: string;
   /** Ref da arma equipada (gen:weapon/...; '' = nada equipado). */
   equippedWeapon!: string;
+  /** Energia (fome) — espelho do snapshot de progresso, visível aos outros (barra acima do jogador). */
+  energy!: number;
+  maxEnergy!: number;
 
   constructor() {
     super();
@@ -40,6 +43,8 @@ export class PlayerState extends Schema {
     this.maxHp = 100;
     this.appearance = '';
     this.equippedWeapon = '';
+    this.energy = 0;
+    this.maxEnergy = 0;
   }
 }
 
@@ -63,4 +68,6 @@ defineTypes(PlayerState, {
   maxHp: 'number',
   appearance: 'string',
   equippedWeapon: 'string',
+  energy: 'number',
+  maxEnergy: 'number',
 });

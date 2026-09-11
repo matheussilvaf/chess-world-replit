@@ -891,6 +891,11 @@ export class WorldRoom extends Room<WorldState> {
     if (!player || player.sessionId !== sessionId) return;
     this.progressBySession.set(sessionId, snapshot);
     this.applyMaxHp(player, snapshot.maxHp, initial);
+    // Energia no estado público: os outros jogadores veem a barra acima do personagem.
+    const energy = Math.max(0, Math.round(snapshot.energy));
+    const maxEnergy = Math.max(0, Math.round(snapshot.maxEnergy));
+    if (player.energy !== energy) player.energy = energy;
+    if (player.maxEnergy !== maxEnergy) player.maxEnergy = maxEnergy;
     this.clients.find((c) => c.sessionId === sessionId)?.send('progress_update', snapshot);
     this.maybeStarve(sessionId, player, snapshot);
   }

@@ -5,14 +5,20 @@
  * Por peça: container ancorado na base da casa (Y-sort pelo mesmo `depthForY`
  * de árvores/jogadores), imagem da peça, barra de HP + nome do dono acima,
  * marcadores de capa/defesa, zona clicável = a casa inteira (abre o card).
- * As peças NÃO bloqueiam o movimento (o tabuleiro continua transitável).
+ * A casa ocupada BLOQUEIA o movimento: corpo Matter estático + retângulo na
+ * grade do A* (`onCollisionRectsChanged`, igual às estações portáteis) — sem
+ * isso o jogador passava "por baixo" da peça e ela parecia flutuar.
  *
  * Também vivem aqui:
  *   - o "fantasma" do posicionamento (casas iniciais livres realçadas + casa sob
  *     o ponteiro em verde/vermelho);
  *   - o teste de ACERTO local: golpe (hitboxes do perfil da arma) e flecha
  *     contra o retângulo da casa — 1 acerto por golpe/flecha; o servidor decide
- *     o dano e responde (`flashHit` mostra o resultado).
+ *     o dano e responde (`flashHit` mostra o resultado);
+ *   - o CONTRA-ATAQUE visível (`tick`): enquanto `counterUntil` está no futuro,
+ *     uma onda parte do centro da casa e se expande até `counterRadius` a cada
+ *     segundo (o mesmo relógio do dano do servidor), sobre um disco fraco que
+ *     marca a área — e a peça treme enquanto ataca.
  */
 import Phaser from 'phaser';
 import {
@@ -30,8 +36,23 @@ const BAR_W = 40;
 const BAR_H = 4;
 /** Altura máxima do PNG das peças (as imagens têm 38–50 px). */
 const PIECE_MAX_H = 50;
+/** Período da onda do contra-ataque = relógio do dano no servidor (1 tick/s). */
+const COUNTER_WAVE_PERIOD_MS = 1000;
+const COUNTER_COLOR = 0xef4444;
+/** Profundidade da onda: acima do piso/tabuleiro (0), abaixo de tudo que faz Y-sort (100+). */
+const COUNTER_WAVE_DEPTH = 1;
+/** Tremor da peça durante o contra-ataque (px / rad·ms⁻¹). */
+const SHAKE_AMPLITUDE = 1.5;
+const SHAKE_SPEED = 0.05;
 
 export type BigChessHitMode = 'melee' | 'arrow';
+
+export interface BigChessRect {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
 
 interface Entry {
   view: BigChessPieceView;
@@ -41,6 +62,12 @@ interface Entry {
   image: Phaser.GameObjects.Image | null;
   bar: Phaser.GameObjects.Graphics;
   label: Phaser.GameObjects.Text;
+  /** Corpo estático da casa ocupada (null fora do mundo físico). */
+  body: MatterJS.BodyType | null;
+  /** Onda do contra-ataque (mundo, fora do container) — só enquanto ativo. */
+  wave: Phaser.GameObjects.Graphics | null;
+  /** Início da rajada em curso no relógio local (fase da onda). */
+  waveStartedAt: number;
 }
 
 export interface BigChessGhost {
@@ -63,7 +90,46 @@ export class BigChessPieceLayer {
     private readonly depthForY: (y: number) => number,
     private readonly onClick: (square: string) => void,
     private readonly onLocalHit: (square: string, mode: BigChessHitMode) => void,
+    private readonly onCollisionRectsChanged: (rects: BigChessRect[]) => void,
   ) {}
+
+  /** Casas ocupadas (mesmos retângulos dos corpos) — bloqueios do A*. */
+  collisionRects(): BigChessRect[] {
+    return [...this.entries.values()].map((e) => ({ x: e.rect.x, y: e.rect.y, width: e.rect.width, height: e.rect.height }));
+  }
+
+  /** Reaplica os corpos do Matter depois de uma troca de mapa (o mundo físico foi reconstruído). */
+  reattachBodies(): void {
+    for (const entry of this.entries.values()) this.rebuildBody(entry);
+    this.onCollisionRectsChanged(this.collisionRects());
+  }
+
+  /**
+   * Animação por frame: onda + tremor das peças em contra-ataque. Barato —
+   * só as peças com `counterUntil` no futuro desenham algo.
+   */
+  tick(now: number): void {
+    for (const entry of this.entries.values()) {
+      const { view } = entry;
+      const active = view.counterUntil > now && view.counterRadius > 0;
+      if (!active) {
+        if (entry.wave) {
+          entry.wave.destroy();
+          entry.wave = null;
+          entry.waveStartedAt = 0;
+          entry.image?.setX(0);
+        }
+        continue;
+      }
+      if (!entry.wave) {
+        entry.wave = this.scene.add.graphics().setDepth(COUNTER_WAVE_DEPTH);
+        entry.waveStartedAt = now;
+      }
+      this.drawWave(entry, now);
+      // Tremor: a peça vibra enquanto profere o contra-ataque (só a imagem; barra e nome ficam parados).
+      entry.image?.setX(Math.sin(now * SHAKE_SPEED) * SHAKE_AMPLITUDE);
+    }
+  }
 
   /** Casa com peça que contém o ponto (mundo), se houver. */
   hitTest(worldX: number, worldY: number): string | null {
@@ -95,11 +161,13 @@ export class BigChessPieceLayer {
   sync(views: BigChessPieceView[]): void {
     if (!this.scene.sys?.displayList) return;
     const seen = new Set<string>();
+    let collisionDirty = false;
     for (const view of views) {
       seen.add(view.square);
       const existing = this.entries.get(view.square);
       if (!existing) {
         this.create(view);
+        collisionDirty = true;
         continue;
       }
       if (existing.view.itemKey !== view.itemKey) {
@@ -112,13 +180,18 @@ export class BigChessPieceLayer {
       this.refresh(existing);
     }
     for (const square of [...this.entries.keys()]) {
-      if (!seen.has(square)) this.destroyEntry(square);
+      if (!seen.has(square)) {
+        this.destroyEntry(square);
+        collisionDirty = true;
+      }
     }
+    if (collisionDirty) this.onCollisionRectsChanged(this.collisionRects());
   }
 
   clear(): void {
     for (const square of [...this.entries.keys()]) this.destroyEntry(square);
     this.setGhost(null);
+    this.onCollisionRectsChanged([]);
   }
 
   destroy(): void {
@@ -292,8 +365,9 @@ export class BigChessPieceLayer {
       .text(0, -PIECE_MAX_H - 14, '', { fontFamily: 'monospace', fontSize: '9px', color: '#fde68a', stroke: '#000000', strokeThickness: 3 })
       .setOrigin(0.5, 1);
     container.add([zone, bar, label]);
-    const entry: Entry = { view, def, rect, container, image: null, bar, label };
+    const entry: Entry = { view, def, rect, container, image: null, bar, label, body: null, wave: null, waveStartedAt: 0 };
     this.entries.set(view.square, entry);
+    this.rebuildBody(entry);
     this.withTexture(def, () => {
       if (!container.active || this.entries.get(view.square) !== entry) return;
       const image = this.scene.add.image(0, 0, textureKeyFor(def)).setOrigin(0.5, 1);
@@ -332,10 +406,50 @@ export class BigChessPieceLayer {
       bar.fillCircle(dotX, dotY, 2.5);
       dotX += 6;
     }
-    if (view.counterUntil > 0) {
-      bar.lineStyle(1.5, 0xf87171, 0.9);
-      bar.strokeCircle(0, -PIECE_MAX_H / 2, entry.rect.width / 2 - 2);
+    // O contra-ataque em si é desenhado por `tick` (onda no chão + tremor).
+  }
+
+  /**
+   * Onda do contra-ataque: disco fraco marcando a área de dano, contorno no
+   * raio e dois anéis que partem do centro e se expandem até o raio (defasados
+   * meio período para a pulsação não ter "buraco"), esmaecendo ao chegar.
+   */
+  private drawWave(entry: Entry, now: number): void {
+    const wave = entry.wave;
+    if (!wave) return;
+    const radius = entry.view.counterRadius;
+    const cx = entry.rect.x + entry.rect.width / 2;
+    const cy = entry.rect.y + entry.rect.height / 2;
+    const remainingMs = entry.view.counterUntil - now;
+    // Último meio segundo: a onda some suavemente em vez de sumir de repente.
+    const fade = Math.max(0, Math.min(1, remainingMs / 500));
+    wave.clear();
+    wave.fillStyle(COUNTER_COLOR, 0.1 * fade);
+    wave.fillCircle(cx, cy, radius);
+    wave.lineStyle(1.5, COUNTER_COLOR, 0.45 * fade);
+    wave.strokeCircle(cx, cy, radius);
+    const elapsed = now - entry.waveStartedAt;
+    for (const offset of [0, 0.5]) {
+      const t = ((elapsed / COUNTER_WAVE_PERIOD_MS + offset) % 1 + 1) % 1;
+      const eased = 1 - (1 - t) * (1 - t); // parte rápido do centro e desacelera perto do raio
+      const r = Math.max(2, radius * eased);
+      wave.lineStyle(3 - 2 * t, COUNTER_COLOR, (1 - t) * 0.9 * fade);
+      wave.strokeCircle(cx, cy, r);
     }
+  }
+
+  private rebuildBody(entry: Entry): void {
+    const matter = (this.scene as Phaser.Scene & { matter?: Phaser.Physics.Matter.MatterPhysics }).matter;
+    if (!matter?.world) return;
+    if (entry.body) {
+      try { matter.world.remove(entry.body); } catch { /* corpo já fora do mundo */ }
+      entry.body = null;
+    }
+    const { rect } = entry;
+    entry.body = matter.add.rectangle(rect.x + rect.width / 2, rect.y + rect.height / 2, rect.width, rect.height, {
+      isStatic: true,
+      label: `bigchess-piece:${entry.view.square}`,
+    });
   }
 
   /** Único ponto de descarte do fantasma: mata o tween do pulso antes do container. */
@@ -357,6 +471,11 @@ export class BigChessPieceLayer {
     const entry = this.entries.get(square);
     if (!entry) return;
     this.entries.delete(square);
+    const matter = (this.scene as Phaser.Scene & { matter?: Phaser.Physics.Matter.MatterPhysics }).matter;
+    if (entry.body && matter?.world) {
+      try { matter.world.remove(entry.body); } catch { /* já removido */ }
+    }
+    entry.wave?.destroy();
     entry.container.destroy();
   }
 

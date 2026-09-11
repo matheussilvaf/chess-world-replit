@@ -29,6 +29,8 @@ export class BigChessPieceState extends Schema {
   /** Rajada de contra-ataque ativa até este instante (0 = inativa). */
   counterUntil = 0;
   syncedAt = 0;
+  /** Raio (px) da rajada ativa — o cliente desenha a onda de ataque (0 = inativa). */
+  counterRadius = 0;
 }
 
 defineTypes(BigChessPieceState, {
@@ -50,4 +52,6 @@ defineTypes(BigChessPieceState, {
   defenses: 'string',
   counterUntil: 'number',
   syncedAt: 'number',
+  // Anexado por último: a ordem dos campos faz parte do protocolo — só acrescentar.
+  counterRadius: 'number',
 });

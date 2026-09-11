@@ -682,12 +682,16 @@ export interface BigChessPieceView {
   cover: BigChessDefenseSlot | null;
   defenses: BigChessDefenseSlot[];
   counterUntil: number;
+  /** Raio (px) do contra-ataque em curso — 0 quando inativo. O cliente desenha a onda com ele. */
+  counterRadius: number;
   /** Instante (servidor) em que a visão foi calculada — o cliente extrapola renda/pontos a partir dele. */
   syncedAt: number;
 }
 
 export function bigChessPieceView(record: BigChessPieceRecord, config: BigChessConfig, now: number): BigChessPieceView {
   const rules = bigChessRulesFor(config, record.itemKey);
+  const counterActive = record.counterUntil > now;
+  const counterRules = counterActive && record.counterItemKey ? config.defenses[record.counterItemKey]?.counterAttack : null;
   return {
     square: record.square,
     itemKey: record.itemKey,
@@ -704,7 +708,8 @@ export function bigChessPieceView(record: BigChessPieceRecord, config: BigChessC
     pointsPerHour: rules?.pointsPerHour ?? 0,
     cover: record.cover && record.cover.expiresAt > now ? { ...record.cover } : null,
     defenses: record.defenses.filter((slot) => slot.expiresAt > now).map((slot) => ({ ...slot })),
-    counterUntil: record.counterUntil > now ? record.counterUntil : 0,
+    counterUntil: counterActive ? record.counterUntil : 0,
+    counterRadius: counterRules && counterRules.damage > 0 ? Math.max(0, counterRules.radius) : 0,
     syncedAt: now,
   };
 }
