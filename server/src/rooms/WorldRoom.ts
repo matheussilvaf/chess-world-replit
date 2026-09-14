@@ -29,7 +29,9 @@ import { PlacedStationManager, maxDurabilityForItem, type PlacedReply } from './
 import { BIGCHESS_COUNTER_TICK_MS, BIGCHESS_TICK_MS, BigChessManager } from '../bigchess/BigChessManager.js';
 import { progressService } from '../progress/progressService.js';
 import { getEnergySkillsConfigCached } from '../progress/energySkillsRepository.js';
-import type { ProgressSnapshot } from '../shared/progress/EnergySkillsShapes.js';
+import { totalSkillLevel, type ProgressSnapshot } from '../shared/progress/EnergySkillsShapes.js';
+import { loadDisplayRating, settleMatch } from '../rating/ratingService.js';
+import { persistMatchFinish, persistMatchStart, type MatchStartRecord } from '../rating/matchRepository.js';
 
 interface JoinOptions {
   /** Legado — IGNORADO para identidade (era spoofável). Mantido só por compat. */
@@ -63,6 +65,8 @@ export class WorldRoom extends Room<WorldState> {
   private drawOfferCounts = new Map<string, { white: number; black: number }>();
   // matchId -> color of the player whose draw offer is currently awaiting an answer
   private pendingDrawOffers = new Map<string, 'w' | 'b'>();
+  /** Dados de abertura de cada partida (praça e torneio) para fechar a linha em `matches` no fim. */
+  private matchStartRecords = new Map<string, MatchStartRecord>();
   /** Server-authoritative combat (client only sends attack intents). */
   private combatResolver = new CombatResolver(this, {
     // Energia/XP de combate: golpe que conecta custa energia ao atacante e ao
@@ -863,7 +867,7 @@ export class WorldRoom extends Room<WorldState> {
     }
     const result = await executePlayerCraft(player.id, body.stationId, body.targetId, body.quantity);
     return result.ok
-      ? { event: 'craft_result', payload: { items: result.items } }
+      ? { event: 'craft_result', payload: { items: result.items, ...(result.gambits !== undefined ? { gambits: result.gambits } : {}) } }
       : { event: 'craft_error', payload: { message: result.message } };
   }
 
@@ -896,6 +900,9 @@ export class WorldRoom extends Room<WorldState> {
     const maxEnergy = Math.max(0, Math.round(snapshot.maxEnergy));
     if (player.energy !== energy) player.energy = energy;
     if (player.maxEnergy !== maxEnergy) player.maxEnergy = maxEnergy;
+    // "NV" público: soma dos níveis de todas as habilidades.
+    const level = totalSkillLevel(snapshot.skills);
+    if (player.level !== level) player.level = level;
     this.clients.find((c) => c.sessionId === sessionId)?.send('progress_update', snapshot);
     this.maybeStarve(sessionId, player, snapshot);
   }
@@ -1281,6 +1288,19 @@ export class WorldRoom extends Room<WorldState> {
     this.movementGuards.set(client.sessionId, performance.now());
     console.log(`[WorldRoom] Player joined: ${player.username} (${client.sessionId}) | total: ${this.state.players.size}`);
     if (!playerId.startsWith('anon:')) void this.inventorySnapshot(playerId).then((reply) => client.send(reply.event, reply.payload));
+    // Rating server-authoritative: o valor enviado pelo cliente é só um
+    // placeholder até o perfil responder (o cliente nunca define rating).
+    if (!playerId.startsWith('anon:')) {
+      const sessionId = client.sessionId;
+      void loadDisplayRating(playerId)
+        .then((loaded) => {
+          const current = this.state.players.get(sessionId);
+          if (!loaded || !current || current.id !== playerId) return;
+          if (current.rating !== loaded.rating) current.rating = loaded.rating;
+          this.clients.find((c) => c.sessionId === sessionId)?.send('gambits_update', { gambits: loaded.gambits, rating: loaded.rating });
+        })
+        .catch((e) => console.warn('[rating] perfil indisponível no join:', e instanceof Error ? e.message : e));
+    }
     // Carteira de Crowns (renda do Big Chess Board) — separada do inventário.
     if (!playerId.startsWith('anon:')) {
       void this.bigChess.walletFor(playerId)
@@ -1780,7 +1800,57 @@ export class WorldRoom extends Room<WorldState> {
       result: match.result,
       winnerId: match.winnerId,
     });
+    const isTournament = !!match.boardId && match.boardId.includes('_table_');
+    const start = this.matchStartRecords.get(match.id);
+    this.matchStartRecords.delete(match.id);
+    // Praça: fecha a linha em `matches` (torneio: o coordinator fecha a dele).
+    if (!isTournament && start) {
+      const finish = {
+        colyseusMatchId: match.id,
+        result: match.result || 'draw',
+        winnerUserId: match.winnerId || null,
+        fen: match.fen,
+        pgn: match.pgn || '',
+        turn: match.turn,
+        whiteTimeMs: match.whiteTimeMs,
+        blackTimeMs: match.blackTimeMs,
+      };
+      void persistMatchFinish(finish, start)
+        .then((saved) => { if (!saved.ok) console.error(`[matches] falha ao fechar partida ${match.id}: ${saved.error}`); })
+        .catch((e) => console.error('[matches] exceção ao fechar partida:', e instanceof Error ? e.message : e));
+    }
     await this.reportTournamentResult(match);
+    // Rating + gambits (server-authoritative, idempotente) — não bloqueia a
+    // limpeza do tabuleiro; snapshot dos campos porque o MatchState some logo.
+    const snapshot = {
+      matchId: match.id,
+      kind: (isTournament ? 'tournament' : 'plaza') as 'tournament' | 'plaza',
+      result: match.result,
+      winnerId: match.winnerId,
+      whitePlayerId: match.whitePlayerId,
+      blackPlayerId: match.blackPlayerId,
+      fen: match.fen,
+    };
+    void this.settleMatchRatings(snapshot);
+  }
+
+  /** Aplica Glicko-2/gambits, espelha o rating novo na sala e avisa os dois jogadores. */
+  private async settleMatchRatings(input: Parameters<typeof settleMatch>[0]): Promise<void> {
+    try {
+      const settled = await settleMatch(input);
+      for (const [playerId, rating] of settled.ratings) {
+        const sessionId = this.findSessionByPlayerId(playerId);
+        const player = sessionId ? this.state.players.get(sessionId) : undefined;
+        if (player && player.rating !== rating) player.rating = rating;
+      }
+      for (const playerId of [input.whitePlayerId, input.blackPlayerId]) {
+        const sessionId = this.findSessionByPlayerId(playerId);
+        if (!sessionId) continue;
+        this.clients.find((c) => c.sessionId === sessionId)?.send('chess_rating_update', settled.message);
+      }
+    } catch (error) {
+      console.error(`[rating] falha ao liquidar partida ${input.matchId}:`, error instanceof Error ? error.message : error);
+    }
   }
 
   private async reportTournamentResult(match: MatchState) {
@@ -1833,12 +1903,9 @@ export class WorldRoom extends Room<WorldState> {
         blackTimeMs: match.blackTimeMs,
       };
       await coordinator.finishTournamentMatch(finishParams);
-
-      // Update player profile stats only when pairing was successfully updated
-      // (skip double forfeits — there is no winner and no draw to credit)
-      if (pairing.updated && pairing.whitePlayerId && pairing.blackPlayerId && result !== '-/-') {
-        await coordinator.updateProfileStats(pairing.whitePlayerId, pairing.blackPlayerId, result);
-      }
+      // W/L/D, rating e gambits do perfil são aplicados pelo ratingService em
+      // broadcastMatchEnd (mesmo caminho da praça) — a RPC legada
+      // increment_profile_stats não é mais chamada (ela também mexia em rating).
     } catch (err: any) {
       console.error(`[WorldRoom] Failed to report tournament result:`, err.message);
     }
@@ -1936,6 +2003,27 @@ export class WorldRoom extends Room<WorldState> {
         coordinator.markPairingStarted(instance.id, board.id);
       }
     }).catch(() => {});
+
+    // Toda partida é gravada em `matches`: praça aqui (linha aberta agora,
+    // fechada em broadcastMatchEnd); torneio pelo coordinator logo abaixo.
+    const startRecord: MatchStartRecord = {
+      colyseusMatchId: matchId,
+      boardId: board.id,
+      region: joiningPlayer.region,
+      whiteUserId: whiteId,
+      blackUserId: blackId,
+      fen: chess.fen(),
+      timeMinutes: board.baseMinutes,
+      incrementSeconds: board.incrementSeconds,
+      whiteTimeMs: baseTimeMs,
+      blackTimeMs: baseTimeMs,
+    };
+    this.matchStartRecords.set(matchId, startRecord);
+    if (!board.id.includes('_table_')) {
+      void persistMatchStart(startRecord)
+        .then((saved) => { if (!saved.ok) console.error(`[matches] falha ao abrir partida ${matchId}: ${saved.error}`); })
+        .catch((e) => console.error('[matches] exceção ao abrir partida:', e instanceof Error ? e.message : e));
+    }
 
     // Persist tournament match to database
     if (board.id.includes('_table_')) {

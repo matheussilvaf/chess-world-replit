@@ -47,12 +47,15 @@ import {
   parseWeaponAssetId,
 } from '../../../shared/combat/WeaponShapes';
 import {
+  MAX_GAMBITS_COST,
   MAX_INGREDIENT_QUANTITY,
   MAX_OUTPUT_QUANTITY,
   MAX_RECIPE_INGREDIENTS,
+  MIN_GAMBITS_COST,
   MIN_INGREDIENT_QUANTITY,
   MIN_OUTPUT_QUANTITY,
   classifyCraftEntityId,
+  recipeGambitsCost,
   recipeOutputQuantity,
   sameIngredientBag,
   slugifyCraftItemName,
@@ -113,6 +116,8 @@ export function CraftAdminPage() {
   const [recipeDrafts, setRecipeDrafts] = useState<Record<string, CraftIngredient[]>>({});
   /** Rascunho da quantidade PRODUZIDA por alvo (só quando difere do salvo). */
   const [outputDrafts, setOutputDrafts] = useState<Record<string, number>>({});
+  /** Custo em gambits por craft (rascunho por item; ausente = igual ao salvo). */
+  const [gambitsDrafts, setGambitsDrafts] = useState<Record<string, number>>({});
   /** Texto cru dos inputs de quantidade (digitação livre, commit só de nº válido). */
   const [rawQty, setRawQty] = useState<Record<string, string>>({});
   /** Acordeão da coluna esquerda (ferramentas abertas por padrão). */
@@ -215,6 +220,7 @@ export function CraftAdminPage() {
       // Recarga = fonte da verdade nova → rascunhos antigos morrem aqui.
       setRecipeDrafts({});
       setOutputDrafts({});
+      setGambitsDrafts({});
       setRawQty({});
     } catch (e) {
       applyApiError(e);
@@ -348,8 +354,9 @@ export function CraftAdminPage() {
           const res = await craftApi.recipes.save({
             targetId: newId,
             ingredients: recipes[oldId].ingredients,
-            // Nunca perder a quantidade produzida na migração (ausente = 1).
+            // Nunca perder a quantidade produzida/custo na migração (ausente = 1/0).
             outputQuantity: recipeOutputQuantity(recipes[oldId]),
+            gambitsCost: recipeGambitsCost(recipes[oldId]),
           });
           await craftApi.recipes.remove(oldId);
           delete next[oldId];
@@ -375,12 +382,16 @@ export function CraftAdminPage() {
   const baselineOutput = recipeOutputQuantity(persistedRecipe);
   const draftOutput = selectedTarget ? (outputDrafts[selectedTarget] ?? baselineOutput) : 1;
   const outputDirty = selectedTarget ? outputDrafts[selectedTarget] !== undefined : false;
+  /** Custo em gambits: baseline = receita salva (legado = 0) ou 0 sem receita. */
+  const baselineGambits = recipeGambitsCost(persistedRecipe);
+  const draftGambits = selectedTarget ? (gambitsDrafts[selectedTarget] ?? baselineGambits) : 0;
+  const gambitsDirty = selectedTarget ? gambitsDrafts[selectedTarget] !== undefined : false;
   const ingredientsDirty = selectedTarget
     ? persisted
       ? !sameIngredientBag(draft, persisted)
       : draft.length > 0
     : false;
-  const dirty = ingredientsDirty || outputDirty;
+  const dirty = ingredientsDirty || outputDirty || gambitsDirty;
   /** Refs mortas: só ids fora de qualquer classe ou craft items excluídos. */
   const unknownRefs = draft.filter((i) => {
     const kind = classifyCraftEntityId(i.itemId);
@@ -398,6 +409,11 @@ export function CraftAdminPage() {
       return next;
     });
     setOutputDrafts((prev) => {
+      const next = { ...prev };
+      delete next[targetId];
+      return next;
+    });
+    setGambitsDrafts((prev) => {
       const next = { ...prev };
       delete next[targetId];
       return next;
@@ -475,6 +491,27 @@ export function CraftAdminPage() {
     setOutputDraft(v);
   };
 
+  /** Chave sentinela no rawQty para o input do custo em gambits (nunca é itemId). */
+  const GAMBITS_RAW_KEY = '__gambits__';
+
+  const setGambitsDraft = (value: number) => {
+    if (!selectedTarget) return;
+    const v = Math.max(MIN_GAMBITS_COST, Math.min(MAX_GAMBITS_COST, value));
+    setGambitsDrafts((prev) => {
+      const next = { ...prev };
+      if (v === baselineGambits) delete next[selectedTarget];
+      else next[selectedTarget] = v;
+      return next;
+    });
+  };
+
+  const commitGambitsCost = (raw: string) => {
+    if (raw.trim() === '') return;
+    const v = Number(raw);
+    if (!Number.isFinite(v) || !Number.isInteger(v)) return;
+    setGambitsDraft(v);
+  };
+
   const qtyKey = (itemId: string) => `${selectedTarget}:${itemId}`;
 
   const handleSaveRecipe = async () => {
@@ -486,6 +523,7 @@ export function CraftAdminPage() {
         targetId: selectedTarget,
         ingredients: draft,
         outputQuantity: draftOutput,
+        gambitsCost: draftGambits,
       });
       setRecipes((prev) => ({ ...prev, [selectedTarget]: res.recipe }));
       clearDraftFor(selectedTarget);
@@ -771,7 +809,8 @@ export function CraftAdminPage() {
                           const hasRecipe = recipes[entry.id] !== undefined;
                           const hasDraft =
                             recipeDrafts[entry.id] !== undefined ||
-                            outputDrafts[entry.id] !== undefined;
+                            outputDrafts[entry.id] !== undefined ||
+                            gambitsDrafts[entry.id] !== undefined;
                           const customItem = section.id === 'custom' ? items[entry.id] : undefined;
                           return (
                             <div
@@ -930,6 +969,34 @@ export function CraftAdminPage() {
                     >
                       <Plus className="w-3 h-3" />
                     </button>
+                  </div>
+                  <div
+                    className="flex items-center gap-1 shrink-0 rounded-lg border border-emerald-700/40 bg-emerald-950/30 px-2 py-1.5"
+                    title="Gambits cobrados por craft (0 = grátis). O jogador precisa ter o saldo; é debitado ao criar."
+                    data-testid="recipe-gambits-cost"
+                  >
+                    <Swords className="w-3 h-3 text-emerald-300" />
+                    <span className="text-[10px] font-mono text-emerald-200/80">gambits</span>
+                    <input
+                      type="number"
+                      min={MIN_GAMBITS_COST}
+                      max={MAX_GAMBITS_COST}
+                      value={rawQty[qtyKey(GAMBITS_RAW_KEY)] ?? String(draftGambits)}
+                      onChange={(e) => {
+                        const raw = e.target.value;
+                        setRawQty((prev) => ({ ...prev, [qtyKey(GAMBITS_RAW_KEY)]: raw }));
+                        commitGambitsCost(raw);
+                      }}
+                      onBlur={() =>
+                        setRawQty((prev) => {
+                          const next = { ...prev };
+                          delete next[qtyKey(GAMBITS_RAW_KEY)];
+                          return next;
+                        })
+                      }
+                      className="w-14 text-center bg-slate-900/80 border border-slate-700/70 rounded px-1 py-0.5 text-xs font-mono focus:outline-none focus:border-emerald-500/60"
+                      disabled={busy || tableMissing}
+                    />
                   </div>
                   {dirty ? (
                     <span className="text-[9px] font-mono px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-300 border border-amber-500/30 shrink-0">

@@ -9,8 +9,10 @@ import { REGIONS } from '../../config/game';
 import { voiceClient } from '../../game/voice/livekitVoiceClient';
 import { leaveWorldRoom } from '../../game/network/colyseusClient';
 import {
-  User, MessageSquare, Users, Settings, DoorOpen, Mic, Maximize, Minimize, TreePine, Castle, Crown,
+  User, MessageSquare, Users, Settings, DoorOpen, Mic, Maximize, Minimize, TreePine, Castle, Crown, Swords,
 } from 'lucide-react';
+import { isProvisionalRating } from '../../shared/rating/Glicko2';
+import { DEFAULT_RATING_GAMBITS_CONFIG } from '../../shared/rating/RatingShapes';
 import { CollectionInventoryButton } from '../game/CollectionInventoryPanel';
 import { useInventoryUiStore } from '../../stores/inventoryUiStore';
 import { formatCrowns, useWalletStore } from '../../stores/walletStore';
@@ -22,6 +24,12 @@ const FULLSCREEN_SUPPORTED =
 
 export function HUD() {
   const { profile, user } = useAuthStore();
+  // Rating exibido = Glicko-2 arredondado (o inteiro legado `rating` é o espelho).
+  const displayRating = Math.round(profile?.chess_rating ?? profile?.rating ?? 0);
+  const provisional = !!profile && isProvisionalRating(
+    { ratedGamesPlayed: profile.chess_rated_games_played ?? 0, ratingDeviation: profile.chess_rating_deviation ?? 350 },
+    DEFAULT_RATING_GAMBITS_CONFIG.rating,
+  );
   const crowns = useWalletStore((s) => s.crowns);
   const refreshWallet = useWalletStore((s) => s.refresh);
   const { region, onlinePlayers, unreadChat, liveChatMessage, showChat, toggleChat, toggleProfile, toggleFriends, toggleSettings, toggleVoiceChat, currentWorld, setTravelRequest } = useGameStore();
@@ -122,11 +130,19 @@ export function HUD() {
             <div>
               <div className="text-white font-medium text-sm">{profile?.username}</div>
               <div className="flex items-center gap-2 text-xs">
-                <span className="flex items-center gap-0.5 text-amber-400">
-                  ★ {profile?.rating}
+                <span
+                  className="flex items-center gap-0.5 text-amber-400"
+                  title={provisional ? 'Rating provisório (poucas partidas avaliadas)' : 'Rating Glicko-2'}
+                  data-testid="hud-rating"
+                >
+                  ★ {displayRating}{provisional ? '?' : ''}
                 </span>
-                <span className="flex items-center gap-0.5 text-yellow-400">
-                  🏆 {profile?.trophies}
+                <span
+                  className="flex items-center gap-1 text-emerald-300"
+                  title="Gambits — ganhos nas partidas, usados no craft"
+                  data-testid="hud-gambits"
+                >
+                  <Swords className="h-3 w-3" /> {profile?.gambits ?? 0}
                 </span>
               </div>
             </div>

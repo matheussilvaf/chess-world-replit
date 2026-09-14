@@ -1,6 +1,6 @@
 import { useAuthStore } from '../../stores/authStore';
 import { useGameStore } from '../../stores/gameStore';
-import { X, Star, Trophy, Crown } from 'lucide-react';
+import { X, Star, Swords, Crown } from 'lucide-react';
 
 export function PlayerProfile() {
   const { profile } = useAuthStore();
@@ -27,11 +27,14 @@ export function PlayerProfile() {
             <div>
               <h2 className="text-white text-xl font-bold">{profile.username}</h2>
               <div className="flex items-center gap-3 mt-1">
-                <span className="flex items-center gap-1 text-amber-400 text-sm">
-                  <Star className="w-3.5 h-3.5" /> {profile.rating} ELO
+                <span className="flex items-center gap-1 text-amber-400 text-sm" title="Rating Glicko-2">
+                  <Star className="w-3.5 h-3.5" /> {Math.round(profile.chess_rating ?? profile.rating)}
+                  {typeof profile.chess_peak_rating === 'number' && (
+                    <span className="text-slate-400 text-xs">(pico {Math.round(profile.chess_peak_rating)})</span>
+                  )}
                 </span>
-                <span className="flex items-center gap-1 text-yellow-400 text-sm">
-                  <Trophy className="w-3.5 h-3.5" /> {profile.trophies}
+                <span className="flex items-center gap-1 text-emerald-300 text-sm" title="Gambits">
+                  <Swords className="w-3.5 h-3.5" /> {profile.gambits ?? 0}
                 </span>
               </div>
             </div>

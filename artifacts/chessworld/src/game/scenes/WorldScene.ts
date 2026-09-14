@@ -97,8 +97,23 @@ interface ChessArenaZone {
 const REMOTE_HP_SHOW_MS = 20_000;
 const HP_BAR_WIDTH = 28;
 const HP_BAR_HEIGHT = 4;
-/** Y offset of the HP bar above the sprite origin (name tags sit at -32). */
-const HP_BAR_OFFSET_Y = -26;
+/**
+ * Y offset of the HP bar above the sprite origin. Frames are 96×96 and the
+ * head tops out around -36, so -40 keeps the bar clear of the character; the
+ * HTML name tags sit above it (see HEAD_OFFSET in update()).
+ */
+const HP_BAR_OFFSET_Y = -40;
+/** "NV n" label (sum of skill levels) drawn just left of the overhead bar. */
+const LEVEL_LABEL_GAP = 3;
+const LEVEL_LABEL_STYLE: Phaser.Types.GameObjects.Text.TextStyle = {
+  fontFamily: 'ui-monospace, Menlo, Consolas, monospace',
+  fontSize: '9px',
+  fontStyle: 'bold',
+  color: '#fde68a',
+  stroke: '#000000',
+  strokeThickness: 3,
+};
+const levelLabelText = (level: number) => (level > 0 ? `NV ${level}` : '');
 
 // Hold-to-move: keep re-pathing toward the pointer while it stays pressed.
 const HOLD_MOVE_ACTIVATE_MS = 150;
@@ -128,8 +143,12 @@ interface RemotePlayer {
   sprite: Phaser.GameObjects.Sprite;
   /** Display name shown in the HTML name-tag overlay (not Canvas text). */
   username: string;
-  /** Elo rating shown in the HTML name-tag overlay. */
+  /** Rating shown in the HTML name-tag overlay (server-authoritative, updated live). */
   rating: number;
+  /** "NV" = soma dos níveis de habilidades (0 = servidor não publica). */
+  level: number;
+  /** Rótulo "NV n" à esquerda da barra (mesma visibilidade da barra). */
+  levelText: Phaser.GameObjects.Text;
   interpolator: RemotePlayerInterpolator;
   direction: Direction8;
   isMoving: boolean;
@@ -268,6 +287,8 @@ export class WorldScene extends Phaser.Scene {
   private localHp = 100;
   private localMaxHp = 100;
   private localHpBar: Phaser.GameObjects.Graphics | null = null;
+  private localLevelText: Phaser.GameObjects.Text | null = null;
+  private localLevel = 0;
   private combatDebugLabel: Phaser.GameObjects.Text | null = null;
   // --- Character Rig Controller no jogo (defs compostos pc-…) ---
   /** Rig carregado de /admin/rigs — dono das hurtboxes e do contrato da folha. */
@@ -754,8 +775,9 @@ export class WorldScene extends Phaser.Scene {
       const sin = Math.sin(-this.currentCameraRotation);
       const zoom = cam.zoom;
       // Name-tag Y offset above the container centre in world pixels.
-      // 32 puts the badge just above the character's head at default zoom.
-      const HEAD_OFFSET = 32;
+      // 46 puts the badge above the HP bar (HP_BAR_OFFSET_Y = -40) without
+      // overlapping it at default zoom.
+      const HEAD_OFFSET = 46;
 
       const tags: PlayerTagEntry[] = [];
       this.otherPlayers.forEach((remote) => {
@@ -1861,7 +1883,7 @@ export class WorldScene extends Phaser.Scene {
     return this.currentMapKey;
   }
 
-  public handlePlayerJoined(p: { id: string; socketId: string; username: string; rating: number; region: string; x: number; y: number; targetX: number; targetY: number; direction: string; isMoving: boolean; characterId?: string; hp?: number; maxHp?: number; energy?: number; maxEnergy?: number; appearance?: string; equippedWeapon?: string }) {
+  public handlePlayerJoined(p: { id: string; socketId: string; username: string; rating: number; region: string; x: number; y: number; targetX: number; targetY: number; direction: string; isMoving: boolean; characterId?: string; hp?: number; maxHp?: number; energy?: number; maxEnergy?: number; level?: number; appearance?: string; equippedWeapon?: string }) {
     if (p.id === this.localPlayerId) return;
     const sessionId = p.socketId;
     if (this.otherPlayers.has(sessionId)) return;
@@ -1925,9 +1947,16 @@ export class WorldScene extends Phaser.Scene {
     return this.otherPlayers.has(sessionId);
   }
 
-  public updateRemotePlayerState(sessionId: string, state: { x: number; y: number; targetX: number; targetY: number; direction: string; isMoving: boolean; characterId?: string; hp?: number; maxHp?: number; energy?: number; maxEnergy?: number; appearance?: string; equippedWeapon?: string }) {
+  public updateRemotePlayerState(sessionId: string, state: { x: number; y: number; targetX: number; targetY: number; direction: string; isMoving: boolean; characterId?: string; hp?: number; maxHp?: number; energy?: number; maxEnergy?: number; level?: number; rating?: number; appearance?: string; equippedWeapon?: string }) {
     const remote = this.otherPlayers.get(sessionId);
     if (!remote) return;
+    // Rating/NV mudam em tempo real (fim de partida, subir de nível).
+    if (typeof state.rating === 'number' && state.rating !== remote.rating) remote.rating = state.rating;
+    if (typeof state.level === 'number' && state.level !== remote.level) {
+      remote.level = state.level;
+      remote.levelText.setText(levelLabelText(state.level));
+      remote.levelText.setVisible(remote.barMode !== 'none' && state.level > 0);
+    }
     if (state.appearance) {
       // Personagem composto: re-compõe quando a receita OU a arma mudam.
       const weapon = state.equippedWeapon ?? '';
@@ -2052,7 +2081,7 @@ export class WorldScene extends Phaser.Scene {
     }
   }
 
-  private addRemotePlayer(sessionId: string, p: { id: string; username: string; rating: number; x: number; y: number; direction: string; isMoving: boolean; characterId?: string; hp?: number; maxHp?: number; energy?: number; maxEnergy?: number }) {
+  private addRemotePlayer(sessionId: string, p: { id: string; username: string; rating: number; x: number; y: number; direction: string; isMoving: boolean; characterId?: string; hp?: number; maxHp?: number; energy?: number; maxEnergy?: number; level?: number }) {
     const def = getWorldCharacter(p.characterId);
     if (!def) {
       console.error('[WorldScene] addRemotePlayer: no character definitions available');
@@ -2079,11 +2108,19 @@ export class WorldScene extends Phaser.Scene {
     const hpBar = this.add.graphics();
     hpBar.setPosition(0, HP_BAR_OFFSET_Y);
     c.add(hpBar);
+    const level = typeof p.level === 'number' && p.level > 0 ? p.level : 0;
+    const levelText = this.add.text(-HP_BAR_WIDTH / 2 - 1 - LEVEL_LABEL_GAP, HP_BAR_OFFSET_Y, levelLabelText(level), LEVEL_LABEL_STYLE)
+      .setOrigin(1, 0.5)
+      .setResolution(3)
+      .setVisible(false);
+    c.add(levelText);
     const remote: RemotePlayer = {
       container: c,
       sprite: s,
       username: p.username,
       rating: p.rating,
+      level,
+      levelText,
       interpolator,
       direction,
       isMoving: p.isMoving,
@@ -3538,7 +3575,7 @@ export class WorldScene extends Phaser.Scene {
   /** Monta a folha composta de um remote e o adiciona à cena (assíncrono). */
   private async addAppearanceRemote(
     sessionId: string,
-    p: { id: string; username: string; rating: number; x: number; y: number; direction: string; isMoving: boolean; hp?: number; maxHp?: number; energy?: number; maxEnergy?: number; appearance?: string; equippedWeapon?: string },
+    p: { id: string; username: string; rating: number; x: number; y: number; direction: string; isMoving: boolean; hp?: number; maxHp?: number; energy?: number; maxEnergy?: number; level?: number; appearance?: string; equippedWeapon?: string },
   ): Promise<void> {
     const appearanceRaw = p.appearance ?? '';
     const weaponRef = p.equippedWeapon || null;
@@ -3947,6 +3984,7 @@ export class WorldScene extends Phaser.Scene {
     if (mode === remote.barMode) return;
     remote.barMode = mode;
     remote.hpBar.setVisible(mode !== 'none');
+    remote.levelText.setVisible(mode !== 'none' && remote.level > 0);
     this.redrawRemoteBar(remote);
   }
 
@@ -3976,20 +4014,37 @@ export class WorldScene extends Phaser.Scene {
     if (this.localHpBar) this.drawHpBar(this.localHpBar, safeHp, safeMax);
   }
 
-  /** Lazily creates + positions the local HP bar every frame (see update()). */
+  /** "NV" local (soma dos níveis das habilidades) — mostrado à esquerda da barra de HP. */
+  public setLocalLevel(level: number) {
+    const safe = Number.isFinite(level) && level > 0 ? Math.floor(level) : 0;
+    if (safe === this.localLevel) return;
+    this.localLevel = safe;
+    this.localLevelText?.setText(levelLabelText(safe));
+  }
+
+  /** Lazily creates + positions the local HP bar (and NV label) every frame (see update()). */
   private updateLocalHpBar() {
     if (!this.player || !this.player.scene) return;
     if (!this.localHpBar) {
       this.localHpBar = this.add.graphics().setDepth(100);
       this.drawHpBar(this.localHpBar, this.localHp, this.localMaxHp);
     }
+    if (!this.localLevelText) {
+      this.localLevelText = this.add.text(0, 0, levelLabelText(this.localLevel), LEVEL_LABEL_STYLE)
+        .setOrigin(1, 0.5)
+        .setResolution(3)
+        .setDepth(100);
+    }
     // Meu HP fica sempre à vista, exceto sentado numa mesa ou em partida.
     const visible = !this.currentSeatInfo && !this.inMatch;
     this.localHpBar.setVisible(visible);
+    this.localLevelText.setVisible(visible && this.localLevel > 0);
     if (visible) {
       this.localHpBar.setPosition(this.player.x, this.player.y + HP_BAR_OFFSET_Y);
+      this.localLevelText.setPosition(this.player.x - HP_BAR_WIDTH / 2 - 1 - LEVEL_LABEL_GAP, this.player.y + HP_BAR_OFFSET_Y);
       // Acompanha o Y-sort do personagem: quem está na frente dele cobre a barra, quem está atrás não.
       this.localHpBar.setDepth(this.player.depth + 0.5);
+      this.localLevelText.setDepth(this.player.depth + 0.5);
     }
   }
 

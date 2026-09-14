@@ -13,6 +13,8 @@ interface AuthState {
   signIn: (email: string, password: string) => Promise<{ error?: string }>;
   signOut: () => Promise<void>;
   setProfile: (profile: Profile) => void;
+  /** Aplica campos vindos do servidor (gambits/rating) sem refazer o select. */
+  patchProfile: (patch: Partial<Profile>) => void;
   initialize: () => Promise<void>;
   refreshProfile: () => Promise<void>;
 }
@@ -85,6 +87,8 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   },
 
   setProfile: (profile) => set({ profile }),
+
+  patchProfile: (patch) => set((state) => (state.profile ? { profile: { ...state.profile, ...patch } } : {})),
 
   refreshProfile: async () => {
     const { user } = get();

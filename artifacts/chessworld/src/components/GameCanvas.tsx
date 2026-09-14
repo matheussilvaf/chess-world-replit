@@ -46,6 +46,9 @@ import { PlacedStationOverlays } from './game/stations/PlacedStationOverlays';
 import { canUsePlacedStation, usePlacedStationsStore, type PlacedStationView } from '../stores/placedStationsStore';
 import { useBigChessStore } from '../stores/bigChessStore';
 import { useWalletStore } from '../stores/walletStore';
+import { useRatingStore } from '../stores/ratingStore';
+import type { ChessRatingUpdateMessage } from '../shared/rating/RatingShapes';
+import { totalSkillLevel } from '../shared/progress/EnergySkillsShapes';
 import { BigChessOverlays } from './game/bigchess/BigChessOverlays';
 import { bigChessPieceFor, parseBigChessSlots, type BigChessPieceView } from '../shared/bigchess/BigChessShapes';
 import { parseAllowedIds } from '../shared/craft/PlaceableStations';
@@ -664,14 +667,22 @@ export function GameCanvas() {
       scene.setEnergyState({ weak: snapshot?.state.weak ?? false, speedPercent: snapshot?.weakSpeedPercent ?? 100 });
     };
     applyEnergyState(useProgressStore.getState().snapshot);
+    // "NV" (soma dos níveis das habilidades) ao lado da barra de HP local.
+    const applyLocalLevel = (snapshot: ProgressSnapshot | null) => {
+      scene.setLocalLevel(snapshot ? totalSkillLevel(snapshot.skills) : 0);
+    };
+    applyLocalLevel(useProgressStore.getState().snapshot);
     let lastProgressSnapshot = useProgressStore.getState().snapshot;
     const unsubscribeProgress = useProgressStore.subscribe((next) => {
       if (next.snapshot === lastProgressSnapshot) return;
       lastProgressSnapshot = next.snapshot;
       applyEnergyState(next.snapshot);
+      applyLocalLevel(next.snapshot);
     });
     scene.onToolBlocked = () => useProgressStore.getState().setNotice('Você está fraco demais para usar ferramentas — coma algo.');
-    const removeCraftResult = room.onMessage('craft_result', (data: { requestId: string; items: Array<{ itemKey: string; qty: number }> }) => {
+    const removeCraftResult = room.onMessage('craft_result', (data: { requestId: string; items: Array<{ itemKey: string; qty: number }>; gambits?: number }) => {
+      // Receita que cobra gambits: o servidor devolve o saldo já debitado.
+      if (typeof data.gambits === 'number') useAuthStore.getState().patchProfile({ gambits: data.gambits });
       resolveStationCraft(data.requestId, { items: data.items });
     });
     const removeCraftError = room.onMessage('craft_error', (data: { requestId?: string; message?: string }) => {
@@ -799,6 +810,28 @@ export function GameCanvas() {
     const removeWalletUpdate = room.onMessage('wallet_update', (data: { crowns?: number }) => {
       if (typeof data?.crowns === 'number') useWalletStore.getState().setCrowns(data.crowns);
     });
+    // Gambits/rating server-authoritative: saldo no join e depois de cada prêmio/débito.
+    const removeGambitsUpdate = room.onMessage('gambits_update', (data: { gambits?: number; rating?: number }) => {
+      const patch: { gambits?: number; rating?: number } = {};
+      if (typeof data?.gambits === 'number') patch.gambits = data.gambits;
+      if (typeof data?.rating === 'number') patch.rating = data.rating;
+      if (Object.keys(patch).length > 0) useAuthStore.getState().patchProfile(patch);
+    });
+    // Resultado de rating da partida (old → new / Δ dos dois) — card pós-partida + perfil atualizado.
+    const removeRatingUpdate = room.onMessage('chess_rating_update', (data: ChessRatingUpdateMessage) => {
+      useRatingStore.getState().setUpdate(data);
+      const myId = useAuthStore.getState().user?.id ?? null;
+      const mine = data.players.find((p) => p.playerId === myId);
+      if (mine) {
+        useAuthStore.getState().patchProfile({
+          rating: Math.round(mine.ratingAfter),
+          chess_rating: mine.ratingAfter,
+          chess_rating_deviation: mine.ratingDeviationAfter,
+          gambits: mine.gambitsTotal,
+        });
+      }
+      void useAuthStore.getState().refreshProfile();
+    });
     const removeBigChessDestroyed = room.onMessage('bigchess_destroyed', (data: { square?: string; pieceName?: string; ownerId?: string; ownerName?: string; attackerName?: string }) => {
       const myId = useAuthStore.getState().user?.id ?? null;
       const piece = data.pieceName ?? 'Peça';
@@ -918,6 +951,8 @@ export function GameCanvas() {
       detachPlaced?.();
       detachBigChess?.();
       if (typeof removeWalletUpdate === 'function') removeWalletUpdate();
+      if (typeof removeGambitsUpdate === 'function') removeGambitsUpdate();
+      if (typeof removeRatingUpdate === 'function') removeRatingUpdate();
       if (typeof removeBigChessDestroyed === 'function') removeBigChessDestroyed();
       useBigChessStore.getState().reset();
       scene.setBigChessGhost(null);
@@ -974,6 +1009,7 @@ export function GameCanvas() {
         maxHp: typeof player.maxHp === 'number' ? player.maxHp : undefined,
         energy: typeof player.energy === 'number' ? player.energy : undefined,
         maxEnergy: typeof player.maxEnergy === 'number' ? player.maxEnergy : undefined,
+        level: typeof player.level === 'number' ? player.level : undefined,
         appearance: player.appearance || undefined,
         equippedWeapon: player.equippedWeapon || undefined,
       });
@@ -1006,6 +1042,8 @@ export function GameCanvas() {
           maxHp: typeof player.maxHp === 'number' ? player.maxHp : undefined,
           energy: typeof player.energy === 'number' ? player.energy : undefined,
           maxEnergy: typeof player.maxEnergy === 'number' ? player.maxEnergy : undefined,
+          level: typeof player.level === 'number' ? player.level : undefined,
+          rating: typeof player.rating === 'number' ? player.rating : undefined,
           appearance: player.appearance || undefined,
           equippedWeapon: player.equippedWeapon || undefined,
         });

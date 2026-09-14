@@ -4,7 +4,9 @@ export interface Profile {
   username: string;
   avatar: string;
   current_region: string;
+  /** Espelho inteiro do rating Glicko-2 (mantido para leitores legados). */
   rating: number;
+  /** Legado (casas) — o HUD mostra `gambits`. */
   trophies: number;
   wins: number;
   losses: number;
@@ -14,6 +16,15 @@ export interface Profile {
   piece_style: string;
   created_at: string;
   updated_at: string;
+  /** Rating Glicko-2 (server-authoritative; ausentes até a migração rodar). */
+  chess_rating?: number;
+  chess_rating_deviation?: number;
+  chess_rating_volatility?: number;
+  chess_rated_games_played?: number;
+  chess_peak_rating?: number;
+  chess_last_rated_at?: string | null;
+  /** Gambits — moeda ganha nas partidas (praça/torneio), gasta no craft. */
+  gambits?: number;
 }
 
 export interface PlayerPresence {

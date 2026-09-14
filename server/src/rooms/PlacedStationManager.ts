@@ -209,7 +209,10 @@ export class PlacedStationManager {
       if (!result.ok) return craftError(result.message);
       const still = this.host.state.placedStations.get(placedId);
       if (still) still.durability = Math.max(0, still.durability - 1);
-      return { event: 'craft_result', payload: { items: result.items, placedId, durability: still?.durability ?? 0 } };
+      return {
+        event: 'craft_result',
+        payload: { items: result.items, placedId, durability: still?.durability ?? 0, ...(result.gambits !== undefined ? { gambits: result.gambits } : {}) },
+      };
     });
   }
 

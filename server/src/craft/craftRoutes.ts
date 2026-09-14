@@ -325,8 +325,9 @@ craftRecipesAdminRouter.put('/:targetId', async (req: Request, res: Response) =>
     ingredients: body.ingredients.map(
       (i): CraftIngredient => ({ itemId: i.itemId, quantity: i.quantity }),
     ),
-    // Sempre explícito no jsonb — "ausente = 1" fica só para registros legados.
+    // Sempre explícito no jsonb — "ausente = 1/0" fica só para registros legados.
     outputQuantity: body.outputQuantity ?? 1,
+    gambitsCost: body.gambitsCost ?? 0,
   };
   const result = await saveCraftRecipe(config);
   if (!result.ok) {

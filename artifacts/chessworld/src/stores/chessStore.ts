@@ -2,7 +2,6 @@ import { create } from 'zustand';
 import { Chess } from 'chess.js';
 import { sendChessMove, sendResign, getActiveRoom } from '../game/network/colyseusClient';
 import { chessAudio, getSoundForSan } from '../game/audio/chessAudio';
-import { supabase } from '../lib/supabase';
 
 interface MoveRecord {
   san: string;
@@ -45,7 +44,6 @@ interface ChessState {
   // Move history for navigation
   moveHistory: MoveRecord[];
   viewIndex: number; // -1 means viewing live/current position
-  dbMatchId: string | null; // UUID for the database match record
 
   openMatch: (matchId: string, color: 'w' | 'b', userId: string, boardId?: string) => void;
   openSpectate: (matchId: string) => void;
@@ -72,60 +70,9 @@ interface ChessState {
   goToLive: () => void;
 }
 
-const INITIAL_FEN = 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1';
-
-async function createDbMatch(matchId: string, whiteUserId: string, blackUserId: string, region: string, boardId: string | null, timeMinutes: number, incrementSeconds: number) {
-  try {
-    const { error } = await supabase.from('matches').insert({
-      id: undefined,
-      region,
-      board_id: boardId || null,
-      white_user_id: whiteUserId,
-      black_user_id: blackUserId,
-      current_fen: INITIAL_FEN,
-      pgn: '',
-      status: 'playing',
-      turn: 'w',
-      time_minutes: timeMinutes,
-      increment_seconds: incrementSeconds,
-    });
-    if (error) console.error('[ChessStore] Failed to create DB match:', error.message);
-  } catch (e) {
-    console.error('[ChessStore] createDbMatch exception:', e);
-  }
-}
-
-async function saveMoveToDB(dbMatchId: string, moveNumber: number, userId: string, from: string, to: string, san: string, fenAfter: string) {
-  try {
-    const { error } = await supabase.from('match_moves').insert({
-      match_id: dbMatchId,
-      move_number: moveNumber,
-      user_id: userId,
-      from_square: from,
-      to_square: to,
-      san,
-      fen_after: fenAfter,
-    });
-    if (error) console.error('[ChessStore] Failed to save move:', error.message);
-  } catch (e) {
-    console.error('[ChessStore] saveMoveToDB exception:', e);
-  }
-}
-
-async function updateDbMatchStatus(dbMatchId: string, status: string, result: string | null, winnerId: string | null, finalFen: string) {
-  try {
-    const { error } = await supabase.from('matches').update({
-      status,
-      result,
-      winner_user_id: winnerId,
-      current_fen: finalFen,
-      finished_at: new Date().toISOString(),
-    }).eq('id', dbMatchId);
-    if (error) console.error('[ChessStore] Failed to update match status:', error.message);
-  } catch (e) {
-    console.error('[ChessStore] updateDbMatchStatus exception:', e);
-  }
-}
+// Persistência de partidas é 100% do servidor (WorldRoom → tabela `matches`);
+// o cliente não grava mais em `matches`/`match_moves` (o antigo caminho
+// Bolt-era duplicava linhas e nunca era autoritativo).
 
 export const useChessStore = create<ChessState>((set, get) => ({
   matchId: null,
@@ -158,7 +105,6 @@ export const useChessStore = create<ChessState>((set, get) => ({
   lastMove: null,
   moveHistory: [],
   viewIndex: -1,
-  dbMatchId: null,
 
   openMatch: (matchId, color, _userId, boardIdArg) => {
     const room = getActiveRoom();
@@ -203,40 +149,9 @@ export const useChessStore = create<ChessState>((set, get) => ({
       showBoard: true,
       moveHistory: [],
       viewIndex: -1,
-      dbMatchId: null,
       drawOfferPending: false,
       drawOfferedByUs: false,
     });
-
-    // Create the DB match record (fire and forget) — skip for tournament tables (server persists those)
-    const isTournamentTable = boardId && typeof boardId === 'string' && boardId.includes('_table_');
-    if (!isTournamentTable && color === 'w' && matchData?.whitePlayerId && matchData?.blackPlayerId) {
-      const timeMinutes = matchData?.whiteTimeMs ? Math.round(matchData.whiteTimeMs / 60000) : 10;
-      const incrementSec = matchData?.incrementMs ? Math.round(matchData.incrementMs / 1000) : 0;
-      createDbMatch(
-        matchId,
-        matchData.whitePlayerId,
-        matchData.blackPlayerId,
-        matchData.region || 'default',
-        boardId,
-        timeMinutes,
-        incrementSec,
-      ).then(async () => {
-        // Retrieve the created record to get the DB-generated UUID
-        const { data } = await supabase
-          .from('matches')
-          .select('id')
-          .eq('white_user_id', matchData.whitePlayerId)
-          .eq('black_user_id', matchData.blackPlayerId)
-          .eq('status', 'playing')
-          .order('created_at', { ascending: false })
-          .limit(1)
-          .maybeSingle();
-        if (data) {
-          set({ dbMatchId: data.id });
-        }
-      });
-    }
   },
 
   openSpectate: (matchId) => {
@@ -282,7 +197,7 @@ export const useChessStore = create<ChessState>((set, get) => ({
   },
 
   syncFromColyseus: (matchData) => {
-    const { matchId, game, playerColor, isSpectating, gameOver: wasGameOver, turn: prevTurn, moveHistory, dbMatchId } = get();
+    const { matchId, game, playerColor, isSpectating, gameOver: wasGameOver, turn: prevTurn, moveHistory } = get();
     if (!matchId || !game) return;
     if (matchData.id !== matchId) return;
 
@@ -307,10 +222,6 @@ export const useChessStore = create<ChessState>((set, get) => ({
         chessAudio.play('gameOver');
       } else {
         chessAudio.play('gameOver');
-      }
-      // Update DB match when game ends (only white player saves to avoid duplicates)
-      if (dbMatchId && playerColor === 'w') {
-        updateDbMatchStatus(dbMatchId, 'finished', matchData.result || 'draw', matchData.winnerId || null, matchData.fen);
       }
     }
 
@@ -350,12 +261,6 @@ export const useChessStore = create<ChessState>((set, get) => ({
     const updatedHistory = newMoveRecord && (opponentJustMoved || spectatorSync)
       ? [...moveHistory, newMoveRecord]
       : moveHistory;
-
-    // Save opponent move to DB (only the opponent's client saves their own moves)
-    if (newMoveRecord && opponentJustMoved && dbMatchId && playerColor) {
-      const movingPlayerId = playerColor === 'w' ? get().blackPlayerId : get().whitePlayerId;
-      saveMoveToDB(dbMatchId, updatedHistory.length, movingPlayerId, newMoveRecord.from, newMoveRecord.to, newMoveRecord.san, newMoveRecord.fen);
-    }
 
     set({
       isMyTurn,
@@ -412,7 +317,7 @@ export const useChessStore = create<ChessState>((set, get) => ({
   },
 
   makeMove: (from, to, promotion) => {
-    const { matchId, game, playerColor, moveHistory, dbMatchId } = get();
+    const { matchId, game, playerColor, moveHistory } = get();
     if (!matchId || !game || !playerColor) return;
 
     const piece = game.get(from as any);
@@ -448,12 +353,6 @@ export const useChessStore = create<ChessState>((set, get) => ({
     });
 
     sendChessMove(matchId, from, to, actualPromotion);
-
-    // Save own move to DB
-    if (dbMatchId) {
-      const userId = playerColor === 'w' ? get().whitePlayerId : get().blackPlayerId;
-      saveMoveToDB(dbMatchId, updatedHistory.length, userId, from, to, moveResult.san, game.fen());
-    }
   },
 
   finishMatchFromServer: (payload) => {
@@ -577,7 +476,7 @@ export const useChessStore = create<ChessState>((set, get) => ({
       whiteTimeMs: 600000, blackTimeMs: 600000, lastMoveAt: Date.now(), clockPausedAt: 0,
       incrementMs: 0, turn: 'w', whitePlayerName: '', blackPlayerName: '',
       whitePlayerId: '', blackPlayerId: '', lastMove: null,
-      moveHistory: [], viewIndex: -1, dbMatchId: null,
+      moveHistory: [], viewIndex: -1,
     });
   },
 }));

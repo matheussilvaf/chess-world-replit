@@ -48,6 +48,16 @@ const SkillsEnergyPage = lazy(() =>
     default: m.SkillsEnergyPage,
   })),
 );
+const RatingGambitsPage = lazy(() =>
+  import('./components/admin/rating/RatingGambitsPage.tsx').then((m) => ({
+    default: m.RatingGambitsPage,
+  })),
+);
+const ChessMatchesPage = lazy(() =>
+  import('./components/admin/matches/ChessMatchesPage.tsx').then((m) => ({
+    default: m.ChessMatchesPage,
+  })),
+);
 const BigChessAdminPage = lazy(() =>
   import('./components/admin/bigchess/BigChessAdminPage.tsx').then((m) => ({
     default: m.BigChessAdminPage,
@@ -92,6 +102,8 @@ createRoot(document.getElementById('root')!).render(
         <Route path="/admin/assets-controller" element={<AssetsControllerPage />} />
         <Route path="/admin/skills-energy" element={<SkillsEnergyPage />} />
         <Route path="/admin/bigchess" element={<BigChessAdminPage />} />
+        <Route path="/admin/rating-gambits" element={<RatingGambitsPage />} />
+        <Route path="/admin/chess-matches" element={<ChessMatchesPage />} />
         {/* Old editor URL — kept as a permanent redirect (spec §3) */}
         <Route path="/admin/characters" element={<Navigate to="/admin/rigs" replace />} />
         <Route path="/admin/character-generator" element={<CharacterGeneratorPage />} />

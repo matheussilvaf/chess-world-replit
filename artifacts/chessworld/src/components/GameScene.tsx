@@ -12,6 +12,7 @@ import { TableWaitingOverlays } from './game/TableWaitingOverlays';
 import { TournamentPanelOverlays } from './game/TournamentPanelOverlays';
 import { InteractionDebugModal } from './game/InteractionDebugModal';
 import { MatchHUD } from './game/MatchHUD';
+import { MatchRatingCard } from './game/MatchRatingCard';
 import { ChessBoardOverlay } from '../components/chess/ChessBoardOverlay';
 import { ProximityButton } from './game/ProximityButton';
 import { ZoneIndicator } from './game/ZoneIndicator';
@@ -89,6 +90,7 @@ export default function GameScene() {
       <ProximityButton />
       <ZoneIndicator />
       <MatchHUD />
+      <MatchRatingCard />
       <ChessBoardOverlay />
       <TableWaitingOverlays />
       <TournamentPanelOverlays />

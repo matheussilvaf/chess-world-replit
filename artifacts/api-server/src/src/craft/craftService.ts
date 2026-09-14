@@ -1,11 +1,16 @@
 import { applyInventoryDeltas, getInventory, type InventoryItem } from '../collection/inventoryRepository.js';
 import { mergeStationsWithDefaults, isStationId } from '../shared/craft/StationShapes.js';
 import { PLACEABLE_STACK_LIMIT, placeableStationFor } from '../shared/craft/PlaceableStations.js';
+import { recipeGambitsCost } from '../shared/craft/CraftShapes.js';
 import { getCraftItemsCached, listCraftRecipes } from './craftRepository.js';
 import { listStationMembers, listStations } from './stationRepository.js';
 import { progressService } from '../progress/progressService.js';
+import { changeGambits } from '../rating/ratingRepository.js';
 
-export type PlayerCraftResult = { ok: true; items: InventoryItem[] } | { ok: false; message: string };
+export type PlayerCraftResult =
+  /** `gambits` = saldo após o débito (presente só quando a receita cobra gambits). */
+  | { ok: true; items: InventoryItem[]; gambits?: number }
+  | { ok: false; message: string };
 
 /** Runs every server-side recipe and inventory check; callers supply only identity and selection. */
 export async function executePlayerCraft(
@@ -40,10 +45,29 @@ export async function executePlayerCraft(
       return { ok: false, message: `Você já carrega uma ${name} — posicione ou solte a atual antes de criar outra` };
     }
   }
+  // Gambits: debitados ANTES do inventário (CAS no saldo; nunca fica negativo).
+  // Se o inventário falhar depois, estorna (best-effort) para não sumir saldo.
+  const gambitsCost = recipeGambitsCost(recipe) * quantity;
+  let gambitsBalance: number | undefined;
+  if (gambitsCost > 0) {
+    const debit = await changeGambits(userId, -gambitsCost);
+    if (!debit.ok) {
+      if (debit.insufficient) return { ok: false, message: `Gambits insuficientes: precisa de ${gambitsCost}, você tem ${debit.balance}` };
+      if (debit.schemaMissing) return { ok: false, message: 'Gambits indisponíveis (migração do rating pendente)' };
+      return { ok: false, message: debit.error ?? 'Falha ao debitar gambits' };
+    }
+    gambitsBalance = debit.balance;
+  }
   const deltas = recipe.ingredients.map((ingredient) => ({ itemKey: ingredient.itemId, qty: -ingredient.quantity * quantity }));
   deltas.push({ itemKey: targetId, qty: produced });
   const changed = await applyInventoryDeltas(userId, deltas);
-  if (!changed.ok) return { ok: false, message: changed.error ?? 'Falha no inventário' };
+  if (!changed.ok) {
+    if (gambitsCost > 0) {
+      const refund = await changeGambits(userId, gambitsCost);
+      if (!refund.ok) console.error(`[craft] estorno de ${gambitsCost} gambits falhou para ${userId}: ${refund.error}`);
+    }
+    return { ok: false, message: changed.error ?? 'Falha no inventário' };
+  }
   const snapshot = await getInventory(userId);
   if (snapshot.error || snapshot.tableMissing) return { ok: false, message: snapshot.error ?? 'Inventário indisponível após craft' };
   // Energia (por estação + construir estação portátil) e XP (forja/fundição/
@@ -51,5 +75,5 @@ export async function executePlayerCraft(
   progressService.recordCraft(userId, { stationId, targetId, quantity }).catch((error: unknown) => {
     console.warn(`[craft] progresso do craft não registrado: ${error instanceof Error ? error.message : String(error)}`);
   });
-  return { ok: true, items: snapshot.items };
+  return { ok: true, items: snapshot.items, ...(gambitsBalance !== undefined ? { gambits: gambitsBalance } : {}) };
 }

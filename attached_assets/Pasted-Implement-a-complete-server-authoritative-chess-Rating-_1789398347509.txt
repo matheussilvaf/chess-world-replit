@@ -1,0 +1,433 @@
+Implement a complete server-authoritative chess Rating system for Chess World.
+
+IMPORTANT:
+This must be a real Glicko-2 rating implementation, not a simplified Elo approximation and not a fixed "+10 for win / -10 for loss" system.
+
+The rating system must be persistent, secure, atomic, and calculated only on the server after an authoritative chess match finishes.
+
+==================================================
+1. SYSTEM TO IMPLEMENT
+==================================================
+
+Use the standard Glicko-2 rating algorithm created by Mark Glickman.
+
+Each player must have:
+
+- rating
+- ratingDeviation (RD)
+- volatility
+- ratedGamesPlayed
+- peakRating
+- lastRatedAt
+
+Default values for every new player:
+
+rating = 1200
+ratingDeviation = 350
+volatility = 0.06
+ratedGamesPlayed = 0
+peakRating = 1200
+lastRatedAt = null
+
+System constant:
+
+tau = 0.5
+
+Rating floor:
+
+MIN_RATING = 100
+
+There is NO maximum rating.
+
+Store rating, RD and volatility internally with decimal precision.
+Only round the rating for UI/display purposes.
+
+Do not round values during intermediate Glicko-2 calculations.
+
+==================================================
+2. MATCH RESULTS
+==================================================
+
+Glicko-2 score values must be:
+
+Win:
+score = 1.0
+
+Draw:
+score = 0.5
+
+Loss:
+score = 0.0
+
+Resignation:
+loss for the resigning player.
+
+Timeout:
+loss for the player whose clock expired.
+
+Normal checkmate:
+winner = 1.0
+loser = 0.0
+
+Draw by any valid chess rule:
+both players = 0.5.
+
+Cancelled/aborted games that do not have a valid competitive result:
+NO rating change.
+
+Unrated/friendly matches:
+NO rating change.
+
+==================================================
+3. TOURNAMENT MATCHES
+==================================================
+
+Tournament games MUST use exactly the same Glicko-2 Rating calculation as normal rated games.
+
+DO NOT multiply Rating gains or losses because a game is part of a tournament.
+
+Tournament bonuses belong to other progression systems such as Renown, not Rating.
+
+Rating must measure chess strength only.
+
+==================================================
+4. BOTH PLAYERS MUST BE CALCULATED FROM PRE-MATCH STATE
+==================================================
+
+This is critical.
+
+When a match finishes:
+
+1. Load Player A's pre-match:
+   - rating
+   - RD
+   - volatility
+
+2. Load Player B's pre-match:
+   - rating
+   - RD
+   - volatility
+
+3. Calculate Player A's new state using Player B's PRE-MATCH state.
+
+4. Calculate Player B's new state using Player A's PRE-MATCH state.
+
+DO NOT update Player A first and then use Player A's new rating when calculating Player B.
+
+Both calculations must use the same pre-match snapshot.
+
+==================================================
+5. RATING FLOOR
+==================================================
+
+After the complete Glicko-2 calculation:
+
+newRating = max(100, calculatedRating)
+
+No player's persisted Rating may ever be below 100.
+
+RD and volatility must still be updated normally.
+
+There is no rating ceiling.
+
+==================================================
+6. RATING DEVIATION / NEW PLAYERS
+==================================================
+
+New players start with:
+
+rating = 1200
+RD = 350
+
+This means their rating is highly uncertain.
+
+Their first games are EXPECTED to cause much larger Rating changes.
+
+As they play more rated games, their RD should decrease naturally according to Glicko-2 and their Rating changes should become more stable.
+
+Do NOT artificially limit the Rating gain/loss for new players.
+
+This behavior is intentional.
+
+Add a helper:
+
+isProvisionalRating(player)
+
+For now return true if:
+
+ratedGamesPlayed < 10
+
+OR
+
+ratingDeviation > 110
+
+This should be available to the frontend so the UI can optionally show the player as provisional.
+
+Do not change the displayed Rating itself because of provisional status.
+
+==================================================
+7. INACTIVITY
+==================================================
+
+Glicko-2 confidence should decrease when a player is inactive.
+
+Implement inactivity handling using Glicko-2's standard RD increase behavior.
+
+Use a rating inactivity period of 1 day.
+
+When a player returns after inactivity, calculate the number of complete inactive rating periods since lastRatedAt and increase RD according to Glicko-2 before processing the new match.
+
+RD must never exceed:
+
+350
+
+Do NOT change the player's actual Rating simply because they were inactive.
+
+Only confidence/RD should change.
+
+==================================================
+8. DATABASE
+==================================================
+
+First inspect the existing project and current Supabase schema before changing anything.
+
+Do not create duplicate user/profile systems.
+
+Integrate the rating fields into the existing player/profile architecture.
+
+Required persistent fields conceptually:
+
+chess_rating
+chess_rating_deviation
+chess_rating_volatility
+chess_rated_games_played
+chess_peak_rating
+chess_last_rated_at
+
+Use the project's existing naming conventions if equivalent fields/tables already exist.
+
+Create a persistent rating history table if one does not already exist.
+
+Each rating history record should contain at minimum:
+
+- player_id
+- match_id
+- opponent_id
+- result
+- rating_before
+- rating_after
+- rating_delta
+- rd_before
+- rd_after
+- opponent_rating_before
+- created_at
+
+There must be a unique constraint preventing the same match from applying Rating more than once to the same player.
+
+==================================================
+9. ATOMICITY / IDEMPOTENCY
+==================================================
+
+Rating processing must be idempotent.
+
+A match must NEVER be able to update Rating twice because:
+
+- the server restarted
+- a request was retried
+- two processes attempted to finalize the match
+- the client sent the request twice
+- the results screen was reopened
+
+Use the authoritative match ID.
+
+The update of BOTH players and their rating-history records must be atomic.
+
+If any part fails, neither player's Rating should be partially updated.
+
+Use the existing Supabase/server architecture and the safest transactional mechanism already available in the project.
+
+The client must NEVER send:
+
+- rating gain
+- rating loss
+- new rating
+- RD
+- volatility
+
+The client sends/receives game state only.
+
+The server determines the result and computes all Rating changes.
+
+==================================================
+10. GLICKO-2 IMPLEMENTATION
+==================================================
+
+Create a clean reusable TypeScript module/service dedicated to Glicko-2.
+
+Do not spread Rating mathematics throughout UI components or game-room code.
+
+It should expose something conceptually similar to:
+
+calculateGlicko2Rating({
+    player,
+    opponent,
+    score
+})
+
+and return:
+
+{
+    rating,
+    ratingDeviation,
+    volatility,
+    ratingDelta
+}
+
+Use the complete Glicko-2 equations including:
+
+- conversion between Glicko and Glicko-2 scales
+- g(phi)
+- expected score E
+- estimated variance v
+- improvement delta
+- volatility iterative calculation
+- pre-rating-period deviation
+- updated RD
+- updated rating
+- conversion back to the normal Rating scale
+
+Do NOT replace the volatility iterative algorithm with an approximation.
+
+==================================================
+11. OFFICIAL ALGORITHM TEST
+==================================================
+
+Add automated tests using the canonical Glicko-2 worked example.
+
+Test parameters:
+
+Player:
+rating = 1500
+RD = 200
+volatility = 0.06
+
+Opponents/results:
+
+1400, RD 30, win
+1550, RD 100, loss
+1700, RD 300, loss
+
+tau = 0.5
+
+The result should be approximately:
+
+rating = 1464.06
+RD = 151.52
+volatility = 0.059996
+
+Allow only very small floating-point tolerance.
+
+If this test fails, the Glicko-2 implementation is incorrect.
+
+==================================================
+12. MATCH RESULT UI DATA
+==================================================
+
+After a rated match finishes, return enough information for the existing result UI to show:
+
+Player A:
+old rating
+new rating
+delta
+
+Player B:
+old rating
+new rating
+delta
+
+Examples:
+
+Rating 1320   +8
+Rating 1478   -8
+
+Draws may still produce positive or negative Rating changes depending on opponent strength.
+
+A draw does NOT automatically mean zero Rating change.
+
+==================================================
+13. IMPORTANT BEHAVIOR
+==================================================
+
+A lower-rated player defeating a higher-rated player should generally gain more Rating.
+
+A higher-rated player defeating a lower-rated player should generally gain less Rating.
+
+A lower-rated player losing to a much stronger player should generally lose little Rating.
+
+A higher-rated player losing to a much weaker player should generally lose much more Rating.
+
+A lower-rated player drawing against a stronger player may GAIN Rating.
+
+A higher-rated player drawing against a weaker player may LOSE Rating.
+
+Players with high RD should have larger Rating changes.
+
+Players with low RD should have smaller, more stable Rating changes.
+
+==================================================
+14. DO NOT
+==================================================
+
+Do not use a fixed K-factor Elo system.
+
+Do not hardcode "+10 win / -10 loss".
+
+Do not give tournament matches an artificial Rating multiplier.
+
+Do not calculate Rating on the client.
+
+Do not trust a result supplied by the client if the server already owns authoritative match state.
+
+Do not allow duplicate Rating processing.
+
+Do not reset Rating when a tournament or season finishes.
+
+Rating belongs permanently to the player's chess profile.
+
+==================================================
+15. BEFORE IMPLEMENTING
+==================================================
+
+Inspect:
+
+- existing user/profile database schema
+- chess match state
+- match completion logic
+- tournament match completion logic
+- Supabase persistence
+- server architecture
+
+Reuse the existing architecture rather than building parallel systems.
+
+==================================================
+16. AFTER IMPLEMENTING
+==================================================
+
+Give me a concise report containing:
+
+1. What was changed.
+2. Database/schema changes.
+3. Where the Glicko-2 implementation lives.
+4. Where Rating updates are triggered.
+5. How duplicate processing is prevented.
+6. How inactivity/RD works.
+7. Tests created and their results.
+8. Exact steps for me to manually test:
+   - win
+   - loss
+   - draw
+   - stronger opponent
+   - weaker opponent
+   - tournament game
+   - duplicate match finalization
+   - rating floor

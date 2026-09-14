@@ -5,6 +5,7 @@ import { getGeneratorManifest } from '../../game/characters/appearanceRuntime';
 import { buildCraftCatalog } from '../../lib/craft/craftCatalog';
 import { craft } from '../../game/stations/stationCraftBridge';
 import { useCollectionInventoryStore } from '../../stores/collectionInventoryStore';
+import { useAuthStore } from '../../stores/authStore';
 import { usePlacedStationsStore } from '../../stores/placedStationsStore';
 import type { CraftItemConfig, CraftRecipeConfig } from '../../shared/craft/CraftShapes';
 import type { StationConfig } from '../../shared/craft/StationShapes';
@@ -34,6 +35,8 @@ export function StationGamePanel({ stationId, placedId, onClose }: {
   onClose: () => void;
 }) {
   const inventory = useCollectionInventoryStore((state) => state.items);
+  // Saldo de gambits (server-authoritative; atualizado no join, no fim de partida e a cada craft).
+  const gambits = useAuthStore((state) => state.profile?.gambits ?? 0);
   const placed = usePlacedStationsStore((state) => (placedId ? state.stations[placedId] : undefined));
   const pushNotice = usePlacedStationsStore((state) => state.pushNotice);
   // A estação portátil sumiu (recolhida/expirou) com o card aberto: fecha e avisa.
@@ -104,6 +107,7 @@ export function StationGamePanel({ stationId, placedId, onClose }: {
           }}
           onClose={onClose}
           banner={placed ? <PlacedStationBanner station={placed} /> : undefined}
+          gambits={gambits}
           onCraft={async (targetId, quantity) => {
             try {
               const result = await craft(stationId, targetId, quantity, placedId);

@@ -439,6 +439,19 @@ export interface SkillProgress {
   needed: number;
 }
 
+/**
+ * "NV" do personagem = soma dos níveis de TODAS as habilidades (aparece junto
+ * da barra de HP no mapa). Skills ausentes contam 1 (nível inicial).
+ */
+export function totalSkillLevel(skills: Partial<Record<SkillId, Pick<SkillProgress, 'level'>>> | null | undefined): number {
+  let total = 0;
+  for (const id of SKILL_IDS) {
+    const level = skills?.[id]?.level;
+    total += typeof level === 'number' && Number.isFinite(level) && level >= 1 ? Math.floor(level) : 1;
+  }
+  return total;
+}
+
 /** Nível derivado do XP total (todos começam no 1). */
 export function skillProgressFromXp(skills: Pick<SkillsConfig, 'baseXp' | 'rate' | 'maxLevel'>, totalXp: number): SkillProgress {
   const xp = Math.max(0, Math.floor(totalXp));

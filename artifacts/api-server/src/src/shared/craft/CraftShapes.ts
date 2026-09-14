@@ -52,6 +52,9 @@ export const MIN_INGREDIENT_QUANTITY = 1;
 export const MAX_INGREDIENT_QUANTITY = 999;
 export const MIN_OUTPUT_QUANTITY = 1;
 export const MAX_OUTPUT_QUANTITY = 999;
+/** Gambits (moeda das partidas) cobrados por execução da receita — 0 = grátis. */
+export const MIN_GAMBITS_COST = 0;
+export const MAX_GAMBITS_COST = 100_000;
 
 const RESOURCE_KEY_SET: ReadonlySet<string> = new Set(RESOURCE_KEYS);
 
@@ -119,6 +122,11 @@ export interface CraftRecipeConfig {
    * Ausente = 1 (receitas antigas); o servidor sempre grava o valor explícito.
    */
   outputQuantity?: number;
+  /**
+   * Gambits debitados do jogador por execução da receita — inteiro 0..100000.
+   * Ausente = 0 (grátis); o servidor sempre grava o valor explícito.
+   */
+  gambitsCost?: number;
 }
 
 export interface CraftValidation {
@@ -251,6 +259,12 @@ export function validateCraftRecipeConfig(
       );
     }
   }
+  const gambits = value.gambitsCost;
+  if (gambits !== undefined) {
+    if (!isInt(gambits) || gambits < MIN_GAMBITS_COST || gambits > MAX_GAMBITS_COST) {
+      errors.push(`gambitsCost: inteiro ${MIN_GAMBITS_COST}–${MAX_GAMBITS_COST} (ausente = 0)`);
+    }
+  }
   return { ok: errors.length === 0, errors };
 }
 
@@ -268,6 +282,12 @@ export function sameIngredientBag(a: CraftIngredient[], b: CraftIngredient[]): b
 /** Unidades do alvo produzidas por execução da receita (ausente/legado = 1). */
 export function recipeOutputQuantity(recipe: CraftRecipeConfig | null | undefined): number {
   return recipe?.outputQuantity ?? 1;
+}
+
+/** Gambits cobrados por execução da receita (ausente/legado = 0). */
+export function recipeGambitsCost(recipe: CraftRecipeConfig | null | undefined): number {
+  const cost = recipe?.gambitsCost;
+  return typeof cost === 'number' && Number.isFinite(cost) && cost > 0 ? Math.floor(cost) : 0;
 }
 
 // ------------------------------------------------- consulta de craftabilidade

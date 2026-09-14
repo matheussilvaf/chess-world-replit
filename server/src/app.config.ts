@@ -44,6 +44,11 @@ import {
   publicBigChessConfigHandler,
   walletRouter,
 } from "./bigchess/bigChessRoutes.js";
+import {
+  chessMatchesAdminRouter,
+  publicRatingConfigHandler,
+  ratingAdminRouter,
+} from "./rating/ratingRoutes.js";
 
 const config: ConfigOptions = {
   // Explicit liveness probing: without app-level pings a half-open socket
@@ -221,6 +226,13 @@ const config: ConfigOptions = {
     app.get("/api/bigchess-config", publicBigChessConfigHandler);
     app.use("/api/admin/bigchess-config", bigChessAdminRouter);
     app.use("/api/me/wallet", walletRouter);
+
+    // Rating Glicko-2 + Gambits (spec: /admin/rating-gambits) e banco de
+    // partidas (spec: /admin/chess-matches): config única, reset em massa,
+    // listagem paginada de todas as partidas; limiares públicos cacheados.
+    app.get("/api/rating-config", publicRatingConfigHandler);
+    app.use("/api/admin/rating-config", ratingAdminRouter);
+    app.use("/api/admin/chess-matches", chessMatchesAdminRouter);
 
     app.use("/api/tournament", tournamentRouter);
     app.use("/api/coordinator", coordinatorRouter);

@@ -30,11 +30,13 @@ import {
   Loader2,
   Pencil,
   Plus,
+  Swords,
   Wrench,
   X,
   type LucideIcon,
 } from 'lucide-react';
 import {
+  recipeGambitsCost,
   recipeOutputQuantity,
   type CraftRecipeConfig,
 } from '../../../shared/craft/CraftShapes';
@@ -97,6 +99,7 @@ export function StationPreview({
   onClose,
   onCraft,
   banner,
+  gambits,
 }: {
   station: StationConfig;
   activeTabIndex: number;
@@ -111,6 +114,8 @@ export function StationPreview({
   onCraft?: (targetId: string, quantity: number) => Promise<void>;
   /** Faixa extra logo abaixo do cabeçalho (ex.: estado da estação portátil). */
   banner?: ReactNode;
+  /** Saldo de gambits do jogador; ausente = sem bloqueio por gambits (preview do admin). */
+  gambits?: number;
 }) {
   const tabs = station.tabs;
   const tabIndex = Math.min(Math.max(activeTabIndex, 0), Math.max(tabs.length - 1, 0));
@@ -151,12 +156,18 @@ export function StationPreview({
     [],
   );
 
+  // Gambits: só bloqueia quando o chamador informa o saldo (jogo). O admin
+  // continua vendo o custo, mas sem "faltando".
+  const gambitsOk = (recipe: CraftRecipeConfig, quantity: number) =>
+    gambits === undefined || gambits >= recipeGambitsCost(recipe) * quantity;
+
   const cellState = (itemId: string): CellState => {
     const recipe = recipes[itemId];
     if (!recipe) return 'none';
     for (const ing of recipe.ingredients) {
       if ((inventory[ing.itemId] ?? 0) < ing.quantity) return 'missing';
     }
+    if (!gambitsOk(recipe, 1)) return 'missing';
     return 'ok';
   };
 
@@ -164,18 +175,22 @@ export function StationPreview({
   const selectedRecipe = selectedId ? (recipes[selectedId] ?? null) : null;
   const output = selectedRecipe ? recipeOutputQuantity(selectedRecipe) : 1;
 
+  const gambitsCost = selectedRecipe ? recipeGambitsCost(selectedRecipe) : 0;
+
   const maxCraftable = useMemo(() => {
     if (!selectedRecipe) return 1;
     let max = Infinity;
     for (const ing of selectedRecipe.ingredients) {
       max = Math.min(max, Math.floor((inventory[ing.itemId] ?? 0) / ing.quantity));
     }
+    if (gambits !== undefined && gambitsCost > 0) max = Math.min(max, Math.floor(gambits / gambitsCost));
     return Math.max(1, Math.min(Number.isFinite(max) ? max : 1, 999));
-  }, [selectedRecipe, inventory]);
+  }, [selectedRecipe, inventory, gambits, gambitsCost]);
 
   const canCraft =
     !!selectedRecipe &&
-    selectedRecipe.ingredients.every((ing) => (inventory[ing.itemId] ?? 0) >= ing.quantity * qty);
+    selectedRecipe.ingredients.every((ing) => (inventory[ing.itemId] ?? 0) >= ing.quantity * qty) &&
+    gambitsOk(selectedRecipe, qty);
 
   const startCraft = async () => {
     if (!canCraft || phase !== 'idle') return;
@@ -467,6 +482,25 @@ export function StationPreview({
                       </div>
                     );
                   })}
+                  {gambitsCost > 0 && (() => {
+                    const need = gambitsCost * qty;
+                    const ok = gambits === undefined || gambits >= need;
+                    return (
+                      <div className="flex items-center justify-between py-1" data-testid="craft-gambits-cost">
+                        <span className="flex items-center gap-1.5 text-[15px] text-emerald-200">
+                          <Swords className="h-4 w-4" /> Gambits
+                        </span>
+                        <span
+                          className={`flex items-center gap-1.5 text-[15px] font-semibold ${
+                            ok ? 'text-green-500' : 'text-red-400'
+                          }`}
+                        >
+                          {need}{gambits !== undefined ? ` / ${gambits}` : ''}
+                          {ok ? <Check className="w-4 h-4" /> : <X className="w-4 h-4" />}
+                        </span>
+                      </div>
+                    );
+                  })()}
                 </div>
                 <div className="mt-3 flex items-center gap-2.5">
                   <button

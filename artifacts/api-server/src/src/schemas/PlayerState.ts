@@ -23,6 +23,8 @@ export class PlayerState extends Schema {
   /** Energia (fome) — espelho do snapshot de progresso, visível aos outros (barra acima do jogador). */
   energy!: number;
   maxEnergy!: number;
+  /** "NV" = soma dos níveis de todas as habilidades (aparece junto da barra de HP no mapa). */
+  level!: number;
 
   constructor() {
     super();
@@ -45,6 +47,7 @@ export class PlayerState extends Schema {
     this.equippedWeapon = '';
     this.energy = 0;
     this.maxEnergy = 0;
+    this.level = 0;
   }
 }
 
@@ -70,4 +73,5 @@ defineTypes(PlayerState, {
   equippedWeapon: 'string',
   energy: 'number',
   maxEnergy: 'number',
+  level: 'number',
 });

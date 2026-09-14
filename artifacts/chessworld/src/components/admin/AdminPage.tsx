@@ -2,7 +2,7 @@ import { useEffect, useState, useCallback } from 'react';
 import { supabase } from '../../lib/supabase';
 import { useInteractionStore } from '../../stores/interactionStore';
 import { getColyseusHttpUrl } from '../../config/colyseus';
-import { Settings, Gauge, ZoomIn, ArrowLeft, Crosshair, Bug, Waypoints, Monitor, Smartphone, MessageSquare, Wand2, Swords, Hammer, Boxes, Sprout, Factory, Sparkles, Crown } from 'lucide-react';
+import { Settings, Gauge, ZoomIn, ArrowLeft, Crosshair, Bug, Waypoints, Monitor, Smartphone, MessageSquare, Wand2, Swords, Hammer, Boxes, Sprout, Factory, Sparkles, Crown, Star, Database } from 'lucide-react';
 import { TournamentConfigSection } from './TournamentConfigSection';
 
 interface GameSettings {
@@ -248,6 +248,30 @@ export function AdminPage() {
             <div>
               <p className="text-sm font-medium text-white">Controlador do Big Chessboard</p>
               <p className="text-xs text-slate-400">HP, renda em Crowns, regeneração, capas e defesas das peças</p>
+            </div>
+          </a>
+          <a
+            href="/admin/rating-gambits"
+            className="flex items-center gap-3 rounded-xl border border-slate-800 bg-slate-900 hover:border-amber-500/50 hover:bg-slate-800/80 transition-colors p-4"
+          >
+            <div className="w-9 h-9 rounded-lg bg-amber-500/10 flex items-center justify-center">
+              <Star className="w-4 h-4 text-amber-400" />
+            </div>
+            <div>
+              <p className="text-sm font-medium text-white">Rating (Glicko-2) &amp; Gambits</p>
+              <p className="text-xs text-slate-400">Parâmetros do rating, prêmios em gambits, limites diários e reset em massa</p>
+            </div>
+          </a>
+          <a
+            href="/admin/chess-matches"
+            className="flex items-center gap-3 rounded-xl border border-slate-800 bg-slate-900 hover:border-sky-500/50 hover:bg-slate-800/80 transition-colors p-4"
+          >
+            <div className="w-9 h-9 rounded-lg bg-sky-500/10 flex items-center justify-center">
+              <Database className="w-4 h-4 text-sky-400" />
+            </div>
+            <div>
+              <p className="text-sm font-medium text-white">Chess Matches Database</p>
+              <p className="text-xs text-slate-400">Todas as partidas (praça e torneio) com filtros por jogador, resultado e data</p>
             </div>
           </a>
         </div>
