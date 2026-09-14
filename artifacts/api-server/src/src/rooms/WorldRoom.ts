@@ -1547,6 +1547,17 @@ export class WorldRoom extends Room<WorldState> {
   // reception's north connector (y=0), so "inside a module" means y < 0.
   // Reception map is 1440x896 px; the center strip between the two practice
   // areas is safe ground.
+  /** Saldo novo de gambits (ex.: bônus do campeão de torneio) para um jogador presente nesta sala. */
+  notifyGambitsAward(playerId: string, payload: { gambits: number; awarded: number; reason: string; tournamentId?: string }): boolean {
+    let found = false;
+    this.state.players.forEach((player, sessionId) => {
+      if (player.id !== playerId) return;
+      found = true;
+      this.clients.find((c) => c.sessionId === sessionId)?.send('gambits_update', payload);
+    });
+    return found;
+  }
+
   teleportTournamentPlayersToReception(tournamentId: string): void {
     if (this.roomName !== 'arena') return;
 

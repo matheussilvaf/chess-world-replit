@@ -2,7 +2,7 @@
  * HTTP de Rating (Glicko-2) + Gambits e do "Chess Matches Database".
  *
  * Admin (Supabase JWT, admin):
- *   - GET  /api/admin/rating-config            → { config, saved, updatedAt, tableMissing, tableSql?, schemaReady, migrationSql }
+ *   - GET  /api/admin/rating-config            → { config, saved, updatedAt, tableMissing, tableSql?, schemaReady, schemaCoreReady, schemaError, migrationSql }
  *   - PUT  /api/admin/rating-config            → { config }
  *   - POST /api/admin/rating-config/reset-all  → { count } (todos os jogadores ao estado inicial)
  *   - GET  /api/admin/chess-matches?page&player&result&kind&status&from&to
@@ -39,6 +39,7 @@ ratingAdminRouter.get('/', async (_req: Request, res: Response) => {
     tableMissing: result.tableMissing,
     ...(result.tableMissing ? { tableSql: RATING_CONFIG_TABLE_SQL } : {}),
     schemaReady: schema.ready,
+    schemaCoreReady: schema.coreReady,
     schemaError: schema.error,
     migrationSql: RATING_MIGRATION_SQL,
   });

@@ -30,11 +30,14 @@ import {
 import {
   applyGambitLimits,
   baseGambitsFor,
+  blockedByMinMoves,
   decideMatchSettlement,
   gambitDayStart,
   outcomeScore,
+  pliesFromFen,
   roundRating,
   type ChessRatingUpdateMessage,
+  type GambitAwardReason,
   type MatchKind,
   type PlayerMatchOutcome,
   type PlayerRatingRow,
@@ -43,6 +46,7 @@ import {
 } from '../shared/rating/RatingShapes.js';
 import { getRatingConfigCached } from './ratingConfigRepository.js';
 import {
+  awardGambitsAtomic,
   getGambitDayStats,
   getLegacyRating,
   getRatingProfiles,
@@ -166,9 +170,11 @@ async function settleMatchOnce(input: SettleMatchInput): Promise<SettleMatchResu
       computeSide(black, white, decision.black, blackPreRd, whitePreRd, config),
     ];
 
-    // Gambits: prêmio base + limites do dia, calculados do ledger lido agora
-    // (a função SQL confere que o ledger não mudou antes de gravar).
+    // Gambits: prêmio base (praça e torneio valem igual) + regra de lances
+    // mínimos por motivo de fim + limites do dia, calculados do ledger lido
+    // agora (a função SQL confere que o ledger não mudou antes de gravar).
     const dayStartIso = new Date(gambitDayStart(now, config.gambits.dayOffsetHours)).toISOString();
+    const plies = pliesFromFen(input.fen);
     const writes: SettlePlayerWrite[] = [];
     for (const side of sides) {
       const day = await getGambitDayStats(side.profile.userId, side.opponent.userId, dayStartIso);
@@ -180,8 +186,10 @@ async function settleMatchOnce(input: SettleMatchInput): Promise<SettleMatchResu
         console.error(`[gambits] falha ao ler ledger de ${side.profile.userId}: ${day.error}`);
         return unrated(input, 'persistence_error');
       }
-      const base = baseGambitsFor(input.kind, side.outcome, config.gambits);
-      const { amount, reason } = applyGambitLimits(base, day.stats, config.gambits);
+      const tooShort = blockedByMinMoves(input.result, side.outcome, plies, config.gambits.minMoves);
+      const { amount, reason }: { amount: number; reason: GambitAwardReason } = tooShort
+        ? { amount: 0, reason: 'min_moves' }
+        : applyGambitLimits(baseGambitsFor(side.outcome, config.gambits), day.stats, config.gambits);
       writes.push({
         playerId: side.profile.userId,
         opponentId: side.opponent.userId,
@@ -253,6 +261,54 @@ async function settleMatchOnce(input: SettleMatchInput): Promise<SettleMatchResu
   }
   console.error(`[rating] partida ${input.matchId}: conflito persistente após ${MAX_ATTEMPTS} tentativas — não avaliada`);
   return unrated(input, 'persistence_error');
+}
+
+export interface ChampionAwardResult {
+  status: 'applied' | 'already_awarded' | 'profile_missing' | 'migration_pending' | 'persistence_error';
+  /** Gambits creditados de fato (0 se a config está em 0 ou o teto diário já estava cheio). */
+  amount: number;
+  /** Saldo do campeão depois do crédito (só em `applied`). */
+  balance: number | null;
+}
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * Bônus do campeão de um torneio concluído (config `gambits.tournamentChampion`).
+ * Idempotente por torneio (ledger `tournament:<id>`), sem limite por
+ * adversário; respeita o teto diário se houver. Com a config em 0 a linha do
+ * ledger é gravada mesmo assim (amount 0), marcando o torneio como resolvido.
+ * Chamado pelo coordinator ao concluir o torneio e pela reconciliação.
+ */
+export async function awardTournamentChampion(tournamentId: string, playerId: string): Promise<ChampionAwardResult> {
+  if (!UUID_RE.test(playerId)) {
+    console.warn(`[gambits] campeão do torneio ${tournamentId} sem id de usuário válido (${playerId}) — bônus não creditado`);
+    return { status: 'profile_missing', amount: 0, balance: null };
+  }
+  const config = await getRatingConfigCached();
+  const amount = Math.max(0, config.gambits.tournamentChampion);
+  const now = Date.now();
+  const outcome = await awardGambitsAtomic({
+    matchId: `tournament:${tournamentId}`,
+    playerId,
+    amount,
+    kind: 'tournament_champion',
+    dayStartIso: new Date(gambitDayStart(now, config.gambits.dayOffsetHours)).toISOString(),
+    dailyCap: config.gambits.dailyCap,
+    awardedAtIso: new Date(now).toISOString(),
+  });
+  if (outcome.schemaMissing) {
+    warnMigrationOnce('função chessworld_award_gambits ausente (bônus do campeão de torneio)');
+    return { status: 'migration_pending', amount: 0, balance: null };
+  }
+  if (outcome.status === 'already_awarded') return { status: 'already_awarded', amount: 0, balance: null };
+  if (outcome.status === 'profile_missing') return { status: 'profile_missing', amount: 0, balance: null };
+  if (!outcome.ok) {
+    console.error(`[gambits] falha ao creditar bônus do campeão do torneio ${tournamentId}: ${outcome.error}`);
+    return { status: 'persistence_error', amount: 0, balance: null };
+  }
+  console.log(`[gambits] campeão do torneio ${tournamentId}: ${playerId} +${outcome.amount}g${outcome.reason === 'daily_cap' ? ' (teto diário)' : outcome.reason === 'zero' ? ' (bônus desligado)' : ''} → saldo ${outcome.balance}`);
+  return { status: 'applied', amount: outcome.amount, balance: outcome.balance };
 }
 
 /** Rating exibido de um jogador (para o join da sala) — null se não houver perfil. Pré-migração usa o `rating` legado. */

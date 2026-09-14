@@ -9,8 +9,12 @@ import {
 import {
   DEFAULT_RATING_GAMBITS_CONFIG,
   applyGambitLimits,
+  baseGambitsFor,
+  blockedByMinMoves,
+  completedMovesFromPlies,
   decideMatchSettlement,
   gambitDayStart,
+  minMovesReasonFor,
   parseRatingGambitsConfig,
   pliesFromFen,
 } from './RatingShapes';
@@ -160,13 +164,69 @@ describe('decideMatchSettlement', () => {
 describe('gambits', () => {
   const rules = DEFAULT_RATING_GAMBITS_CONFIG.gambits;
 
-  it('padrões pedidos: 3 / 2 / 1 / 10, 1 vez por adversário, sem teto', () => {
-    expect(rules.plazaWin).toBe(3);
+  it('padrões pedidos: 3 / 2 / 1 por partida, 10 para o campeão, 1 vez por adversário, sem teto', () => {
+    expect(rules.win).toBe(3);
     expect(rules.draw).toBe(2);
     expect(rules.loss).toBe(1);
-    expect(rules.tournamentWin).toBe(10);
+    expect(rules.tournamentChampion).toBe(10);
     expect(rules.opponentDailyLimit).toBe(1);
     expect(rules.dailyCap).toBeNull();
+    for (const reason of ['resign', 'timeout', 'draw', 'repetition'] as const) {
+      expect(rules.minMoves[reason]).toEqual({ minMoves: 10, appliesTo: 'both' });
+    }
+  });
+
+  it('partida de torneio vale o mesmo que a da praça (o bônus é só do campeão)', () => {
+    expect(baseGambitsFor('win', rules)).toBe(3);
+    expect(baseGambitsFor('draw', rules)).toBe(2);
+    expect(baseGambitsFor('loss', rules)).toBe(1);
+  });
+
+  it('config antiga (plazaWin / tournamentWin) continua sendo lida', () => {
+    const legacy = {
+      rating: DEFAULT_RATING_GAMBITS_CONFIG.rating,
+      gambits: { plazaWin: 4, draw: 2, loss: 1, tournamentWin: 12, opponentDailyLimit: 2, dailyCap: null, dayOffsetHours: -3 },
+    };
+    const parsed = parseRatingGambitsConfig(legacy);
+    expect(parsed.ok).toBe(true);
+    expect(parsed.config.gambits.win).toBe(4);
+    expect(parsed.config.gambits.tournamentChampion).toBe(12);
+    expect(parsed.config.gambits.opponentDailyLimit).toBe(2);
+    expect(parsed.config.gambits.minMoves).toEqual(rules.minMoves);
+    const bad = parseRatingGambitsConfig({ ...DEFAULT_RATING_GAMBITS_CONFIG, gambits: { ...rules, minMoves: { ...rules.minMoves, resign: { minMoves: 5, appliesTo: 'nobody' } } } });
+    expect(bad.ok).toBe(false);
+    expect(bad.errors.join(' ')).toContain('gambits.minMoves.resign.appliesTo');
+  });
+
+  it('lances mínimos: só desistência/abandono, tempo, acordo e repetição têm regra', () => {
+    expect(minMovesReasonFor('resign')).toBe('resign');
+    expect(minMovesReasonFor('abandon')).toBe('resign');
+    expect(minMovesReasonFor('timeout')).toBe('timeout');
+    expect(minMovesReasonFor('draw')).toBe('draw');
+    expect(minMovesReasonFor('repetition')).toBe('repetition');
+    for (const result of ['checkmate', 'stalemate', 'insufficient', 'unknown']) expect(minMovesReasonFor(result)).toBeNull();
+    expect(completedMovesFromPlies(0)).toBe(0);
+    expect(completedMovesFromPlies(19)).toBe(9);
+    expect(completedMovesFromPlies(20)).toBe(10);
+  });
+
+  it('lances mínimos: bloqueia conforme "aplica a" e nunca para mate', () => {
+    const mm = rules.minMoves;
+    // 9 lances completos (18 plies) < 10 → curta; 10 completos → vale.
+    expect(blockedByMinMoves('resign', 'loss', 18, mm)).toBe(true);
+    expect(blockedByMinMoves('resign', 'win', 18, mm)).toBe(true);
+    expect(blockedByMinMoves('resign', 'win', 20, mm)).toBe(false);
+    expect(blockedByMinMoves('checkmate', 'win', 2, mm)).toBe(false);
+    expect(blockedByMinMoves('checkmate', 'loss', 2, mm)).toBe(false);
+    const lossOnly = { ...mm, resign: { minMoves: 10, appliesTo: 'loss' as const }, timeout: { minMoves: 10, appliesTo: 'win' as const } };
+    expect(blockedByMinMoves('resign', 'loss', 4, lossOnly)).toBe(true);
+    expect(blockedByMinMoves('resign', 'win', 4, lossOnly)).toBe(false);
+    expect(blockedByMinMoves('abandon', 'win', 4, lossOnly)).toBe(false);
+    expect(blockedByMinMoves('timeout', 'win', 4, lossOnly)).toBe(true);
+    expect(blockedByMinMoves('timeout', 'loss', 4, lossOnly)).toBe(false);
+    // Empate: sempre os dois, independentemente de "aplica a"; 0 desliga a regra.
+    expect(blockedByMinMoves('draw', 'draw', 4, { ...mm, draw: { minMoves: 10, appliesTo: 'loss' } })).toBe(true);
+    expect(blockedByMinMoves('repetition', 'draw', 4, { ...mm, repetition: { minMoves: 0, appliesTo: 'both' } })).toBe(false);
   });
 
   it('limite por adversário e teto diário', () => {

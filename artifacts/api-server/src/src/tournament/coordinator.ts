@@ -3,6 +3,7 @@ import * as service from './service.js';
 import { computeAllHistories } from './tiebreaks.js';
 import type { Tournament, GameResult, RoundMode, Color } from './types.js';
 import { getEngineStatus } from './engine.js';
+import { awardTournamentChampion } from '../rating/ratingService.js';
 
 // Reference to TournamentRoom for presence checks and sync
 let tournamentRoomInstance: { isPlayerPresent(playerId: string): boolean; syncFromCoordinator(): Promise<void> } | null = null;
@@ -31,6 +32,12 @@ export interface ForceStartPairing {
   timeCategory: string;
   timeLabel: string;
 }
+export interface GambitsAwardNotice {
+  gambits: number;
+  awarded: number;
+  reason: 'tournament_champion';
+  tournamentId: string;
+}
 export interface WorldRoomLike {
   roomName?: string;
   /** Região da sala; salas 'craft:*' (Mundo de Coleta) ficam FORA de presença/teleporte de torneio. */
@@ -39,6 +46,8 @@ export interface WorldRoomLike {
   hasPlayerById?(playerId: string): boolean;
   hasActivePlayerById?(playerId: string): boolean;
   teleportTournamentPlayersToReception(tournamentId: string): void;
+  /** Avisa um jogador presente na sala que o saldo de gambits mudou (retorna se ele estava lá). */
+  notifyGambitsAward?(playerId: string, payload: GambitsAwardNotice): boolean;
   tryForceStartTournamentMatch?(pairing: ForceStartPairing): 'started' | 'already' | 'missing' | 'busy';
   resolveTournamentWalkover?(boardId: string, result: string, whitePlayerId: string, blackPlayerId: string): void;
 }
@@ -65,6 +74,12 @@ function anyWorldRoomPlaying(boardId: string): boolean {
 }
 /** Salas do Mundo de Coleta não participam da mecânica de torneio. */
 const isCraftRoom = (room: WorldRoomLike) => (room.region || '').startsWith('craft:');
+/** Saldo novo de gambits para o jogador, em qualquer sala em que esteja (inclusive coleta). */
+function notifyGambitsAward(playerId: string, payload: GambitsAwardNotice): void {
+  for (const room of worldRooms) {
+    try { room.notifyGambitsAward?.(playerId, payload); } catch { /* disposed */ }
+  }
+}
 
 function teleportTournamentPlayers(tournamentId: string): void {
   for (const room of worldRooms) {
@@ -218,6 +233,14 @@ async function tick(): Promise<void> {
     await processTransitions();
   } catch (err) {
     console.error('[Coordinator] Tick error:', (err as Error).message);
+  }
+  // Em paralelo ao tick (nunca atrasa rodadas/presença); uma execução por vez.
+  if (!championReconcileInFlight && Date.now() - lastChampionReconcileAt >= CHAMPION_RECONCILE_INTERVAL_MS) {
+    championReconcileInFlight = true;
+    lastChampionReconcileAt = Date.now();
+    reconcileChampionAwards()
+      .catch((err) => console.error('[Coordinator] Champion reconcile error:', (err as Error).message))
+      .finally(() => { championReconcileInFlight = false; });
   }
   coordinatorTimer = setTimeout(() => tick(), 5000);
 }
@@ -816,6 +839,10 @@ async function transitionToCompleted(instance: TournamentInstance): Promise<void
       .update({ completed_at: new Date().toISOString() })
       .eq('id', instance.id);
     console.log(`[Coordinator] Tournament ${instance.id} completed`);
+    // Bônus do campeão: tentativa imediata; se falhar (crash, migração
+    // pendente, erro transitório), reconcileChampionAwards repete nos
+    // próximos ticks — o ledger garante exatamente um crédito por torneio.
+    await settleChampionAward(instance.id);
     // Move any players still inside the arena modules back to the reception
     // before the client removes the modules from the map. Only the tick that
     // wins the CAS teleports, so players are not teleported twice.
@@ -1188,6 +1215,101 @@ async function saveStandings(instanceId: string, swissId: string): Promise<void>
     if (insertError) {
       console.error('[Coordinator] saveStandings insert error:', insertError.message);
     }
+  }
+}
+
+// --- Bônus do campeão de torneio (gambits) ---
+//
+// O crédito em si é atômico e idempotente no banco (chessworld_award_gambits,
+// ledger `tournament:<id>`, um prêmio por torneio seja quem for o campeão).
+// Aqui garantimos que ele ACONTEÇA mesmo se o processo cair logo depois do
+// CAS finalizing → completed: a cada CHAMPION_RECONCILE_INTERVAL_MS, fora do
+// caminho crítico do tick, revisitamos os torneios concluídos nas últimas
+// 24 h que este processo ainda não confirmou (paginando todos, poucos prêmios
+// por rodada). Config 0 também grava uma linha (amount 0), então mudar a
+// config depois não premia torneios antigos.
+const CHAMPION_RECONCILE_INTERVAL_MS = 60_000;
+const CHAMPION_RECONCILE_WINDOW_MS = 24 * 60 * 60 * 1000;
+const CHAMPION_RECONCILE_PAGE = 100;
+const CHAMPION_RECONCILE_MAX_PAGES = 5;
+const CHAMPION_RECONCILE_MAX_AWARDS_PER_RUN = 5;
+let lastChampionReconcileAt = 0;
+let championReconcileInFlight = false;
+/** Torneios cujo bônus está resolvido (creditado, já creditado, ou sem o que premiar) — não consultar de novo neste processo. */
+const championAwardSettled = new Set<string>();
+/** Torneios já avisados no log por classificação ausente/inválida (evita spam a cada minuto). */
+const championAwardWarned = new Set<string>();
+
+/** Resolve o bônus de um torneio; devolve true quando não há mais nada a fazer por ele. */
+async function settleChampionAward(instanceId: string): Promise<boolean> {
+  if (championAwardSettled.has(instanceId)) return true;
+  const db = getClient();
+  try {
+    const { data, error } = await db
+      .from('tournament_standings')
+      .select('player_id, is_champion')
+      .eq('tournament_id', instanceId);
+    if (error) {
+      console.error(`[Coordinator] champion award: standings read failed for ${instanceId}:`, error.message);
+      return false;
+    }
+    const standings = (data ?? []) as Array<{ player_id: string | null; is_champion: boolean | null }>;
+    // Torneio de 1 jogador: nada a premiar (terminal).
+    if (standings.length === 1) {
+      championAwardSettled.add(instanceId);
+      return true;
+    }
+    const champion = standings.find((row) => row.is_champion);
+    // Classificação ausente/inválida num torneio concluído não é terminal:
+    // fica para a próxima rodada (janela de 24 h) e avisa uma vez.
+    if (standings.length === 0 || !champion || !champion.player_id) {
+      if (!championAwardWarned.has(instanceId)) {
+        championAwardWarned.add(instanceId);
+        console.warn(`[Coordinator] champion award: tournament ${instanceId} completed without a usable final standings (rows=${standings.length}) — will retry`);
+      }
+      return false;
+    }
+    const award = await awardTournamentChampion(instanceId, champion.player_id);
+    const done = award.status === 'applied' || award.status === 'already_awarded' || award.status === 'profile_missing';
+    if (done) championAwardSettled.add(instanceId);
+    if (award.status === 'applied' && award.amount > 0 && award.balance !== null) {
+      notifyGambitsAward(champion.player_id, { gambits: award.balance, awarded: award.amount, reason: 'tournament_champion', tournamentId: instanceId });
+    }
+    return done;
+  } catch (e) {
+    console.error(`[Coordinator] champion award error for ${instanceId}:`, (e as Error).message);
+    return false;
+  }
+}
+
+async function reconcileChampionAwards(): Promise<void> {
+  const db = getClient();
+  const since = new Date(Date.now() - CHAMPION_RECONCILE_WINDOW_MS).toISOString();
+  const pending: string[] = [];
+  for (let page = 0; page < CHAMPION_RECONCILE_MAX_PAGES; page++) {
+    const from = page * CHAMPION_RECONCILE_PAGE;
+    const { data, error } = await db
+      .from('tournament_instances')
+      .select('id')
+      .eq('status', 'completed')
+      .gte('completed_at', since)
+      .order('completed_at', { ascending: true })
+      .range(from, from + CHAMPION_RECONCILE_PAGE - 1);
+    if (error) {
+      console.error('[Coordinator] champion reconcile: instances read failed:', error.message);
+      return;
+    }
+    const rows = (data ?? []) as Array<{ id: string }>;
+    for (const row of rows) if (!championAwardSettled.has(row.id)) pending.push(row.id);
+    if (rows.length < CHAMPION_RECONCILE_PAGE) break;
+  }
+  // Poucos por rodada (o resto fica para o próximo minuto); os resolvidos
+  // saem da fila, então a fila sempre avança — sem starvation.
+  let attempts = 0;
+  for (const instanceId of pending) {
+    if (attempts >= CHAMPION_RECONCILE_MAX_AWARDS_PER_RUN) break;
+    attempts++;
+    await settleChampionAward(instanceId);
   }
 }
 

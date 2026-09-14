@@ -137,7 +137,78 @@ REVOKE ALL ON FUNCTION chessworld_settle_match(text, text, timestamptz, jsonb) F
 GRANT EXECUTE ON FUNCTION chessworld_settle_match(text, text, timestamptz, jsonb) TO service_role;`;
 
 /**
- * Migração completa — segura para rodar de novo (IF NOT EXISTS / OR REPLACE;
+ * Prêmio avulso de gambits (hoje: bônus do campeão de torneio) — ledger +
+ * saldo numa transação, idempotente por (match_id, player_id) e, para o
+ * campeão, um único prêmio por torneio (match_id) seja quem for o jogador.
+ * Sem adversário (opponent_id NULL) e sem limite por adversário; o teto
+ * diário, se houver, é aplicado aqui dentro com o perfil travado.
+ */
+export const GAMBIT_AWARD_FUNCTION_SQL = `CREATE OR REPLACE FUNCTION chessworld_award_gambits(
+  p_match_id text,
+  p_player_id uuid,
+  p_amount integer,
+  p_kind text,
+  p_day_start timestamptz,
+  p_daily_cap integer,
+  p_awarded_at timestamptz
+)
+RETURNS jsonb
+LANGUAGE plpgsql
+SET search_path = public
+AS $$
+DECLARE
+  v_earned integer;
+  v_amount integer;
+  v_reason text;
+  v_balance integer;
+BEGIN
+  IF p_match_id IS NULL OR p_match_id = '' OR p_player_id IS NULL THEN
+    RAISE EXCEPTION 'chessworld_award_gambits: match_id e player_id são obrigatórios';
+  END IF;
+
+  PERFORM 1 FROM profiles WHERE user_id = p_player_id FOR UPDATE;
+  IF NOT FOUND THEN
+    RETURN jsonb_build_object('status', 'profile_missing', 'player_id', p_player_id);
+  END IF;
+  -- Idempotência: mesmo jogador no mesmo match_id; e o bônus de campeão é
+  -- UM por torneio, seja quem for o jogador (índice parcial garante sob
+  -- concorrência → unique_violation → already_awarded).
+  IF EXISTS (
+    SELECT 1 FROM gambit_awards
+    WHERE match_id = p_match_id
+      AND (player_id = p_player_id OR (p_kind = 'tournament_champion' AND kind = 'tournament_champion'))
+  ) THEN
+    RETURN jsonb_build_object('status', 'already_awarded');
+  END IF;
+
+  v_amount := GREATEST(COALESCE(p_amount, 0), 0);
+  v_reason := CASE WHEN v_amount > 0 THEN 'awarded' ELSE 'zero' END;
+  IF p_daily_cap IS NOT NULL AND v_amount > 0 THEN
+    SELECT COALESCE(SUM(amount), 0) INTO v_earned
+      FROM gambit_awards
+      WHERE player_id = p_player_id AND created_at >= p_day_start;
+    IF v_earned + v_amount > p_daily_cap THEN
+      v_amount := GREATEST(p_daily_cap - v_earned, 0);
+      v_reason := 'daily_cap';
+    END IF;
+  END IF;
+
+  INSERT INTO gambit_awards (player_id, match_id, opponent_id, amount, kind, reason, created_at)
+  VALUES (p_player_id, p_match_id, NULL, v_amount, p_kind, v_reason, COALESCE(p_awarded_at, now()));
+  UPDATE profiles SET gambits = gambits + v_amount, updated_at = now()
+    WHERE user_id = p_player_id
+    RETURNING gambits INTO v_balance;
+
+  RETURN jsonb_build_object('status', 'applied', 'amount', v_amount, 'reason', v_reason, 'gambits', v_balance);
+EXCEPTION WHEN unique_violation THEN
+  RETURN jsonb_build_object('status', 'already_awarded');
+END;
+$$;
+REVOKE ALL ON FUNCTION chessworld_award_gambits(text, uuid, integer, text, timestamptz, integer, timestamptz) FROM PUBLIC, anon, authenticated;
+GRANT EXECUTE ON FUNCTION chessworld_award_gambits(text, uuid, integer, text, timestamptz, integer, timestamptz) TO service_role;`;
+
+/**
+ * Migração completa — segura para rodar de novo (IF NOT EXISTS / OR REPLACE / ALTER idempotente;
  * o passo 6 só toca quem ainda não tem partida avaliada pelo Glicko-2, então
  * na primeira execução zera TODOS ao estado inicial 1200/350/0.06 e depois
  * nunca mais apaga rating de ninguém). Rodar no SQL editor do Supabase.
@@ -179,7 +250,7 @@ CREATE TABLE IF NOT EXISTS gambit_awards (
   id bigserial PRIMARY KEY,
   player_id uuid NOT NULL,
   match_id text NOT NULL,
-  opponent_id uuid NOT NULL,
+  opponent_id uuid NULL,
   amount integer NOT NULL,
   kind text NOT NULL,
   reason text NOT NULL DEFAULT 'awarded',
@@ -188,6 +259,10 @@ CREATE TABLE IF NOT EXISTS gambit_awards (
 );
 CREATE INDEX IF NOT EXISTS gambit_awards_player_day_idx ON gambit_awards (player_id, created_at DESC);
 ALTER TABLE gambit_awards ENABLE ROW LEVEL SECURITY;
+-- prêmios sem adversário (bônus de campeão de torneio): um por torneio, seja quem for o campeão
+ALTER TABLE gambit_awards ALTER COLUMN opponent_id DROP NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS gambit_awards_tournament_champion_idx
+  ON gambit_awards (match_id) WHERE kind = 'tournament_champion';
 
 -- 4) Config do admin
 ${RATING_CONFIG_TABLE_SQL}
@@ -209,7 +284,10 @@ WHERE chess_rated_games_played = 0
   AND NOT EXISTS (SELECT 1 FROM chess_rating_history h WHERE h.player_id = profiles.user_id);
 
 -- 7) Liquidação atômica (histórico + ledger + perfil numa transação)
-${RATING_SETTLE_FUNCTION_SQL}`;
+${RATING_SETTLE_FUNCTION_SQL}
+
+-- 8) Prêmio avulso (bônus do campeão de torneio): ledger + saldo numa transação
+${GAMBIT_AWARD_FUNCTION_SQL}`;
 
 const CACHE_TTL_MS = 30_000;
 

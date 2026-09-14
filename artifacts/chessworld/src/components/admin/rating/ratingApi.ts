@@ -1,6 +1,6 @@
 /**
  * HTTP client da página /admin/rating-gambits (Supabase JWT, admin):
- *   GET  {base}/api/admin/rating-config           → { config, saved, updatedAt, tableMissing, tableSql?, schemaReady, schemaError, migrationSql }
+ *   GET  {base}/api/admin/rating-config           → { config, saved, updatedAt, tableMissing, tableSql?, schemaReady, schemaCoreReady, schemaError, migrationSql }
  *   PUT  {base}/api/admin/rating-config           → { config }
  *   POST {base}/api/admin/rating-config/reset-all → { count }
  */
@@ -15,8 +15,10 @@ export interface RatingConfigResponse {
   updatedAt: string | null;
   tableMissing: boolean;
   tableSql?: string;
-  /** true = colunas Glicko-2/gambits presentes em profiles e tabelas auxiliares criadas. */
+  /** true = colunas Glicko-2/gambits, tabelas, liquidação e bônus de campeão prontos. */
   schemaReady: boolean;
+  /** true = colunas + liquidação prontas (partidas avaliadas), mesmo que falte a função do bônus de campeão. Servidores antigos não mandam. */
+  schemaCoreReady?: boolean;
   schemaError: string | null;
   /** Migração completa (idempotente) para colar no editor SQL do Supabase. */
   migrationSql: string;

@@ -195,6 +195,67 @@ export async function settleMatchAtomic(
   return { ok: status === 'applied', status, gambits, schemaMissing: false, error: null };
 }
 
+export type AwardStatus = 'applied' | 'already_awarded' | 'profile_missing';
+
+export interface AwardGambitsResult {
+  ok: boolean;
+  status: AwardStatus | null;
+  /** Quanto foi creditado de fato (teto diário pode reduzir) e o saldo resultante — só em `applied`. */
+  amount: number;
+  reason: GambitAwardReason | null;
+  balance: number | null;
+  schemaMissing: boolean;
+  error: string | null;
+}
+
+/**
+ * `chessworld_award_gambits`: prêmio avulso (sem adversário) — ledger + saldo
+ * numa transação, idempotente por (matchId, playerId). O teto diário é
+ * aplicado dentro da função com o perfil travado.
+ */
+export async function awardGambitsAtomic(input: {
+  matchId: string;
+  playerId: string;
+  amount: number;
+  kind: string;
+  dayStartIso: string;
+  dailyCap: number | null;
+  awardedAtIso: string;
+}): Promise<AwardGambitsResult> {
+  const { client, error: unavailable } = requireClient();
+  const fail = (error: string | null, schemaMissing = false): AwardGambitsResult =>
+    ({ ok: false, status: null, amount: 0, reason: null, balance: null, schemaMissing, error });
+  if (!client) return fail(unavailable);
+  const { data, error } = await client.rpc('chessworld_award_gambits', {
+    p_match_id: input.matchId,
+    p_player_id: input.playerId,
+    p_amount: input.amount,
+    p_kind: input.kind,
+    p_day_start: input.dayStartIso,
+    p_daily_cap: input.dailyCap,
+    p_awarded_at: input.awardedAtIso,
+  });
+  if (error) {
+    const schemaMissing = isFunctionMissing(error.code) || isTableMissing(error.code) || isColumnMissing(error.code, error.message);
+    return fail(schemaMissing ? null : error.message, schemaMissing);
+  }
+  const body = (data ?? null) as { status?: unknown; amount?: unknown; reason?: unknown; gambits?: unknown } | null;
+  const status = body?.status;
+  if (status !== 'applied' && status !== 'already_awarded' && status !== 'profile_missing') {
+    return fail(`Resposta inválida de chessworld_award_gambits: ${JSON.stringify(body)}`);
+  }
+  const reason = body?.reason;
+  return {
+    ok: status === 'applied',
+    status,
+    amount: status === 'applied' ? num(body?.amount, 0) : 0,
+    reason: reason === 'awarded' || reason === 'daily_cap' || reason === 'zero' ? reason : null,
+    balance: status === 'applied' ? num(body?.gambits, 0) : null,
+    schemaMissing: false,
+    error: null,
+  };
+}
+
 // ---------------------------------------------------------------- histórico
 
 export interface RatingHistoryRow {
@@ -252,19 +313,49 @@ export async function resetAllRatings(initial: { rating: number; ratingDeviation
  * `chessworld_settle_match` (chamada com payload vazio: a função existe se
  * responder com a própria exceção de validação, P0001).
  */
-export async function ratingSchemaReady(): Promise<{ ready: boolean; error: string | null }> {
+export interface RatingSchemaStatus {
+  /** Tudo pronto (colunas, liquidação e bônus de campeão). */
+  ready: boolean;
+  /** Colunas + função de liquidação prontas: as partidas são avaliadas mesmo que o resto falte. */
+  coreReady: boolean;
+  error: string | null;
+}
+
+export async function ratingSchemaReady(): Promise<RatingSchemaStatus> {
   const { client, error: unavailable } = requireClient();
-  if (!client) return { ready: false, error: unavailable };
+  if (!client) return { ready: false, coreReady: false, error: unavailable };
   const { error } = await client.from('profiles').select('chess_rating').limit(1);
   if (error) {
-    if (isColumnMissing(error.code, error.message)) return { ready: false, error: null };
-    return { ready: false, error: error.message };
+    if (isColumnMissing(error.code, error.message)) return { ready: false, coreReady: false, error: null };
+    return { ready: false, coreReady: false, error: error.message };
   }
-  const probe = await client.rpc('chessworld_settle_match', { p_match_id: '', p_kind: 'plaza', p_settled_at: new Date().toISOString(), p_players: [] });
-  if (!probe.error) return { ready: false, error: 'chessworld_settle_match respondeu a um payload vazio — versão inesperada da função' };
-  if (isFunctionMissing(probe.error.code)) return { ready: false, error: 'função chessworld_settle_match ausente' };
-  if (probe.error.code === 'P0001') return { ready: true, error: null };
-  return { ready: false, error: probe.error.message };
+  const probes: Array<{ name: string; hint: string; run: () => PromiseLike<{ error: { code?: string; message: string } | null }> }> = [
+    {
+      name: 'chessworld_settle_match',
+      hint: 'liquidação das partidas',
+      run: () => client.rpc('chessworld_settle_match', { p_match_id: '', p_kind: 'plaza', p_settled_at: new Date().toISOString(), p_players: [] }),
+    },
+    {
+      name: 'chessworld_award_gambits',
+      hint: 'bônus do campeão de torneio',
+      run: () => client.rpc('chessworld_award_gambits', { p_match_id: '', p_player_id: null, p_amount: 0, p_kind: 'probe', p_day_start: new Date().toISOString(), p_daily_cap: null, p_awarded_at: new Date().toISOString() }),
+    },
+  ];
+  // coreReady = colunas + liquidação (partidas são avaliadas); ready = tudo,
+  // inclusive o bônus de campeão (função adicionada depois).
+  let coreReady = true;
+  for (const probe of probes) {
+    const { error: probeError } = await probe.run();
+    let failure: string | null = null;
+    if (!probeError) failure = `${probe.name} respondeu a um payload vazio — versão inesperada da função`;
+    else if (isFunctionMissing(probeError.code)) failure = `função ${probe.name} (${probe.hint}) ausente — rode o SQL de migração de novo`;
+    else if (probeError.code !== 'P0001') failure = probeError.message;
+    if (failure) {
+      if (probe.name === 'chessworld_settle_match') coreReady = false;
+      return { ready: false, coreReady, error: failure };
+    }
+  }
+  return { ready: true, coreReady: true, error: null };
 }
 
 // ------------------------------------------------------------------ gambits

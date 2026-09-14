@@ -3,8 +3,9 @@
  *
  * Um documento salvo de uma vez (botão Salvar):
  *   Rating  → parâmetros Glicko-2 (τ, piso, estado inicial, provisório, inatividade).
- *   Gambits → prêmios por resultado (praça/torneio), limite por adversário/dia,
- *             teto diário (∞ ou número) e a hora em que o "dia" vira.
+ *   Gambits → prêmios por resultado (praça e torneio valem igual), bônus do
+ *             campeão de torneio, lances mínimos por motivo de fim, limite por
+ *             adversário/dia, teto diário (∞ ou número) e a hora em que o "dia" vira.
  * Mais a migração SQL (colunas em profiles + tabelas) e o reset em massa.
  */
 import { useCallback, useEffect, useMemo, useState } from 'react';
@@ -12,8 +13,11 @@ import { Link } from 'react-router-dom';
 import { AlertTriangle, ArrowLeft, Loader2, RefreshCw, RotateCcw, Save, Star, Swords } from 'lucide-react';
 import {
   DEFAULT_RATING_GAMBITS_CONFIG,
+  MIN_MOVES_REASONS,
   RATING_RANGES,
   parseRatingGambitsConfig,
+  type MinMovesAppliesTo,
+  type MinMovesReason,
   type RatingGambitsConfig,
 } from '../../../shared/rating/RatingShapes';
 import { useDocumentScrollUnlock } from '../../../hooks/useDocumentScrollUnlock';
@@ -22,6 +26,14 @@ import { Block, NumberField, Row, Section, SqlBanner, SqlBox, buttonClass, input
 import { ratingApi } from './ratingApi';
 
 const clone = (config: RatingGambitsConfig): RatingGambitsConfig => JSON.parse(JSON.stringify(config)) as RatingGambitsConfig;
+
+const MIN_MOVES_LABEL: Record<MinMovesReason, { label: string; detail: string; isDraw: boolean }> = {
+  resign: { label: 'Desistência', detail: 'inclui abandono da partida', isDraw: false },
+  timeout: { label: 'Tempo esgotado', detail: 'derrota no relógio', isDraw: false },
+  draw: { label: 'Empate por acordo', detail: 'vale para os dois', isDraw: true },
+  repetition: { label: 'Repetição tripla', detail: 'vale para os dois', isDraw: true },
+};
+const APPLIES_TO_LABEL: Record<MinMovesAppliesTo, string> = { loss: 'Derrota', win: 'Vitória', both: 'Ambos' };
 
 export function RatingGambitsPage() {
   useDocumentScrollUnlock();
@@ -35,6 +47,7 @@ export function RatingGambitsPage() {
   const [persisted, setPersisted] = useState(true);
   const [tableSql, setTableSql] = useState<string | null>(null);
   const [schemaReady, setSchemaReady] = useState(true);
+  const [schemaCoreReady, setSchemaCoreReady] = useState(true);
   const [schemaError, setSchemaError] = useState<string | null>(null);
   const [migrationSql, setMigrationSql] = useState<string | null>(null);
   const [showMigration, setShowMigration] = useState(false);
@@ -68,6 +81,7 @@ export function RatingGambitsPage() {
       setTableMissing(res.tableMissing);
       setTableSql(res.tableMissing ? (res.tableSql ?? null) : null);
       setSchemaReady(res.schemaReady !== false);
+      setSchemaCoreReady(res.schemaCoreReady !== undefined ? res.schemaCoreReady : res.schemaReady !== false);
       setSchemaError(res.schemaError ?? null);
       setMigrationSql(res.migrationSql ?? null);
     } catch (cause) {
@@ -185,7 +199,11 @@ export function RatingGambitsPage() {
 
         {!schemaReady && (
           <SqlBanner
-            text={`Migração pendente: as colunas de rating/gambits, as tabelas de histórico/ledger ou a função de liquidação ainda não existem no banco${schemaError ? ` (${schemaError})` : ''}. Rode o SQL abaixo no editor do Supabase (pode rodar de novo sem apagar rating de quem já jogou) — enquanto isso as partidas terminam sem rating e sem gambits.`}
+            text={
+              schemaError?.includes('chessworld_award_gambits')
+                ? `Atualização pendente: a função do bônus de campeão de torneio (chessworld_award_gambits) ainda não existe no banco (${schemaError}). Rode o SQL abaixo de novo no editor do Supabase (seguro repetir, não apaga rating de ninguém) — enquanto isso as partidas continuam sendo avaliadas normalmente; só o bônus de campeão não é creditado.`
+                : `Migração pendente: as colunas de rating/gambits, as tabelas de histórico/ledger ou a função de liquidação ainda não existem no banco${schemaError ? ` (${schemaError})` : ''}. Rode o SQL abaixo no editor do Supabase (pode rodar de novo sem apagar rating de quem já jogou) — enquanto isso as partidas terminam sem rating e sem gambits.`
+            }
             sql={migrationSql}
           />
         )}
@@ -251,12 +269,9 @@ export function RatingGambitsPage() {
             icon={<div className="rounded-lg border border-emerald-500/30 bg-emerald-500/10 p-2"><Swords className="h-4 w-4 text-emerald-300" /></div>}
           >
             <div className="space-y-3">
-              <Block title="Prêmios por resultado">
-                <Row label="Vitória na praça">
-                  <NumberField value={g.plazaWin} onChange={(v) => update((d) => { d.gambits.plazaWin = v; })} range={RATING_RANGES.gambitAmount} disabled={disabled} />
-                </Row>
-                <Row label="Vitória em torneio">
-                  <NumberField value={g.tournamentWin} onChange={(v) => update((d) => { d.gambits.tournamentWin = v; })} range={RATING_RANGES.gambitAmount} disabled={disabled} />
+              <Block title="Prêmios por resultado" hint="Partida de torneio vale o mesmo que partida da praça. O campeão ganha o bônus por cima, uma vez por torneio.">
+                <Row label="Vitória" detail="praça ou torneio">
+                  <NumberField value={g.win} onChange={(v) => update((d) => { d.gambits.win = v; })} range={RATING_RANGES.gambitAmount} disabled={disabled} />
                 </Row>
                 <Row label="Empate" detail="praça ou torneio">
                   <NumberField value={g.draw} onChange={(v) => update((d) => { d.gambits.draw = v; })} range={RATING_RANGES.gambitAmount} disabled={disabled} />
@@ -264,6 +279,38 @@ export function RatingGambitsPage() {
                 <Row label="Derrota" detail="praça ou torneio">
                   <NumberField value={g.loss} onChange={(v) => update((d) => { d.gambits.loss = v; })} range={RATING_RANGES.gambitAmount} disabled={disabled} />
                 </Row>
+                <Row label="Campeão de torneio" detail="bônus do 1º colocado ao fim do torneio (0 = sem bônus)">
+                  <NumberField value={g.tournamentChampion} onChange={(v) => update((d) => { d.gambits.tournamentChampion = v; })} range={RATING_RANGES.gambitAmount} disabled={disabled} />
+                </Row>
+              </Block>
+              <Block title="Lances mínimos para valer gambits" hint="Lance completo = jogada das brancas + das pretas. Abaixo do mínimo, quem a regra alcança não ganha gambits (o rating não muda). Xeque-mate, afogamento e material insuficiente nunca têm mínimo. 0 = sem mínimo.">
+                {MIN_MOVES_REASONS.map((reason) => {
+                  const meta = MIN_MOVES_LABEL[reason];
+                  const rule = g.minMoves[reason];
+                  return (
+                    <Row key={reason} label={meta.label} detail={meta.detail}>
+                      <NumberField
+                        value={rule.minMoves}
+                        onChange={(v) => update((d) => { d.gambits.minMoves[reason].minMoves = v; })}
+                        range={RATING_RANGES.minMoves}
+                        suffix="lances"
+                        disabled={disabled}
+                      />
+                      <select
+                        value={meta.isDraw ? 'both' : rule.appliesTo}
+                        onChange={(e) => update((d) => { d.gambits.minMoves[reason].appliesTo = e.target.value as MinMovesAppliesTo; })}
+                        disabled={disabled || meta.isDraw}
+                        title={meta.isDraw ? 'Empate não tem vencedor: vale para os dois jogadores' : 'A quem a regra se aplica'}
+                        className={inputClass}
+                        data-testid={`min-moves-applies-${reason}`}
+                      >
+                        {(Object.keys(APPLIES_TO_LABEL) as MinMovesAppliesTo[]).map((option) => (
+                          <option key={option} value={option}>{APPLIES_TO_LABEL[option]}</option>
+                        ))}
+                      </select>
+                    </Row>
+                  );
+                })}
               </Block>
               <Block title="Limites diários" hint="Contra o mesmo adversário só as N primeiras partidas do dia rendem gambits (0 = nunca). O teto diário limita o total do jogador no dia.">
                 <Row label="Cada adversário conta quantas vezes por dia?">
@@ -303,7 +350,7 @@ export function RatingGambitsPage() {
               <button
                 type="button"
                 onClick={() => setConfirmReset(true)}
-                disabled={disabled || !schemaReady}
+                disabled={disabled || !schemaCoreReady}
                 className={`${buttonClass} border border-rose-500/40 bg-rose-500/10 text-rose-200 hover:bg-rose-500/20`}
                 data-testid="reset-all-ratings"
               >

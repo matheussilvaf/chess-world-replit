@@ -102,7 +102,9 @@ export function MatchRatingCard() {
                       ? 'Sem gambits: limite diário contra este adversário'
                       : p.gambitsReason === 'daily_cap'
                         ? 'Sem gambits: teto diário atingido'
-                        : 'Sem gambits nesta partida'}
+                        : p.gambitsReason === 'min_moves'
+                          ? 'Sem gambits: partida curta demais (mínimo de lances)'
+                          : 'Sem gambits nesta partida'}
                 </div>
               </li>
             );

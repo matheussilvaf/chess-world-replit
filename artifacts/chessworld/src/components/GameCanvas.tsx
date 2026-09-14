@@ -811,11 +811,15 @@ export function GameCanvas() {
       if (typeof data?.crowns === 'number') useWalletStore.getState().setCrowns(data.crowns);
     });
     // Gambits/rating server-authoritative: saldo no join e depois de cada prêmio/débito.
-    const removeGambitsUpdate = room.onMessage('gambits_update', (data: { gambits?: number; rating?: number }) => {
+    const removeGambitsUpdate = room.onMessage('gambits_update', (data: { gambits?: number; rating?: number; awarded?: number; reason?: string }) => {
       const patch: { gambits?: number; rating?: number } = {};
       if (typeof data?.gambits === 'number') patch.gambits = data.gambits;
       if (typeof data?.rating === 'number') patch.rating = data.rating;
       if (Object.keys(patch).length > 0) useAuthStore.getState().patchProfile(patch);
+      // Bônus do campeão de torneio (creditado pelo coordinator ao fim do torneio).
+      if (data?.reason === 'tournament_champion' && typeof data.awarded === 'number' && data.awarded > 0) {
+        usePlacedStationsStore.getState().pushNotice('success', `Campeão do torneio! +${data.awarded} gambit${data.awarded === 1 ? '' : 's'} de bônus.`);
+      }
     });
     // Resultado de rating da partida (old → new / Δ dos dois) — card pós-partida + perfil atualizado.
     const removeRatingUpdate = room.onMessage('chess_rating_update', (data: ChessRatingUpdateMessage) => {
