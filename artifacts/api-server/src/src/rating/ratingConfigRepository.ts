@@ -22,8 +22,125 @@ export const RATING_CONFIG_TABLE_SQL = `CREATE TABLE IF NOT EXISTS chess_rating_
 ALTER TABLE chess_rating_config ENABLE ROW LEVEL SECURITY;`;
 
 /**
- * Migração completa (idempotente). Rodar UMA vez no SQL editor do Supabase.
- * O reset final coloca TODOS os jogadores no estado inicial 1200/350/0.06.
+ * Liquidação ATÔMICA de uma partida (uma transação): trava os dois perfis em
+ * ordem fixa, confere idempotência (histórico) e o estado pré-partida usado no
+ * cálculo (CAS em chess_rated_games_played + contadores do ledger do dia),
+ * depois grava histórico + ledger + perfil dos dois. Qualquer falha desfaz
+ * tudo — nunca fica histórico sem perfil atualizado nem prêmio sem saldo.
+ * O cálculo (Glicko-2 e limites de gambits) continua no servidor Node; o SQL
+ * só verifica que as premissas ainda valem e devolve 'conflict' se não.
+ */
+export const RATING_SETTLE_FUNCTION_SQL = `CREATE OR REPLACE FUNCTION chessworld_settle_match(
+  p_match_id text,
+  p_kind text,
+  p_settled_at timestamptz,
+  p_players jsonb
+)
+RETURNS jsonb
+LANGUAGE plpgsql
+SET search_path = public
+AS $$
+DECLARE
+  v_ids uuid[];
+  v_id uuid;
+  v_player jsonb;
+  v_current integer;
+  v_games_today integer;
+  v_earned_today integer;
+  v_balance integer;
+  v_balances jsonb := '{}'::jsonb;
+BEGIN
+  IF jsonb_typeof(p_players) <> 'array' OR jsonb_array_length(p_players) <> 2 THEN
+    RAISE EXCEPTION 'chessworld_settle_match: esperados exatamente 2 jogadores';
+  END IF;
+  SELECT array_agg(pid ORDER BY pid) INTO v_ids
+    FROM (SELECT (e->>'player_id')::uuid AS pid FROM jsonb_array_elements(p_players) e) s;
+  IF v_ids[1] = v_ids[2] THEN
+    RAISE EXCEPTION 'chessworld_settle_match: jogadores iguais';
+  END IF;
+
+  -- 1) Trava os dois perfis sempre na mesma ordem (sem deadlock entre liquidações simultâneas).
+  FOREACH v_id IN ARRAY v_ids LOOP
+    PERFORM 1 FROM profiles WHERE user_id = v_id FOR UPDATE;
+    IF NOT FOUND THEN
+      RETURN jsonb_build_object('status', 'profile_missing', 'player_id', v_id);
+    END IF;
+  END LOOP;
+
+  -- 2) Idempotência: a partida já foi liquidada (por este ou outro processo)?
+  IF EXISTS (SELECT 1 FROM chess_rating_history WHERE match_id = p_match_id) THEN
+    RETURN jsonb_build_object('status', 'already_settled');
+  END IF;
+
+  -- 3) As premissas do cálculo ainda valem? (estado pré-partida dos dois + ledger do dia)
+  FOR v_player IN SELECT * FROM jsonb_array_elements(p_players) LOOP
+    v_id := (v_player->>'player_id')::uuid;
+    SELECT chess_rated_games_played INTO v_current FROM profiles WHERE user_id = v_id;
+    IF v_current IS DISTINCT FROM (v_player->>'expected_rated_games')::integer THEN
+      RETURN jsonb_build_object('status', 'conflict', 'player_id', v_id, 'field', 'rated_games');
+    END IF;
+    SELECT COUNT(*) FILTER (WHERE opponent_id = (v_player->>'opponent_id')::uuid AND amount > 0),
+           COALESCE(SUM(amount), 0)
+      INTO v_games_today, v_earned_today
+      FROM gambit_awards
+      WHERE player_id = v_id AND created_at >= (v_player->>'day_start')::timestamptz;
+    IF v_games_today <> (v_player->>'expected_opponent_games_today')::integer
+       OR v_earned_today <> (v_player->>'expected_earned_today')::integer THEN
+      RETURN jsonb_build_object('status', 'conflict', 'player_id', v_id, 'field', 'gambit_day');
+    END IF;
+  END LOOP;
+
+  -- 4) Grava tudo (histórico + ledger + perfil) dos dois jogadores.
+  FOR v_player IN SELECT * FROM jsonb_array_elements(p_players) LOOP
+    v_id := (v_player->>'player_id')::uuid;
+    INSERT INTO chess_rating_history (
+      player_id, match_id, opponent_id, result, rating_before, rating_after, rating_delta,
+      rd_before, rd_after, volatility_after, opponent_rating_before, match_kind, created_at
+    ) VALUES (
+      v_id, p_match_id, (v_player->>'opponent_id')::uuid, v_player->>'result',
+      (v_player->>'rating_before')::double precision, (v_player->>'rating_after')::double precision,
+      (v_player->>'rating_delta')::double precision, (v_player->>'rd_before')::double precision,
+      (v_player->>'rd_after')::double precision, (v_player->>'volatility_after')::double precision,
+      (v_player->>'opponent_rating_before')::double precision, p_kind, p_settled_at
+    );
+    INSERT INTO gambit_awards (player_id, match_id, opponent_id, amount, kind, reason, created_at)
+    VALUES (
+      v_id, p_match_id, (v_player->>'opponent_id')::uuid, (v_player->>'gambits_amount')::integer,
+      p_kind, v_player->>'gambits_reason', p_settled_at
+    );
+    UPDATE profiles SET
+      rating = ROUND((v_player->>'rating_after')::double precision)::integer,
+      chess_rating = (v_player->>'rating_after')::double precision,
+      chess_rating_deviation = (v_player->>'rd_after')::double precision,
+      chess_rating_volatility = (v_player->>'volatility_after')::double precision,
+      chess_rated_games_played = chess_rated_games_played + 1,
+      chess_peak_rating = GREATEST(chess_peak_rating, (v_player->>'rating_after')::double precision),
+      chess_last_rated_at = p_settled_at,
+      wins = COALESCE(wins, 0) + CASE WHEN v_player->>'result' = 'win' THEN 1 ELSE 0 END,
+      losses = COALESCE(losses, 0) + CASE WHEN v_player->>'result' = 'loss' THEN 1 ELSE 0 END,
+      draws = COALESCE(draws, 0) + CASE WHEN v_player->>'result' = 'draw' THEN 1 ELSE 0 END,
+      games_played = COALESCE(games_played, 0) + 1,
+      gambits = gambits + GREATEST((v_player->>'gambits_amount')::integer, 0),
+      updated_at = now()
+    WHERE user_id = v_id
+    RETURNING gambits INTO v_balance;
+    v_balances := v_balances || jsonb_build_object(v_id::text, v_balance);
+  END LOOP;
+
+  RETURN jsonb_build_object('status', 'applied', 'gambits', v_balances);
+EXCEPTION WHEN unique_violation THEN
+  -- Outro processo gravou o histórico entre a checagem e o insert: nada foi aplicado aqui.
+  RETURN jsonb_build_object('status', 'already_settled');
+END;
+$$;
+REVOKE ALL ON FUNCTION chessworld_settle_match(text, text, timestamptz, jsonb) FROM PUBLIC, anon, authenticated;
+GRANT EXECUTE ON FUNCTION chessworld_settle_match(text, text, timestamptz, jsonb) TO service_role;`;
+
+/**
+ * Migração completa — segura para rodar de novo (IF NOT EXISTS / OR REPLACE;
+ * o passo 6 só toca quem ainda não tem partida avaliada pelo Glicko-2, então
+ * na primeira execução zera TODOS ao estado inicial 1200/350/0.06 e depois
+ * nunca mais apaga rating de ninguém). Rodar no SQL editor do Supabase.
  */
 export const RATING_MIGRATION_SQL = `-- 1) Rating Glicko-2 + gambits no perfil
 ALTER TABLE profiles
@@ -79,15 +196,20 @@ ${RATING_CONFIG_TABLE_SQL}
 CREATE INDEX IF NOT EXISTS matches_colyseus_match_id_idx ON matches (colyseus_match_id);
 CREATE INDEX IF NOT EXISTS matches_created_at_idx ON matches (created_at DESC);
 
--- 6) Reset de TODOS os jogadores ao estado inicial
+-- 6) Estado inicial para quem ainda não tem partida avaliada (na 1ª execução = todos;
+--    rodar de novo depois NÃO apaga rating de quem já jogou)
 UPDATE profiles SET
   rating = 1200,
   chess_rating = 1200,
   chess_rating_deviation = 350,
   chess_rating_volatility = 0.06,
-  chess_rated_games_played = 0,
   chess_peak_rating = 1200,
-  chess_last_rated_at = NULL;`;
+  chess_last_rated_at = NULL
+WHERE chess_rated_games_played = 0
+  AND NOT EXISTS (SELECT 1 FROM chess_rating_history h WHERE h.player_id = profiles.user_id);
+
+-- 7) Liquidação atômica (histórico + ledger + perfil numa transação)
+${RATING_SETTLE_FUNCTION_SQL}`;
 
 const CACHE_TTL_MS = 30_000;
 

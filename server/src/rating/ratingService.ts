@@ -4,15 +4,22 @@
  * gambits — tudo server-authoritative, disparado pela sala em
  * `broadcastMatchEnd` (praça e torneio passam pelo mesmo caminho).
  *
- * Idempotência (uma partida nunca conta duas vezes):
- *   1. cache em memória por matchId (mesmo processo);
- *   2. UNIQUE (match_id, player_id) em `chess_rating_history` — o insert do
- *      histórico acontece ANTES de tocar no perfil; violação = já aplicado
- *      (outro processo/replica) e nada mais é escrito;
- *   3. UNIQUE (match_id, player_id) em `gambit_awards` para o prêmio.
+ * Escrita: UMA chamada à função SQL `chessworld_settle_match` (transação com
+ * lock nos dois perfis) que grava histórico + ledger + perfil dos dois — nunca
+ * fica histórico sem perfil, nem prêmio no ledger sem saldo.
  *
- * Antes da migração SQL (colunas/tabelas ausentes) o serviço só loga e devolve
- * `rated: false, reason: 'migration_pending'` — a partida termina normalmente.
+ * Idempotência (uma partida nunca conta duas vezes):
+ *   1. promessa em voo + cache de resultado por matchId (mesmo processo);
+ *   2. dentro da transação: histórico já existente para o matchId (ou UNIQUE
+ *      (match_id, player_id) violado) → 'already_settled', nada é escrito.
+ *
+ * Concorrência entre partidas diferentes do mesmo jogador: o Node calcula a
+ * partir de um snapshot (perfis + ledger do dia) e a função confere que o
+ * snapshot ainda vale (CAS em chess_rated_games_played e nos contadores do
+ * dia); 'conflict' → relê e recalcula (até MAX_ATTEMPTS = 3 vezes).
+ *
+ * Antes da migração SQL (colunas/tabelas/função ausentes) o serviço só loga e
+ * devolve `rated: false, reason: 'migration_pending'` — a partida termina normalmente.
  */
 import {
   calculateGlicko2Rating,
@@ -36,14 +43,11 @@ import {
 } from '../shared/rating/RatingShapes.js';
 import { getRatingConfigCached } from './ratingConfigRepository.js';
 import {
-  changeGambits,
   getGambitDayStats,
   getLegacyRating,
   getRatingProfiles,
-  insertGambitAward,
-  insertRatingHistory,
-  updateRatingProfile,
-  type RatingHistoryInsert,
+  settleMatchAtomic,
+  type SettlePlayerWrite,
 } from './ratingRepository.js';
 
 export interface SettleMatchInput {
@@ -65,8 +69,16 @@ export interface SettleMatchResult {
 }
 
 const MAX_CACHE = 2_000;
+const MAX_ATTEMPTS = 3;
 const settled = new Map<string, SettleMatchResult>();
+const inFlight = new Map<string, Promise<SettleMatchResult>>();
 let migrationWarned = false;
+
+function warnMigrationOnce(detail: string): void {
+  if (migrationWarned) return;
+  migrationWarned = true;
+  console.warn(`[rating] ${detail} — rode a migração SQL do admin (/admin/rating-gambits). Partidas não estão sendo avaliadas.`);
+}
 
 function remember(matchId: string, result: SettleMatchResult): SettleMatchResult {
   if (settled.size >= MAX_CACHE) {
@@ -113,165 +125,134 @@ function computeSide(
   return { profile, opponent, outcome, preRd, opponentPreRd, next };
 }
 
-export async function settleMatch(input: SettleMatchInput): Promise<SettleMatchResult> {
+export function settleMatch(input: SettleMatchInput): Promise<SettleMatchResult> {
   const cached = settled.get(input.matchId);
-  if (cached) return cached;
+  if (cached) return Promise.resolve(cached);
+  const running = inFlight.get(input.matchId);
+  if (running) return running;
+  const task = settleMatchOnce(input).finally(() => inFlight.delete(input.matchId));
+  inFlight.set(input.matchId, task);
+  return task;
+}
 
+async function settleMatchOnce(input: SettleMatchInput): Promise<SettleMatchResult> {
   const decision = decideMatchSettlement(input);
   if (!decision.rated) return remember(input.matchId, unrated(input, decision.reason));
 
   const config = await getRatingConfigCached();
-  const read = await getRatingProfiles([input.whitePlayerId, input.blackPlayerId]);
-  if (read.schemaMissing) {
-    if (!migrationWarned) {
-      console.warn('[rating] colunas chess_rating* ausentes em profiles — rode a migração SQL do admin (/admin/rating-gambits). Partidas não estão sendo avaliadas.');
-      migrationWarned = true;
-    }
-    return remember(input.matchId, unrated(input, 'migration_pending'));
-  }
-  if (read.error) {
-    console.error(`[rating] falha ao ler perfis da partida ${input.matchId}: ${read.error}`);
-    return unrated(input, 'persistence_error');
-  }
-  const white = read.profiles.get(input.whitePlayerId);
-  const black = read.profiles.get(input.blackPlayerId);
-  if (!white || !black) return remember(input.matchId, unrated(input, 'profile_missing'));
-
-  // Estado PRÉ-partida dos dois (com inflação de inatividade), congelado antes de qualquer cálculo.
-  const now = Date.now();
   const rules = config.rating;
-  const preRd = (p: PlayerRatingRow) =>
-    inflateRatingDeviation(p.ratingDeviation, p.volatility, ratingPeriodsSince(p.lastRatedAt, now, rules.inactivityPeriodDays), rules.maxRatingDeviation);
-  const whitePreRd = preRd(white);
-  const blackPreRd = preRd(black);
-  const sides: SideComputation[] = [
-    computeSide(white, black, decision.white, whitePreRd, blackPreRd, config),
-    computeSide(black, white, decision.black, blackPreRd, whitePreRd, config),
-  ];
-
-  // 1) Histórico primeiro — é a trava de idempotência entre processos.
-  const historyRows: RatingHistoryInsert[] = sides.map((s) => ({
-    playerId: s.profile.userId,
-    matchId: input.matchId,
-    opponentId: s.opponent.userId,
-    result: s.outcome,
-    ratingBefore: roundRating(s.profile.rating),
-    ratingAfter: roundRating(s.next.rating),
-    ratingDelta: roundRating(s.next.ratingDelta),
-    rdBefore: roundRating(s.preRd),
-    rdAfter: roundRating(s.next.ratingDeviation),
-    volatilityAfter: s.next.volatility,
-    opponentRatingBefore: roundRating(s.opponent.rating),
-    matchKind: input.kind,
-  }));
-  const history = await insertRatingHistory(historyRows);
-  if (!history.ok) {
-    if (history.duplicate) {
-      console.warn(`[rating] partida ${input.matchId} já avaliada (histórico existente) — ignorando finalização duplicada`);
-      return remember(input.matchId, unrated(input, 'already_settled'));
-    }
-    if (history.schemaMissing) {
-      if (!migrationWarned) {
-        console.warn('[rating] tabela chess_rating_history ausente — rode a migração SQL do admin (/admin/rating-gambits).');
-        migrationWarned = true;
-      }
+  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt += 1) {
+    const read = await getRatingProfiles([input.whitePlayerId, input.blackPlayerId]);
+    if (read.schemaMissing) {
+      warnMigrationOnce('colunas chess_rating* ausentes em profiles');
       return remember(input.matchId, unrated(input, 'migration_pending'));
     }
-    console.error(`[rating] falha ao gravar histórico da partida ${input.matchId}: ${history.error}`);
-    return unrated(input, 'persistence_error');
-  }
-
-  // 2) Perfis (rating novo + W/L/D + espelho inteiro em `rating`).
-  const nowIso = new Date(now).toISOString();
-  const players: RatingUpdatePlayer[] = [];
-  const ratings = new Map<string, number>();
-  for (const side of sides) {
-    const p = side.profile;
-    const ratedGames = p.ratedGamesPlayed + 1;
-    const update = {
-      rating: side.next.rating,
-      ratingDeviation: side.next.ratingDeviation,
-      volatility: side.next.volatility,
-      ratedGamesPlayed: ratedGames,
-      peakRating: Math.max(p.peakRating, side.next.rating),
-      lastRatedAt: nowIso,
-      wins: p.wins + (side.outcome === 'win' ? 1 : 0),
-      losses: p.losses + (side.outcome === 'loss' ? 1 : 0),
-      draws: p.draws + (side.outcome === 'draw' ? 1 : 0),
-      gamesPlayed: p.gamesPlayed + 1,
-    };
-    let write = await updateRatingProfile(p.userId, p.ratedGamesPlayed, update);
-    if (write.ok && !write.applied) {
-      console.warn(`[rating] CAS do perfil ${p.userId} falhou (partida ${input.matchId}); aplicando sem CAS`);
-      write = await updateRatingProfile(p.userId, null, update);
+    if (read.error) {
+      console.error(`[rating] falha ao ler perfis da partida ${input.matchId}: ${read.error}`);
+      return unrated(input, 'persistence_error');
     }
-    if (!write.ok) console.error(`[rating] falha ao atualizar perfil ${p.userId} (partida ${input.matchId}): ${write.error}`);
-    ratings.set(p.userId, Math.round(side.next.rating));
+    const white = read.profiles.get(input.whitePlayerId);
+    const black = read.profiles.get(input.blackPlayerId);
+    if (!white || !black) return remember(input.matchId, unrated(input, 'profile_missing'));
 
-    // 3) Gambits (ledger único por partida/jogador + saldo com CAS).
-    const gambits = await awardGambits(input, side, now, config);
-    players.push({
-      playerId: p.userId,
-      username: p.username,
-      outcome: side.outcome,
-      ratingBefore: roundRating(p.rating),
-      ratingAfter: roundRating(side.next.rating),
-      ratingDelta: roundRating(side.next.ratingDelta),
-      ratingDeviationAfter: roundRating(side.next.ratingDeviation),
-      provisional: isProvisionalRating({ ratedGamesPlayed: ratedGames, ratingDeviation: side.next.ratingDeviation }, rules),
-      gambitsAwarded: gambits.amount,
-      gambitsReason: gambits.reason,
-      gambitsTotal: gambits.total,
+    // Estado PRÉ-partida dos dois (com inflação de inatividade), congelado antes de qualquer cálculo.
+    const now = Date.now();
+    const preRd = (p: PlayerRatingRow) =>
+      inflateRatingDeviation(p.ratingDeviation, p.volatility, ratingPeriodsSince(p.lastRatedAt, now, rules.inactivityPeriodDays), rules.maxRatingDeviation);
+    const whitePreRd = preRd(white);
+    const blackPreRd = preRd(black);
+    const sides: SideComputation[] = [
+      computeSide(white, black, decision.white, whitePreRd, blackPreRd, config),
+      computeSide(black, white, decision.black, blackPreRd, whitePreRd, config),
+    ];
+
+    // Gambits: prêmio base + limites do dia, calculados do ledger lido agora
+    // (a função SQL confere que o ledger não mudou antes de gravar).
+    const dayStartIso = new Date(gambitDayStart(now, config.gambits.dayOffsetHours)).toISOString();
+    const writes: SettlePlayerWrite[] = [];
+    for (const side of sides) {
+      const day = await getGambitDayStats(side.profile.userId, side.opponent.userId, dayStartIso);
+      if (day.schemaMissing) {
+        warnMigrationOnce('tabela gambit_awards ausente');
+        return remember(input.matchId, unrated(input, 'migration_pending'));
+      }
+      if (day.error) {
+        console.error(`[gambits] falha ao ler ledger de ${side.profile.userId}: ${day.error}`);
+        return unrated(input, 'persistence_error');
+      }
+      const base = baseGambitsFor(input.kind, side.outcome, config.gambits);
+      const { amount, reason } = applyGambitLimits(base, day.stats, config.gambits);
+      writes.push({
+        playerId: side.profile.userId,
+        opponentId: side.opponent.userId,
+        result: side.outcome,
+        expectedRatedGames: side.profile.ratedGamesPlayed,
+        ratingBefore: roundRating(side.profile.rating),
+        ratingAfter: roundRating(side.next.rating),
+        ratingDelta: roundRating(side.next.ratingDelta),
+        rdBefore: roundRating(side.preRd),
+        rdAfter: roundRating(side.next.ratingDeviation),
+        volatilityAfter: side.next.volatility,
+        opponentRatingBefore: roundRating(side.opponent.rating),
+        gambitsAmount: amount,
+        gambitsReason: reason,
+        dayStartIso,
+        expectedOpponentGamesToday: day.stats.gamesAgainstOpponentToday,
+        expectedEarnedToday: day.stats.gambitsEarnedToday,
+      });
+    }
+
+    const settledAtIso = new Date(now).toISOString();
+    const outcome = await settleMatchAtomic(input.matchId, input.kind, settledAtIso, [writes[0], writes[1]]);
+    if (outcome.schemaMissing) {
+      warnMigrationOnce('função chessworld_settle_match / tabelas de rating ausentes');
+      return remember(input.matchId, unrated(input, 'migration_pending'));
+    }
+    if (outcome.status === 'conflict') {
+      console.warn(`[rating] partida ${input.matchId}: perfil/ledger mudou durante o cálculo (tentativa ${attempt}/${MAX_ATTEMPTS}) — recalculando`);
+      continue;
+    }
+    if (outcome.status === 'already_settled') {
+      console.warn(`[rating] partida ${input.matchId} já avaliada — ignorando finalização duplicada`);
+      return remember(input.matchId, unrated(input, 'already_settled'));
+    }
+    if (outcome.status === 'profile_missing') return remember(input.matchId, unrated(input, 'profile_missing'));
+    if (!outcome.ok) {
+      console.error(`[rating] falha ao liquidar partida ${input.matchId}: ${outcome.error}`);
+      return unrated(input, 'persistence_error');
+    }
+
+    const ratings = new Map<string, number>();
+    const players: RatingUpdatePlayer[] = sides.map((side, index) => {
+      const write = writes[index];
+      const ratedGames = side.profile.ratedGamesPlayed + 1;
+      ratings.set(side.profile.userId, Math.round(side.next.rating));
+      return {
+        playerId: side.profile.userId,
+        username: side.profile.username,
+        outcome: side.outcome,
+        ratingBefore: write.ratingBefore,
+        ratingAfter: write.ratingAfter,
+        ratingDelta: write.ratingDelta,
+        ratingDeviationAfter: write.rdAfter,
+        provisional: isProvisionalRating({ ratedGamesPlayed: ratedGames, ratingDeviation: side.next.ratingDeviation }, rules),
+        gambitsAwarded: write.gambitsAmount,
+        gambitsReason: write.gambitsReason,
+        gambitsTotal: outcome.gambits.get(side.profile.userId) ?? side.profile.gambits + write.gambitsAmount,
+      };
+    });
+    console.log(
+      `[rating] ${input.kind} ${input.matchId}: ` +
+        players.map((pl) => `${pl.username} ${pl.ratingBefore}→${pl.ratingAfter} (${pl.ratingDelta >= 0 ? '+' : ''}${pl.ratingDelta}) +${pl.gambitsAwarded}g`).join(' | '),
+    );
+    return remember(input.matchId, {
+      message: { matchId: input.matchId, kind: input.kind, rated: true, players },
+      ratings,
+      applied: true,
     });
   }
-
-  console.log(
-    `[rating] ${input.kind} ${input.matchId}: ` +
-      players.map((pl) => `${pl.username} ${pl.ratingBefore}→${pl.ratingAfter} (${pl.ratingDelta >= 0 ? '+' : ''}${pl.ratingDelta}) +${pl.gambitsAwarded}g`).join(' | '),
-  );
-  return remember(input.matchId, {
-    message: { matchId: input.matchId, kind: input.kind, rated: true, players },
-    ratings,
-    applied: true,
-  });
-}
-
-async function awardGambits(
-  input: SettleMatchInput,
-  side: SideComputation,
-  now: number,
-  config: RatingGambitsConfig,
-): Promise<{ amount: number; reason: RatingUpdatePlayer['gambitsReason']; total: number }> {
-  const rules = config.gambits;
-  const p = side.profile;
-  const base = baseGambitsFor(input.kind, side.outcome, rules);
-  const dayStartIso = new Date(gambitDayStart(now, rules.dayOffsetHours)).toISOString();
-  const day = await getGambitDayStats(p.userId, side.opponent.userId, dayStartIso);
-  if (day.schemaMissing) return { amount: 0, reason: 'zero', total: p.gambits };
-  if (day.error) {
-    console.error(`[gambits] falha ao ler ledger de ${p.userId}: ${day.error}`);
-    return { amount: 0, reason: 'zero', total: p.gambits };
-  }
-  const { amount, reason } = applyGambitLimits(base, day.stats, rules);
-  const ledger = await insertGambitAward({
-    playerId: p.userId,
-    matchId: input.matchId,
-    opponentId: side.opponent.userId,
-    amount,
-    kind: input.kind,
-    reason,
-  });
-  if (!ledger.ok) {
-    if (!ledger.duplicate && !ledger.schemaMissing) console.error(`[gambits] falha ao gravar ledger de ${p.userId}: ${ledger.error}`);
-    return { amount: 0, reason: 'zero', total: p.gambits };
-  }
-  if (amount <= 0) return { amount: 0, reason, total: p.gambits };
-  const change = await changeGambits(p.userId, amount);
-  if (!change.ok) {
-    console.error(`[gambits] falha ao creditar ${amount} gambits a ${p.userId}: ${change.error}`);
-    return { amount: 0, reason: 'zero', total: p.gambits };
-  }
-  return { amount, reason, total: change.balance };
+  console.error(`[rating] partida ${input.matchId}: conflito persistente após ${MAX_ATTEMPTS} tentativas — não avaliada`);
+  return unrated(input, 'persistence_error');
 }
 
 /** Rating exibido de um jogador (para o join da sala) — null se não houver perfil. Pré-migração usa o `rating` legado. */

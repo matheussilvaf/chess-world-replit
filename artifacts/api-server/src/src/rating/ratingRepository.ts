@@ -2,9 +2,14 @@
  * Acesso service-role às linhas de rating/gambits do `profiles`, ao histórico
  * `chess_rating_history` e ao ledger `gambit_awards`.
  *
+ * A liquidação de uma partida (histórico + ledger + perfil dos dois jogadores)
+ * é UMA chamada à função SQL `chessworld_settle_match` (transação única com
+ * lock nos dois perfis) — ver `settleMatchAtomic`. Aqui fora só ficam leituras
+ * e o CAS de saldo de gambits usado pelo craft.
+ *
  * Regras da casa: PostgREST não lança — todo read/write devolve `{ error }` e
- * o chamador decide. Coluna/tabela ausente (migração ainda não rodada) vira
- * `schemaMissing: true` para o serviço degradar sem quebrar a partida.
+ * o chamador decide. Coluna/tabela/função ausente (migração ainda não rodada)
+ * vira `schemaMissing: true` para o serviço degradar sem quebrar a partida.
  */
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { PERSISTENCE_UNAVAILABLE, getServiceClient, isTableMissing } from '../rigs/serviceSupabase.js';
@@ -20,8 +25,8 @@ import {
 export const isColumnMissing = (code: string | undefined, message?: string): boolean =>
   code === '42703' || (code === 'PGRST204' && /column/i.test(message ?? ''));
 
-/** Violação de UNIQUE — a trava de idempotência do histórico/ledger. */
-export const isUniqueViolation = (code: string | undefined): boolean => code === '23505';
+/** PGRST202 = função fora do schema cache do PostgREST; 42883 = função inexistente no Postgres. */
+export const isFunctionMissing = (code: string | undefined): boolean => code === 'PGRST202' || code === '42883';
 
 export const RATING_PROFILE_COLUMNS =
   'user_id, username, rating, wins, losses, draws, games_played, chess_rating, chess_rating_deviation, chess_rating_volatility, chess_rated_games_played, chess_peak_rating, chess_last_rated_at, gambits';
@@ -100,13 +105,15 @@ export async function getLegacyRating(userId: string): Promise<number | null> {
   return typeof value === 'number' && Number.isFinite(value) ? value : null;
 }
 
-// ---------------------------------------------------------------- histórico
+// ------------------------------------------------------------- liquidação
 
-export interface RatingHistoryInsert {
+/** Um lado da liquidação: tudo que a função SQL grava/verifica para o jogador. */
+export interface SettlePlayerWrite {
   playerId: string;
-  matchId: string;
   opponentId: string;
   result: PlayerMatchOutcome;
+  /** CAS: `chess_rated_games_played` lido antes do cálculo. */
+  expectedRatedGames: number;
   ratingBefore: number;
   ratingAfter: number;
   ratingDelta: number;
@@ -114,45 +121,81 @@ export interface RatingHistoryInsert {
   rdAfter: number;
   volatilityAfter: number;
   opponentRatingBefore: number;
-  matchKind: MatchKind;
+  gambitsAmount: number;
+  gambitsReason: GambitAwardReason;
+  /** Início do "dia" de gambits (ISO) e o que o ledger mostrava nele (CAS). */
+  dayStartIso: string;
+  expectedOpponentGamesToday: number;
+  expectedEarnedToday: number;
 }
 
-export interface WriteOutcome {
+export type SettleStatus = 'applied' | 'already_settled' | 'conflict' | 'profile_missing';
+
+export interface SettleAtomicResult {
   ok: boolean;
-  /** UNIQUE violado = este par (partida, jogador) já foi aplicado antes. */
-  duplicate: boolean;
+  status: SettleStatus | null;
+  /** Saldo de gambits pós-liquidação por jogador (só em `applied`). */
+  gambits: Map<string, number>;
   schemaMissing: boolean;
   error: string | null;
 }
 
-const writeError = (error: { code?: string; message: string }): WriteOutcome => ({
-  ok: false,
-  duplicate: isUniqueViolation(error.code),
-  schemaMissing: isTableMissing(error.code) || isColumnMissing(error.code, error.message),
-  error: isUniqueViolation(error.code) ? null : error.message,
-});
-
-export async function insertRatingHistory(rows: readonly RatingHistoryInsert[]): Promise<WriteOutcome> {
+/**
+ * `chessworld_settle_match`: trava os dois perfis (ordem fixa), confere que
+ * a partida ainda não foi liquidada e que o estado pré-partida usado no
+ * cálculo continua valendo (contador de partidas avaliadas + ledger do dia),
+ * e grava histórico + ledger + perfil dos dois numa transação só.
+ * `conflict` = alguém mexeu num dos perfis nesse meio-tempo: recalcular e
+ * chamar de novo. Função ausente = migração pendente (`schemaMissing`).
+ */
+export async function settleMatchAtomic(
+  matchId: string,
+  kind: MatchKind,
+  settledAtIso: string,
+  players: readonly [SettlePlayerWrite, SettlePlayerWrite],
+): Promise<SettleAtomicResult> {
   const { client, error: unavailable } = requireClient();
-  if (!client) return { ok: false, duplicate: false, schemaMissing: false, error: unavailable };
-  const payload = rows.map((row) => ({
-    player_id: row.playerId,
-    match_id: row.matchId,
-    opponent_id: row.opponentId,
-    result: row.result,
-    rating_before: row.ratingBefore,
-    rating_after: row.ratingAfter,
-    rating_delta: row.ratingDelta,
-    rd_before: row.rdBefore,
-    rd_after: row.rdAfter,
-    volatility_after: row.volatilityAfter,
-    opponent_rating_before: row.opponentRatingBefore,
-    match_kind: row.matchKind,
+  const none = new Map<string, number>();
+  if (!client) return { ok: false, status: null, gambits: none, schemaMissing: false, error: unavailable };
+  const payload = players.map((p) => ({
+    player_id: p.playerId,
+    opponent_id: p.opponentId,
+    result: p.result,
+    expected_rated_games: p.expectedRatedGames,
+    rating_before: p.ratingBefore,
+    rating_after: p.ratingAfter,
+    rating_delta: p.ratingDelta,
+    rd_before: p.rdBefore,
+    rd_after: p.rdAfter,
+    volatility_after: p.volatilityAfter,
+    opponent_rating_before: p.opponentRatingBefore,
+    gambits_amount: p.gambitsAmount,
+    gambits_reason: p.gambitsReason,
+    day_start: p.dayStartIso,
+    expected_opponent_games_today: p.expectedOpponentGamesToday,
+    expected_earned_today: p.expectedEarnedToday,
   }));
-  const { error } = await client.from('chess_rating_history').insert(payload);
-  if (error) return writeError(error);
-  return { ok: true, duplicate: false, schemaMissing: false, error: null };
+  const { data, error } = await client.rpc('chessworld_settle_match', {
+    p_match_id: matchId,
+    p_kind: kind,
+    p_settled_at: settledAtIso,
+    p_players: payload,
+  });
+  if (error) {
+    const schemaMissing = isFunctionMissing(error.code) || isTableMissing(error.code) || isColumnMissing(error.code, error.message);
+    return { ok: false, status: null, gambits: none, schemaMissing, error: schemaMissing ? null : error.message };
+  }
+  const body = (data ?? null) as { status?: unknown; gambits?: Record<string, unknown> } | null;
+  const status = body?.status;
+  if (status !== 'applied' && status !== 'already_settled' && status !== 'conflict' && status !== 'profile_missing') {
+    return { ok: false, status: null, gambits: none, schemaMissing: false, error: `Resposta inválida de chessworld_settle_match: ${JSON.stringify(body)}` };
+  }
+  const gambits = new Map<string, number>();
+  for (const [playerId, balance] of Object.entries(body?.gambits ?? {})) gambits.set(playerId, num(balance, 0));
+  return { ok: status === 'applied', status, gambits, schemaMissing: false, error: null };
 }
+
+// ---------------------------------------------------------------- histórico
 
 export interface RatingHistoryRow {
   matchId: string;
@@ -182,56 +225,6 @@ export async function listRatingHistoryForMatches(matchIds: readonly string[]): 
 
 // ------------------------------------------------------------------- perfil
 
-export interface RatingProfileUpdate {
-  rating: number;
-  ratingDeviation: number;
-  volatility: number;
-  ratedGamesPlayed: number;
-  peakRating: number;
-  lastRatedAt: string;
-  wins: number;
-  losses: number;
-  draws: number;
-  gamesPlayed: number;
-}
-
-/**
- * Grava o novo estado de rating. CAS em `chess_rated_games_played` (o valor
- * lido antes do cálculo): se ninguém mexeu, aplica; se 0 linhas, o chamador
- * decide (a partida em si já é única por jogador, então isso é só proteção).
- */
-export async function updateRatingProfile(
-  userId: string,
-  expectedRatedGames: number | null,
-  next: RatingProfileUpdate,
-): Promise<{ ok: boolean; applied: boolean; schemaMissing: boolean; error: string | null }> {
-  const { client, error: unavailable } = requireClient();
-  if (!client) return { ok: false, applied: false, schemaMissing: false, error: unavailable };
-  let query = client
-    .from('profiles')
-    .update({
-      rating: Math.round(next.rating),
-      chess_rating: next.rating,
-      chess_rating_deviation: next.ratingDeviation,
-      chess_rating_volatility: next.volatility,
-      chess_rated_games_played: next.ratedGamesPlayed,
-      chess_peak_rating: next.peakRating,
-      chess_last_rated_at: next.lastRatedAt,
-      wins: next.wins,
-      losses: next.losses,
-      draws: next.draws,
-      games_played: next.gamesPlayed,
-      updated_at: new Date().toISOString(),
-    })
-    .eq('user_id', userId);
-  if (expectedRatedGames !== null) query = query.eq('chess_rated_games_played', expectedRatedGames);
-  const { data, error } = await query.select('user_id');
-  if (error) {
-    return { ok: false, applied: false, schemaMissing: isColumnMissing(error.code, error.message), error: error.message };
-  }
-  return { ok: true, applied: (data ?? []).length > 0, schemaMissing: false, error: null };
-}
-
 /** Reset em massa ao estado inicial (botão do admin / pós-migração). */
 export async function resetAllRatings(initial: { rating: number; ratingDeviation: number; volatility: number }): Promise<{ ok: boolean; count: number; schemaMissing: boolean; error: string | null }> {
   const { client, error: unavailable } = requireClient();
@@ -254,41 +247,27 @@ export async function resetAllRatings(initial: { rating: number; ratingDeviation
   return { ok: true, count: (data ?? []).length, schemaMissing: false, error: null };
 }
 
-/** Sonda se a migração já rodou (coluna chess_rating existe). */
+/**
+ * Sonda se a migração já rodou: coluna `chess_rating` E a função
+ * `chessworld_settle_match` (chamada com payload vazio: a função existe se
+ * responder com a própria exceção de validação, P0001).
+ */
 export async function ratingSchemaReady(): Promise<{ ready: boolean; error: string | null }> {
   const { client, error: unavailable } = requireClient();
   if (!client) return { ready: false, error: unavailable };
   const { error } = await client.from('profiles').select('chess_rating').limit(1);
-  if (!error) return { ready: true, error: null };
-  if (isColumnMissing(error.code, error.message)) return { ready: false, error: null };
-  return { ready: false, error: error.message };
+  if (error) {
+    if (isColumnMissing(error.code, error.message)) return { ready: false, error: null };
+    return { ready: false, error: error.message };
+  }
+  const probe = await client.rpc('chessworld_settle_match', { p_match_id: '', p_kind: 'plaza', p_settled_at: new Date().toISOString(), p_players: [] });
+  if (!probe.error) return { ready: false, error: 'chessworld_settle_match respondeu a um payload vazio — versão inesperada da função' };
+  if (isFunctionMissing(probe.error.code)) return { ready: false, error: 'função chessworld_settle_match ausente' };
+  if (probe.error.code === 'P0001') return { ready: true, error: null };
+  return { ready: false, error: probe.error.message };
 }
 
 // ------------------------------------------------------------------ gambits
-
-export interface GambitAwardInsert {
-  playerId: string;
-  matchId: string;
-  opponentId: string;
-  amount: number;
-  kind: MatchKind;
-  reason: GambitAwardReason;
-}
-
-export async function insertGambitAward(row: GambitAwardInsert): Promise<WriteOutcome> {
-  const { client, error: unavailable } = requireClient();
-  if (!client) return { ok: false, duplicate: false, schemaMissing: false, error: unavailable };
-  const { error } = await client.from('gambit_awards').insert({
-    player_id: row.playerId,
-    match_id: row.matchId,
-    opponent_id: row.opponentId,
-    amount: row.amount,
-    kind: row.kind,
-    reason: row.reason,
-  });
-  if (error) return writeError(error);
-  return { ok: true, duplicate: false, schemaMissing: false, error: null };
-}
 
 export interface GambitDayStats {
   /** Partidas contra este adversário que já renderam (ou tentaram render) gambits hoje. */

@@ -185,7 +185,7 @@ export function RatingGambitsPage() {
 
         {!schemaReady && (
           <SqlBanner
-            text={`Migração pendente: as colunas de rating/gambits ainda não existem em profiles${schemaError ? ` (${schemaError})` : ''}. Rode o SQL abaixo no editor do Supabase — enquanto isso as partidas terminam sem rating e sem gambits.`}
+            text={`Migração pendente: as colunas de rating/gambits, as tabelas de histórico/ledger ou a função de liquidação ainda não existem no banco${schemaError ? ` (${schemaError})` : ''}. Rode o SQL abaixo no editor do Supabase (pode rodar de novo sem apagar rating de quem já jogou) — enquanto isso as partidas terminam sem rating e sem gambits.`}
             sql={migrationSql}
           />
         )}

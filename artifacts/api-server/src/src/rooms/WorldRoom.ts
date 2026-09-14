@@ -31,6 +31,7 @@ import { progressService } from '../progress/progressService.js';
 import { getEnergySkillsConfigCached } from '../progress/energySkillsRepository.js';
 import { totalSkillLevel, type ProgressSnapshot } from '../shared/progress/EnergySkillsShapes.js';
 import { loadDisplayRating, settleMatch } from '../rating/ratingService.js';
+import { DEFAULT_RATING_GAMBITS_CONFIG } from '../shared/rating/RatingShapes.js';
 import { persistMatchFinish, persistMatchStart, type MatchStartRecord } from '../rating/matchRepository.js';
 
 interface JoinOptions {
@@ -39,7 +40,8 @@ interface JoinOptions {
   /** JWT do Supabase: única fonte da identidade persistente do jogador. */
   token?: string;
   username: string;
-  rating: number;
+  /** Legado — IGNORADO (rating é server-authoritative). */
+  rating?: number;
   region: string;
   x: number;
   y: number;
@@ -66,7 +68,8 @@ export class WorldRoom extends Room<WorldState> {
   // matchId -> color of the player whose draw offer is currently awaiting an answer
   private pendingDrawOffers = new Map<string, 'w' | 'b'>();
   /** Dados de abertura de cada partida (praça e torneio) para fechar a linha em `matches` no fim. */
-  private matchStartRecords = new Map<string, MatchStartRecord>();
+  /** Partidas abertas em `matches`: o fechamento espera o insert de abertura terminar (sem linha duplicada em partidas relâmpago). */
+  private matchStartRecords = new Map<string, { record: MatchStartRecord; persisted: Promise<unknown> }>();
   /** Server-authoritative combat (client only sends attack intents). */
   private combatResolver = new CombatResolver(this, {
     // Energia/XP de combate: golpe que conecta custa energia ao atacante e ao
@@ -1272,7 +1275,9 @@ export class WorldRoom extends Room<WorldState> {
     player.id = playerId;
     player.sessionId = client.sessionId;
     player.username = options.username || 'Anonymous';
-    player.rating = options.rating || 1200;
+    // Rating é server-authoritative: o valor mandado pelo cliente é ignorado;
+    // o inicial fica até o perfil responder (loadDisplayRating, logo abaixo).
+    player.rating = DEFAULT_RATING_GAMBITS_CONFIG.rating.initialRating;
     player.region = this.region;
     const spawn = reconnectPosition ?? (this.region.startsWith('craft:')
       ? { x: 3256, y: 2246.67 }
@@ -1801,7 +1806,8 @@ export class WorldRoom extends Room<WorldState> {
       winnerId: match.winnerId,
     });
     const isTournament = !!match.boardId && match.boardId.includes('_table_');
-    const start = this.matchStartRecords.get(match.id);
+    const start = this.matchStartRecords.get(match.id)?.record;
+    const startPersisted = this.matchStartRecords.get(match.id)?.persisted ?? Promise.resolve();
     this.matchStartRecords.delete(match.id);
     // Praça: fecha a linha em `matches` (torneio: o coordinator fecha a dele).
     if (!isTournament && start) {
@@ -1815,7 +1821,8 @@ export class WorldRoom extends Room<WorldState> {
         whiteTimeMs: match.whiteTimeMs,
         blackTimeMs: match.blackTimeMs,
       };
-      void persistMatchFinish(finish, start)
+      void startPersisted
+        .then(() => persistMatchFinish(finish, start))
         .then((saved) => { if (!saved.ok) console.error(`[matches] falha ao fechar partida ${match.id}: ${saved.error}`); })
         .catch((e) => console.error('[matches] exceção ao fechar partida:', e instanceof Error ? e.message : e));
     }
@@ -2018,12 +2025,12 @@ export class WorldRoom extends Room<WorldState> {
       whiteTimeMs: baseTimeMs,
       blackTimeMs: baseTimeMs,
     };
-    this.matchStartRecords.set(matchId, startRecord);
-    if (!board.id.includes('_table_')) {
-      void persistMatchStart(startRecord)
-        .then((saved) => { if (!saved.ok) console.error(`[matches] falha ao abrir partida ${matchId}: ${saved.error}`); })
-        .catch((e) => console.error('[matches] exceção ao abrir partida:', e instanceof Error ? e.message : e));
-    }
+    const startPersisted: Promise<unknown> = board.id.includes('_table_')
+      ? Promise.resolve()
+      : persistMatchStart(startRecord)
+          .then((saved) => { if (!saved.ok) console.error(`[matches] falha ao abrir partida ${matchId}: ${saved.error}`); })
+          .catch((e) => console.error('[matches] exceção ao abrir partida:', e instanceof Error ? e.message : e));
+    this.matchStartRecords.set(matchId, { record: startRecord, persisted: startPersisted });
 
     // Persist tournament match to database
     if (board.id.includes('_table_')) {

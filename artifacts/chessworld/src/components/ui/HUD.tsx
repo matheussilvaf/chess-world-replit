@@ -12,7 +12,7 @@ import {
   User, MessageSquare, Users, Settings, DoorOpen, Mic, Maximize, Minimize, TreePine, Castle, Crown, Swords,
 } from 'lucide-react';
 import { isProvisionalRating } from '../../shared/rating/Glicko2';
-import { DEFAULT_RATING_GAMBITS_CONFIG } from '../../shared/rating/RatingShapes';
+import { useRatingStore } from '../../stores/ratingStore';
 import { CollectionInventoryButton } from '../game/CollectionInventoryPanel';
 import { useInventoryUiStore } from '../../stores/inventoryUiStore';
 import { formatCrowns, useWalletStore } from '../../stores/walletStore';
@@ -26,9 +26,13 @@ export function HUD() {
   const { profile, user } = useAuthStore();
   // Rating exibido = Glicko-2 arredondado (o inteiro legado `rating` é o espelho).
   const displayRating = Math.round(profile?.chess_rating ?? profile?.rating ?? 0);
+  // Limiares de "provisório" vêm do servidor (config do admin); defaults até chegarem.
+  const ratingRules = useRatingStore((s) => s.rules);
+  const loadRatingRules = useRatingStore((s) => s.loadRules);
+  useEffect(() => { void loadRatingRules(); }, [loadRatingRules]);
   const provisional = !!profile && isProvisionalRating(
-    { ratedGamesPlayed: profile.chess_rated_games_played ?? 0, ratingDeviation: profile.chess_rating_deviation ?? 350 },
-    DEFAULT_RATING_GAMBITS_CONFIG.rating,
+    { ratedGamesPlayed: profile.chess_rated_games_played ?? 0, ratingDeviation: profile.chess_rating_deviation ?? ratingRules.initialRatingDeviation },
+    ratingRules,
   );
   const crowns = useWalletStore((s) => s.crowns);
   const refreshWallet = useWalletStore((s) => s.refresh);
