@@ -303,17 +303,19 @@ describe('ingredientes alternativos ("ou") e tempo de preparo', () => {
     });
     expect(badQty.ok).toBe(false);
     expect(badQty.errors.some((e) => e.includes('alternatives[0].quantity'))).toBe(true);
-    const tooMany = validateCraftRecipeConfig({
+    // Não há teto de alternativas por card — só a unicidade na receita limita.
+    const many = validateCraftRecipeConfig({
       ...recipe,
       ingredients: [
         {
           itemId: 'herb:queen_thorn',
           quantity: 1,
-          alternatives: [{ itemId: 'a' }, { itemId: 'b' }, { itemId: 'c' }, { itemId: 'd' }],
+          alternatives: Array.from({ length: 12 }, (_, k) => ({ itemId: `opcao-${k}`, quantity: k + 1 })),
         },
       ],
     });
-    expect(tooMany.ok).toBe(false);
+    expect(many.ok).toBe(true);
+    expect(recipeIngredientItemIds(many.ok ? { ...recipe, ingredients: [{ itemId: 'herb:queen_thorn', quantity: 1, alternatives: Array.from({ length: 12 }, (_, k) => ({ itemId: `opcao-${k}` })) }] } : recipe)).toHaveLength(13);
     // Lista vazia é tolerada na leitura (registro sem alternativas).
     expect(
       validateCraftRecipeConfig({ ...recipe, ingredients: [{ itemId: 'herb:queen_thorn', quantity: 1, alternatives: [] }] }).ok,

@@ -49,7 +49,6 @@ import {
 import {
   CRAFT_PREP_SECONDS_PRESETS,
   MAX_GAMBITS_COST,
-  MAX_INGREDIENT_ALTERNATIVES,
   MAX_INGREDIENT_QUANTITY,
   MAX_OUTPUT_QUANTITY,
   MAX_RECIPE_INGREDIENTS,
@@ -451,8 +450,8 @@ export function CraftAdminPage() {
       draft.map((e, i) => {
         if (i !== index) return e;
         const alternatives = ingredientAlternatives(e);
-        if (alternatives.length >= MAX_INGREDIENT_ALTERNATIVES) return e;
-        // Cada opção tem a própria quantidade; a nova começa igual à do principal.
+        // Sem teto de "ou" por card (só a unicidade na receita). Cada opção tem a
+        // própria quantidade; a nova começa igual à do principal.
         return { ...e, alternatives: [...alternatives, { itemId, quantity: e.quantity }] };
       }),
     );
@@ -1142,7 +1141,7 @@ export function CraftAdminPage() {
                             const alternatives = ingredientAlternatives(entry);
                             const pickerKey = `${selectedTarget}:${slot}`;
                             const pickerOpen = altPickerKey === pickerKey;
-                            const canAddMore = alternatives.length < MAX_INGREDIENT_ALTERNATIVES && pickerSections.length > 0;
+                            const canAddMore = pickerSections.length > 0;
                             const primaryName = ingEntry?.name ?? entry.itemId;
                             const stepper = (optionItemId: string, label: string, quantity: number) => (
                               <QtyStepper
@@ -1320,8 +1319,8 @@ export function CraftAdminPage() {
                 <p className="text-[10px] font-mono text-slate-500 mb-3">
                   {draft.length}/{MAX_RECIPE_INGREDIENTS} ingredientes · qualquer item do jogo (menos o
                   próprio) · quantidade {MIN_INGREDIENT_QUANTITY}–{MAX_INGREDIENT_QUANTITY} · o botão "ou" de um
-                  card aceita até {MAX_INGREDIENT_ALTERNATIVES} itens alternativos, cada um com a própria quantidade
-                  e tempo de preparo (na estação o jogador vê um select com o primeiro pré-selecionado)
+                  card aceita quantos itens alternativos você quiser (cada item uma vez na receita), cada um com a
+                  própria quantidade e tempo de preparo (na estação o jogador vê um select com o primeiro pré-selecionado)
                 </p>
 
                 <div className="flex flex-wrap items-center gap-2">

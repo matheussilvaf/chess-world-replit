@@ -55,8 +55,6 @@ export const MAX_OUTPUT_QUANTITY = 999;
 /** Gambits (moeda das partidas) cobrados por execução da receita — 0 = grátis. */
 export const MIN_GAMBITS_COST = 0;
 export const MAX_GAMBITS_COST = 100_000;
-/** Alternativas ("ou") por card de ingrediente. */
-export const MAX_INGREDIENT_ALTERNATIVES = 3;
 /** Tempo de preparo por opção (segundos); 0 = instantâneo. */
 export const MAX_CRAFT_PREP_SECONDS = 300;
 /** Presets oferecidos no editor (0 = Instantâneo). */
@@ -138,9 +136,10 @@ export interface CraftIngredient {
   /** Tempo de preparo (s) quando o item PRINCIPAL é o escolhido — ver CraftIngredientOption. */
   prepSeconds?: number;
   /**
-   * Itens aceitos no lugar do principal ("ou"), 1..3, únicos em toda a
-   * receita. Ausente/vazio = ingrediente simples. Cada opção tem a própria
-   * quantidade (ausente = a do principal) e o próprio tempo de preparo.
+   * Itens aceitos no lugar do principal ("ou"), quantos o admin quiser —
+   * o único limite é serem únicos em toda a receita. Ausente/vazio =
+   * ingrediente simples. Cada opção tem a própria quantidade (ausente = a do
+   * principal) e o próprio tempo de preparo.
    */
   alternatives?: CraftIngredientOption[];
 }
@@ -299,8 +298,9 @@ export function validateCraftRecipeConfig(
     const alternatives = entry.alternatives;
     if (alternatives === undefined) continue;
     // Lista vazia é tolerada na LEITURA (= sem alternativas); a gravação nunca a persiste.
-    if (!Array.isArray(alternatives) || alternatives.length > MAX_INGREDIENT_ALTERNATIVES) {
-      errors.push(`ingredients[${i}].alternatives: lista de até ${MAX_INGREDIENT_ALTERNATIVES} opções`);
+    // Sem teto de opções: cada item só pode aparecer uma vez na receita, o que já limita.
+    if (!Array.isArray(alternatives)) {
+      errors.push(`ingredients[${i}].alternatives: lista de opções`);
       continue;
     }
     for (const [j, option] of alternatives.entries()) {
