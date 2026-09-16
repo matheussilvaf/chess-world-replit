@@ -18,9 +18,12 @@ import { raw, Router, type Request, type Response } from 'express';
 import { requireSupabaseAdmin } from '../auth/supabaseAuth.js';
 import {
   classifyCraftEntityId,
+  ingredientAlternatives,
+  recipeIngredientItemIds,
   validateCraftItemConfig,
   validateCraftRecipeConfig,
   type CraftIngredient,
+  type CraftIngredientOption,
   type CraftItemConfig,
   type CraftRecipeConfig,
 } from '../shared/craft/CraftShapes.js';
@@ -177,7 +180,7 @@ craftItemsAdminRouter.delete('/:itemId', async (req: Request, res: Response) => 
     return;
   }
   const usedBy = Object.values(recipes.records)
-    .filter((r) => r.ingredients.some((i) => i.itemId === itemId))
+    .filter((r) => recipeIngredientItemIds(r).includes(itemId))
     .map((r) => r.targetId)
     .sort();
   if (usedBy.length > 0) {
@@ -320,11 +323,19 @@ craftRecipesAdminRouter.put('/:targetId', async (req: Request, res: Response) =>
     res.status(400).json({ error: `targetId do corpo ("${body.targetId}") difere da URL ("${targetId}")` });
     return;
   }
+  // Alternativas ("ou") só persistem quando existem; o tempo de preparo só
+  // faz sentido junto delas (0/ausente = instantâneo, nunca gravado).
+  const cleanSeconds = (seconds: number | undefined) =>
+    typeof seconds === 'number' && seconds > 0 ? { prepSeconds: seconds } : {};
   const config: CraftRecipeConfig = {
     targetId,
-    ingredients: body.ingredients.map(
-      (i): CraftIngredient => ({ itemId: i.itemId, quantity: i.quantity }),
-    ),
+    ingredients: body.ingredients.map((i): CraftIngredient => {
+      const alternatives = ingredientAlternatives(i).map(
+        (option): CraftIngredientOption => ({ itemId: option.itemId, ...cleanSeconds(option.prepSeconds) }),
+      );
+      if (alternatives.length === 0) return { itemId: i.itemId, quantity: i.quantity };
+      return { itemId: i.itemId, quantity: i.quantity, ...cleanSeconds(i.prepSeconds), alternatives };
+    }),
     // Sempre explícito no jsonb — "ausente = 1/0" fica só para registros legados.
     outputQuantity: body.outputQuantity ?? 1,
     gambitsCost: body.gambitsCost ?? 0,
@@ -340,14 +351,14 @@ craftRecipesAdminRouter.put('/:targetId', async (req: Request, res: Response) =>
   // (Janela residual mínima é aceita — refs vivem em jsonb, sem transação.)
   const recheck = await listCraftItems();
   if (!recheck.error && !recheck.tableMissing) {
-    const missing = config.ingredients.filter(
-      (i) => classifyCraftEntityId(i.itemId) === 'custom' && recheck.records[i.itemId] === undefined,
+    const missing = recipeIngredientItemIds(config).filter(
+      (id) => classifyCraftEntityId(id) === 'custom' && recheck.records[id] === undefined,
     );
     if (missing.length > 0) {
       await deleteCraftRecipe(targetId);
       res.status(409).json({
-        error: `Item(ns) excluído(s) durante o salvamento: ${missing.map((m) => m.itemId).join(', ')} — receita não salva`,
-        details: missing.map((m) => m.itemId),
+        error: `Item(ns) excluído(s) durante o salvamento: ${missing.join(', ')} — receita não salva`,
+        details: missing,
       });
       return;
     }

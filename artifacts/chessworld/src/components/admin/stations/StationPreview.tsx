@@ -36,9 +36,17 @@ import {
   type LucideIcon,
 } from 'lucide-react';
 import {
+  craftPrepSeconds,
+  ingredientHasAlternatives,
+  ingredientOptionPrepSeconds,
+  ingredientOptions,
+  missingIngredientsFor,
   recipeGambitsCost,
   recipeOutputQuantity,
+  resolveRecipeChoices,
+  type CraftChoices,
   type CraftRecipeConfig,
+  type ResolvedIngredient,
 } from '../../../shared/craft/CraftShapes';
 import {
   DEFAULT_BUTTON_LABEL,
@@ -110,8 +118,12 @@ export function StationPreview({
   edit?: StationEditHandlers;
   /** Provided by the game runtime; admin preview intentionally omits it. */
   onClose?: () => void;
-  /** Real crafting hook. When omitted the admin keeps its simulated loader. */
-  onCraft?: (targetId: string, quantity: number) => Promise<void>;
+  /**
+   * Real crafting hook. When omitted the admin keeps its simulated loader.
+   * `choices` = opção escolhida por card com "ou"; `prepSeconds` = tempo de
+   * preparo dessas escolhas (o servidor espera; aqui vira loader com contagem).
+   */
+  onCraft?: (targetId: string, quantity: number, choices: CraftChoices, prepSeconds: number) => Promise<void>;
   /** Faixa extra logo abaixo do cabeçalho (ex.: estado da estação portátil). */
   banner?: ReactNode;
   /** Saldo de gambits do jogador; ausente = sem bloqueio por gambits (preview do admin). */
@@ -124,6 +136,11 @@ export function StationPreview({
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [qty, setQty] = useState(1);
   const [phase, setPhase] = useState<Phase>('idle');
+  /** Opção escolhida por card com alternativas ("ou"): id principal → id usado. Vazio = principal. */
+  const [choices, setChoices] = useState<Record<string, string>>({});
+  /** Loader com tempo de preparo: quando começou e quanto dura (ms). */
+  const [prepRun, setPrepRun] = useState<{ startedAt: number; ms: number } | null>(null);
+  const [prepNow, setPrepNow] = useState(0);
   /** Posição de inserção durante o arrasto: barra antes de rows[r][c]. */
   const [hoverSlot, setHoverSlot] = useState<{ r: number; c: number } | null>(null);
   const craftTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -142,8 +159,18 @@ export function StationPreview({
     setSelectedId(null);
     setQty(1);
     setPhase('idle');
+    setChoices({});
+    setPrepRun(null);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [station.stationId, tabIndex]);
+
+  // Contagem regressiva do preparo (só enquanto o loader com tempo roda).
+  useEffect(() => {
+    if (!prepRun || phase !== 'crafting') return;
+    setPrepNow(Date.now());
+    const timer = setInterval(() => setPrepNow(Date.now()), 100);
+    return () => clearInterval(timer);
+  }, [prepRun, phase]);
 
   useEffect(() => {
     if (!edit?.draggingId) setHoverSlot(null);
@@ -161,12 +188,11 @@ export function StationPreview({
   const gambitsOk = (recipe: CraftRecipeConfig, quantity: number) =>
     gambits === undefined || gambits >= recipeGambitsCost(recipe) * quantity;
 
+  // Célula: verde se dá para criar 1 com QUALQUER combinação de "ou".
   const cellState = (itemId: string): CellState => {
     const recipe = recipes[itemId];
     if (!recipe) return 'none';
-    for (const ing of recipe.ingredients) {
-      if ((inventory[ing.itemId] ?? 0) < ing.quantity) return 'missing';
-    }
+    if (missingIngredientsFor(recipe, inventory).length > 0) return 'missing';
     if (!gambitsOk(recipe, 1)) return 'missing';
     return 'ok';
   };
@@ -177,37 +203,53 @@ export function StationPreview({
 
   const gambitsCost = selectedRecipe ? recipeGambitsCost(selectedRecipe) : 0;
 
+  // Ingredientes com a escolha aplicada (a primeira opção de cada card é a
+  // pré-selecionada); escolha inválida nunca acontece via UI, cai no principal.
+  const resolvedIngredients = useMemo((): ResolvedIngredient[] => {
+    if (!selectedRecipe) return [];
+    const resolved = resolveRecipeChoices(selectedRecipe, choices);
+    if (resolved.ok) return resolved.ingredients;
+    const primary = resolveRecipeChoices(selectedRecipe, null);
+    return primary.ok ? primary.ingredients : [];
+  }, [selectedRecipe, choices]);
+  const prepSeconds = selectedRecipe ? craftPrepSeconds(selectedRecipe, choices) : 0;
+
   const maxCraftable = useMemo(() => {
     if (!selectedRecipe) return 1;
     let max = Infinity;
-    for (const ing of selectedRecipe.ingredients) {
+    for (const ing of resolvedIngredients) {
       max = Math.min(max, Math.floor((inventory[ing.itemId] ?? 0) / ing.quantity));
     }
     if (gambits !== undefined && gambitsCost > 0) max = Math.min(max, Math.floor(gambits / gambitsCost));
     return Math.max(1, Math.min(Number.isFinite(max) ? max : 1, 999));
-  }, [selectedRecipe, inventory, gambits, gambitsCost]);
+  }, [selectedRecipe, resolvedIngredients, inventory, gambits, gambitsCost]);
 
   const canCraft =
     !!selectedRecipe &&
-    selectedRecipe.ingredients.every((ing) => (inventory[ing.itemId] ?? 0) >= ing.quantity * qty) &&
+    resolvedIngredients.every((ing) => (inventory[ing.itemId] ?? 0) >= ing.quantity * qty) &&
     gambitsOk(selectedRecipe, qty);
 
   const startCraft = async () => {
     if (!canCraft || phase !== 'idle') return;
     setPhase('crafting');
+    setPrepRun(prepSeconds > 0 ? { startedAt: Date.now(), ms: prepSeconds * 1000 } : null);
     if (onCraft && selectedId) {
       try {
-        await onCraft(selectedId, qty);
+        await onCraft(selectedId, qty, choices, prepSeconds);
         setPhase('done');
       } catch {
         setPhase('idle');
+      } finally {
+        setPrepRun(null);
       }
       return;
     }
+    // Admin (sem craft real): simula o tempo de preparo escolhido.
     craftTimer.current = setTimeout(() => {
       craftTimer.current = null;
+      setPrepRun(null);
       setPhase('done');
-    }, 1300);
+    }, Math.max(1300, prepSeconds * 1000));
   };
 
   const selectItem = (id: string) => {
@@ -216,7 +258,25 @@ export function StationPreview({
     setSelectedId((prev) => (prev === id ? prev : id));
     setQty(1);
     setPhase('idle');
+    setChoices({});
+    setPrepRun(null);
   };
+
+  const chooseOption = (primaryId: string, chosenId: string) => {
+    setChoices((prev) => {
+      if (chosenId === primaryId) {
+        if (!(primaryId in prev)) return prev;
+        const next = { ...prev };
+        delete next[primaryId];
+        return next;
+      }
+      return { ...prev, [primaryId]: chosenId };
+    });
+    setQty(1);
+  };
+
+  const prepRemainingSeconds = prepRun ? Math.max(0, Math.ceil((prepRun.startedAt + prepRun.ms - prepNow) / 1000)) : 0;
+  const prepProgress = prepRun ? Math.min(1, Math.max(0, (prepNow - prepRun.startedAt) / prepRun.ms)) : 0;
 
   // ------------------------------------------------------------------ drag
   const allowDrop = (e: React.DragEvent) => {
@@ -425,7 +485,7 @@ export function StationPreview({
             Toque em um item para ver a receita
           </p>
         ) : phase === 'crafting' ? (
-          <div className="py-8 flex flex-col items-center gap-3">
+          <div className="py-8 flex flex-col items-center gap-3" data-testid="craft-loader">
             <Loader2 className="w-8 h-8 text-neutral-300 animate-spin" />
             <p className="text-[13px] text-neutral-400">
               {(activeTab?.buttonLabel ?? DEFAULT_BUTTON_LABEL) === DEFAULT_BUTTON_LABEL
@@ -433,6 +493,22 @@ export function StationPreview({
                 : activeTab?.buttonLabel}
               …
             </p>
+            {prepRun && (
+              <div className="w-full max-w-[260px]" data-testid="craft-prep-countdown">
+                <div className="h-1.5 w-full overflow-hidden rounded-full bg-[#1d1d20]">
+                  <div
+                    className="h-full rounded-full transition-[width] duration-100 ease-linear"
+                    style={{ width: `${Math.round(prepProgress * 100)}%`, backgroundColor: accent }}
+                  />
+                </div>
+                <p className="mt-1.5 text-center text-[12px] tabular-nums text-neutral-500">
+                  Preparando… {prepRemainingSeconds}s
+                </p>
+                <p className="mt-0.5 text-center text-[11px] text-neutral-600">
+                  Fechar a estação cancela a criação.
+                </p>
+              </div>
+            )}
           </div>
         ) : phase === 'done' ? (
           <div className="py-5 flex flex-col items-center gap-2">
@@ -463,16 +539,46 @@ export function StationPreview({
               <>
                 <div className="space-y-0.5">
                   {selectedRecipe.ingredients.map((ing) => {
+                    const chosenId = choices[ing.itemId] ?? ing.itemId;
                     const need = ing.quantity * qty;
-                    const have = inventory[ing.itemId] ?? 0;
+                    const have = inventory[chosenId] ?? 0;
                     const ok = have >= need;
+                    const hasAlternatives = ingredientHasAlternatives(ing);
+                    const chosenSeconds = ingredientOptionPrepSeconds(ing, chosenId);
                     return (
-                      <div key={ing.itemId} className="flex items-center justify-between py-1">
-                        <span className="text-[15px] text-neutral-200">
-                          {resolveItem(ing.itemId)?.name ?? ing.itemId}
-                        </span>
+                      <div key={ing.itemId} className="flex items-center justify-between gap-3 py-1">
+                        {hasAlternatives ? (
+                          <label className="flex min-w-0 flex-1 items-center gap-2">
+                            <select
+                              value={chosenId}
+                              onChange={(event) => chooseOption(ing.itemId, event.target.value)}
+                              data-testid={`craft-ingredient-select-${ing.itemId}`}
+                              className="h-9 min-w-0 flex-1 rounded-lg border border-neutral-700 bg-[#1d1d20] px-2 text-[14px] text-neutral-100 outline-none focus:border-neutral-500"
+                              title="Este ingrediente aceita mais de um item — escolha qual usar"
+                            >
+                              {ingredientOptions(ing).map((option) => {
+                                const seconds = ingredientOptionPrepSeconds(ing, option.itemId);
+                                return (
+                                  <option key={option.itemId} value={option.itemId}>
+                                    {resolveItem(option.itemId)?.name ?? option.itemId}
+                                    {seconds > 0 ? ` · ${seconds}s` : ''}
+                                  </option>
+                                );
+                              })}
+                            </select>
+                            {chosenSeconds > 0 && (
+                              <span className="shrink-0 text-[11px] tabular-nums text-neutral-500" title="Tempo de preparo desta opção">
+                                {chosenSeconds}s
+                              </span>
+                            )}
+                          </label>
+                        ) : (
+                          <span className="text-[15px] text-neutral-200">
+                            {resolveItem(ing.itemId)?.name ?? ing.itemId}
+                          </span>
+                        )}
                         <span
-                          className={`flex items-center gap-1.5 text-[15px] font-semibold ${
+                          className={`flex shrink-0 items-center gap-1.5 text-[15px] font-semibold ${
                             ok ? 'text-green-500' : 'text-red-400'
                           }`}
                         >
@@ -538,9 +644,14 @@ export function StationPreview({
                 {(qty > 1 || output > 1) && (
                   <p className="mt-2 text-[12px] text-neutral-500">
                     {qty * output}x {selectedView.name} ={' '}
-                    {selectedRecipe.ingredients
+                    {resolvedIngredients
                       .map((ing) => `${ing.quantity * qty}x ${resolveItem(ing.itemId)?.name ?? ing.itemId}`)
                       .join(' + ')}
+                  </p>
+                )}
+                {prepSeconds > 0 && (
+                  <p className="mt-2 text-[12px] text-neutral-500" data-testid="craft-prep-hint">
+                    Tempo de preparo: {prepSeconds}s
                   </p>
                 )}
               </>

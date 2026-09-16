@@ -13,7 +13,7 @@
  */
 import { applyInventoryDeltas, getInventory, type InventoryItem } from '../collection/inventoryRepository.js';
 import { getCraftBadgesCached } from '../craft/craftBadgeRepository.js';
-import { BADGE_FOOD, BADGE_FORGING, BADGE_SMELTING, isEdibleItem, itemHasBadge } from '../shared/craft/CraftBadges.js';
+import { BADGE_FOOD, BADGE_FORGING, BADGE_POTION, BADGE_SMELTING, isEdibleItem, itemHasBadge } from '../shared/craft/CraftBadges.js';
 import { placeableStationFor } from '../shared/craft/PlaceableStations.js';
 import { isStationId } from '../shared/craft/StationShapes.js';
 import {
@@ -189,6 +189,10 @@ class ProgressService {
       // Culinária: qualquer item com a badge `food` (prato ou ingrediente), em qualquer estação.
       if (cooking) {
         this.addXp(state, gains, 'cooking', (skills.cooking.items[info.targetId] ?? DEFAULT_COOKING_XP) * quantity);
+      }
+      // Alquimia: item com a badge `potion` (só chega aqui quem tem receita), em qualquer estação.
+      if (itemHasBadge(badges, info.targetId, BADGE_POTION)) {
+        this.addXp(state, gains, 'alchemy', (skills.alchemy[info.targetId] ?? DEFAULT_CRAFT_XP) * quantity);
       }
     });
   }

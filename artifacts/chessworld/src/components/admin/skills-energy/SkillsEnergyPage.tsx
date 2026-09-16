@@ -46,7 +46,7 @@ import {
   type EnergyToolKind,
   type SkillId,
 } from '../../../shared/progress/EnergySkillsShapes';
-import { BADGE_EDIBLE, BADGE_FOOD, BADGE_FORGING, BADGE_SMELTING, isEdibleItem, itemsWithBadge, type CraftBadgeMap } from '../../../shared/craft/CraftBadges';
+import { BADGE_EDIBLE, BADGE_FOOD, BADGE_FORGING, BADGE_POTION, BADGE_SMELTING, isEdibleItem, itemsWithBadge, type CraftBadgeMap } from '../../../shared/craft/CraftBadges';
 import { STATION_IDS, type StationId } from '../../../shared/craft/StationShapes';
 import { useDocumentScrollUnlock } from '../../../hooks/useDocumentScrollUnlock';
 import { resourceByKey } from '../../../lib/collection/resourceCatalog';
@@ -81,6 +81,8 @@ export function SkillsEnergyPage() {
   const [tableSql, setTableSql] = useState<string | null>(null);
   const [progressTableSql, setProgressTableSql] = useState<string | null>(null);
   const [badges, setBadges] = useState<CraftBadgeMap>({});
+  /** Ids com receita cadastrada — Alquimia só lista poções que dá para criar. */
+  const [recipeIds, setRecipeIds] = useState<ReadonlySet<string>>(() => new Set());
   // Aba inicial pelo hash (#skills) — dá para linkar direto da administração.
   const [tab, setTabState] = useState<'energy' | 'skills'>(() =>
     typeof window !== 'undefined' && window.location.hash === '#skills' ? 'skills' : 'energy',
@@ -108,9 +110,10 @@ export function SkillsEnergyPage() {
     setError(null);
     setSuccess(null);
     try {
-      const [res, badgesRes] = await Promise.all([
+      const [res, badgesRes, recipesRes] = await Promise.all([
         energySkillsApi.get(),
         craftApi.badges.list().catch(() => null),
+        craftApi.recipes.list().catch(() => null),
       ]);
       // `config` pode vir null (servidor antigo sem tabela/linha) ou fora do
       // formato: normaliza pelo parser, que preenche os defaults.
@@ -124,6 +127,7 @@ export function SkillsEnergyPage() {
       setTableSql(res.tableMissing ? (res.tableSql ?? null) : null);
       setProgressTableSql(res.progressTableSql ?? null);
       setBadges(badgesRes?.badges ?? {});
+      setRecipeIds(new Set(Object.keys(recipesRes?.recipes ?? {})));
     } catch (cause) {
       applyError(cause);
     } finally {
@@ -177,6 +181,9 @@ export function SkillsEnergyPage() {
   const edibleItems = useMemo(() => itemsWithBadge(badges, BADGE_EDIBLE), [badges]);
   const forgingItems = useMemo(() => itemsWithBadge(badges, BADGE_FORGING), [badges]);
   const smeltingItems = useMemo(() => itemsWithBadge(badges, BADGE_SMELTING), [badges]);
+  /** Alquimia: badge `potion` E receita — sem receita a poção não pode ser criada, logo não rende XP. */
+  const alchemyItems = useMemo(() => itemsWithBadge(badges, BADGE_POTION).filter((id) => recipeIds.has(id)), [badges, recipeIds]);
+  const potionsWithoutRecipe = useMemo(() => itemsWithBadge(badges, BADGE_POTION).filter((id) => !recipeIds.has(id)), [badges, recipeIds]);
   const foodTag = (id: string) => (isEdibleItem(badges, id) ? 'comestível' : 'ingrediente');
 
   const nameOf = (id: string) => inventoryEntry(catalog, id)?.name ?? inventoryFallbackName(id);
@@ -591,8 +598,10 @@ export function SkillsEnergyPage() {
               </Section>
             </div>
 
-            <Section title={skillTitle('alchemy')} subtitle="Itens com a badge `potion` — sem regras por enquanto." icon={<SkillIcon muted />}>
-              <p className="text-xs text-slate-500">Reservada: o servidor já reconhece a badge `potion`, mas ainda não concede XP.</p>
+            <Section title={skillTitle('alchemy')} subtitle="Itens com a badge `potion` que têm receita: XP ao criar (× quantidade, em qualquer estação)." icon={<SkillIcon />}>
+              <Block title="Por poção" hint={potionsWithoutRecipe.length > 0 ? `Sem receita (não aparecem): ${potionsWithoutRecipe.map(nameOf).join(', ')}.` : undefined}>
+                {itemRows(alchemyItems, config.skills.alchemy, DEFAULT_CRAFT_XP, XP_VALUE_RANGE, (id, v) => update((d) => { d.skills.alchemy[id] = v; }), 'XP', 'Nenhuma poção com receita. Dê a badge `potion` ao item e cadastre a receita em /admin/craft.')}
+              </Block>
             </Section>
             <Section title={skillTitle('trading')} subtitle="Sem regras por enquanto." icon={<SkillIcon muted />}>
               <p className="text-xs text-slate-500">Reservada para o futuro sistema de trocas.</p>

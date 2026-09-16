@@ -13,15 +13,18 @@
  */
 import { useEffect, useState } from 'react';
 import { CollectionInventoryPanel } from '../game/CollectionInventoryPanel';
+import { RecipeBookModal } from '../game/RecipeBookModal';
 import { SkillsPanel } from '../game/SkillsPanel';
 import { ToolHotbar } from '../game/ToolHotbar';
 import { useCollectionInventoryStore } from '../../stores/collectionInventoryStore';
 import { useInventoryUiStore } from '../../stores/inventoryUiStore';
 import { useProgressStore } from '../../stores/progressStore';
+import { useRecipeBookStore } from '../../stores/recipeBookStore';
 import { usePlayerCharacterStore } from '../../stores/playerCharacterStore';
 import { clearEatBridge, rejectEat, resolveEat, setEatSender } from '../../game/progress/eatBridge';
 import { emptySlots, weaponSlotIndex } from '../../lib/inventory/inventorySlots';
 import { primeCraftData } from '../../lib/inventory/inventoryVisualCatalog';
+import { primeCraftStations } from '../../lib/craft/recipeBookData';
 import { BADGE_EDIBLE, BADGE_FOOD } from '../../shared/craft/CraftBadges';
 import type { PlayerCharacterConfigV1 } from '../../shared/characters/PlayerCharacterShapes';
 import {
@@ -45,11 +48,35 @@ const STEAK_ICON =
     '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><ellipse cx="16" cy="17" rx="13" ry="9" fill="#7a3b1e"/><ellipse cx="15" cy="16" rx="10" ry="6" fill="#b5532a"/><ellipse cx="13" cy="15" rx="4" ry="2" fill="#e08a5a" opacity=".8"/><circle cx="22" cy="18" r="2.2" fill="#f4e7d3"/></svg>',
   );
 
+const TRAINING_SWORD = 'espada-de-treino';
+const SWORD_ICON =
+  'data:image/svg+xml;utf8,' +
+  encodeURIComponent(
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><path d="M6 26l14-14 4 4L10 30z" fill="#b8c0cc"/><path d="M20 12l6-6 2 2-6 6z" fill="#e6ebf0"/><path d="M4 22l4 4-2 2-4-4z" fill="#7a3b1e"/></svg>',
+  );
+
 // Itens/badges sem rede: o bife é `food` + `edible` (só `edible` deixa comer).
+// Receitas + filiação às estações alimentam o Livro de Receitas (`?receitas=1`):
+// a espada aceita ferro OU cobre (cobre com 5s de preparo) e custa 1 gambit.
 primeCraftData({
-  items: { [STEAK]: { itemId: STEAK, name: 'Bife assado', imageUrl: STEAK_ICON } },
+  items: {
+    [STEAK]: { itemId: STEAK, name: 'Bife assado', imageUrl: STEAK_ICON },
+    [TRAINING_SWORD]: { itemId: TRAINING_SWORD, name: 'Espada de treino', imageUrl: SWORD_ICON },
+  },
   badges: { [STEAK]: [BADGE_FOOD, BADGE_EDIBLE] },
+  recipes: {
+    [STEAK]: { targetId: STEAK, ingredients: [{ itemId: 'mineral:carvao', quantity: 1 }], outputQuantity: 2 },
+    [TRAINING_SWORD]: {
+      targetId: TRAINING_SWORD,
+      ingredients: [
+        { itemId: 'mineral:ferro', quantity: 2, alternatives: [{ itemId: 'mineral:cobre', prepSeconds: 5 }] },
+        { itemId: 'mineral:pedra', quantity: 1 },
+      ],
+      gambitsCost: 1,
+    },
+  },
 });
+primeCraftStations({ members: { [STEAK]: 'fornalha', [TRAINING_SWORD]: 'forja' } });
 
 const BENCH_CHARACTER: PlayerCharacterConfigV1 = {
   v: 1,
@@ -185,6 +212,8 @@ export function InventoryBenchPage() {
   const [seeded, setSeeded] = useState(false);
   const open = useInventoryUiStore((s) => s.open);
   const skillsOpen = useProgressStore((s) => s.skillsOpen);
+  const recipeBookOpen = useRecipeBookStore((s) => s.open);
+  const openRecipeBook = useRecipeBookStore((s) => s.openBook);
   const openInventory = useInventoryUiStore((s) => s.openInventory);
 
   useEffect(() => {
@@ -197,11 +226,14 @@ export function InventoryBenchPage() {
     if (!seeded) return;
     openInventory();
     // `?skills=1` abre o painel de habilidades (no lugar do inventário — são exclusivos).
-    if (new URLSearchParams(window.location.search).has('skills')) {
+    const params = new URLSearchParams(window.location.search);
+    if (params.has('skills')) {
       const progress = useProgressStore.getState();
       if (!progress.skillsOpen) progress.toggleSkills();
     }
-  }, [seeded, openInventory]);
+    // `?receitas=1` abre o Livro de Receitas (fecha o inventário — são exclusivos).
+    if (params.has('receitas')) openRecipeBook();
+  }, [seeded, openInventory, openRecipeBook]);
 
   if (!seeded) return null;
 
@@ -233,9 +265,18 @@ export function InventoryBenchPage() {
         >
           Repor itens
         </button>
+        <button
+          type="button"
+          className="rounded bg-slate-700 px-3 py-1 hover:bg-slate-600"
+          onClick={openRecipeBook}
+          data-testid="bench-open-recipe-book"
+        >
+          Livro de receitas
+        </button>
       </div>
       {open && <CollectionInventoryPanel />}
       {skillsOpen && <SkillsPanel />}
+      {recipeBookOpen && <RecipeBookModal />}
       <ToolHotbar />
     </div>
   );

@@ -1,7 +1,7 @@
 import { applyInventoryDeltas, getInventory, type InventoryItem } from '../collection/inventoryRepository.js';
 import { mergeStationsWithDefaults, isStationId } from '../shared/craft/StationShapes.js';
 import { PLACEABLE_STACK_LIMIT, placeableStationFor } from '../shared/craft/PlaceableStations.js';
-import { recipeGambitsCost } from '../shared/craft/CraftShapes.js';
+import { recipeGambitsCost, resolveRecipeChoices, type CraftChoices } from '../shared/craft/CraftShapes.js';
 import { getCraftItemsCached, listCraftRecipes } from './craftRepository.js';
 import { listStationMembers, listStations } from './stationRepository.js';
 import { progressService } from '../progress/progressService.js';
@@ -12,14 +12,33 @@ export type PlayerCraftResult =
   | { ok: true; items: InventoryItem[]; gambits?: number }
   | { ok: false; message: string };
 
+/**
+ * `choices` (opcional): item escolhido em cada card com alternativas ("ou"),
+ * indexado pelo id PRINCIPAL do card. Inválido/ausente para um card = principal.
+ */
+export function parseCraftChoices(raw: unknown): { ok: true; choices: CraftChoices | null } | { ok: false; message: string } {
+  if (raw === undefined || raw === null) return { ok: true, choices: null };
+  if (typeof raw !== 'object' || Array.isArray(raw)) return { ok: false, message: 'choices: objeto { itemPrincipal: itemEscolhido } esperado' };
+  const entries = Object.entries(raw as Record<string, unknown>);
+  if (entries.length > 32) return { ok: false, message: 'choices: excesso de entradas' };
+  const choices: Record<string, string> = {};
+  for (const [key, value] of entries) {
+    if (typeof value !== 'string' || value.length === 0 || value.length > 200) return { ok: false, message: `choices["${key}"]: id de item esperado` };
+    choices[key] = value;
+  }
+  return { ok: true, choices };
+}
+
 /** Runs every server-side recipe and inventory check; callers supply only identity and selection. */
 export async function executePlayerCraft(
-  userId: string, stationId: unknown, targetId: unknown, quantity: unknown,
+  userId: string, stationId: unknown, targetId: unknown, quantity: unknown, rawChoices?: unknown,
 ): Promise<PlayerCraftResult> {
   if (!isStationId(stationId) || typeof targetId !== 'string' || typeof quantity !== 'number' ||
     !Number.isInteger(quantity) || quantity < 1 || quantity > 999) {
     return { ok: false, message: 'stationId, targetId e quantity inteiro 1..999 são obrigatórios' };
   }
+  const parsedChoices = parseCraftChoices(rawChoices);
+  if (!parsedChoices.ok) return { ok: false, message: parsedChoices.message };
   const [recipes, stations, members] = await Promise.all([listCraftRecipes(), listStations(), listStationMembers()]);
   if (recipes.error || stations.error || members.error) {
     return { ok: false, message: recipes.error ?? stations.error ?? members.error ?? 'Configuração de craft indisponível' };
@@ -33,6 +52,9 @@ export async function executePlayerCraft(
   if (!recipe || members.records[targetId] !== stationId || !tab) {
     return { ok: false, message: 'Item não pode ser criado nesta estação' };
   }
+  // Alternativas ("ou"): a escolha do jogador precisa ser uma opção do card.
+  const resolved = resolveRecipeChoices(recipe, parsedChoices.choices);
+  if (!resolved.ok) return { ok: false, message: resolved.message };
   const produced = (recipe.outputQuantity ?? 1) * quantity;
   // Estações portáteis: uma cópia por inventário (a durabilidade é da cópia).
   const placeable = placeableStationFor(targetId);
@@ -58,7 +80,7 @@ export async function executePlayerCraft(
     }
     gambitsBalance = debit.balance;
   }
-  const deltas = recipe.ingredients.map((ingredient) => ({ itemKey: ingredient.itemId, qty: -ingredient.quantity * quantity }));
+  const deltas = resolved.ingredients.map((ingredient) => ({ itemKey: ingredient.itemId, qty: -ingredient.quantity * quantity }));
   deltas.push({ itemKey: targetId, qty: produced });
   const changed = await applyInventoryDeltas(userId, deltas);
   if (!changed.ok) {
@@ -71,7 +93,7 @@ export async function executePlayerCraft(
   const snapshot = await getInventory(userId);
   if (snapshot.error || snapshot.tableMissing) return { ok: false, message: snapshot.error ?? 'Inventário indisponível após craft' };
   // Energia (por estação + construir estação portátil) e XP (forja/fundição/
-  // culinária) — depois do inventário confirmar; nunca bloqueia o craft.
+  // culinária/alquimia) — depois do inventário confirmar; nunca bloqueia o craft.
   progressService.recordCraft(userId, { stationId, targetId, quantity }).catch((error: unknown) => {
     console.warn(`[craft] progresso do craft não registrado: ${error instanceof Error ? error.message : String(error)}`);
   });

@@ -3,7 +3,7 @@ import { StationPreview } from '../admin/stations/StationPreview';
 import { getColyseusHttpUrl } from '../../config/colyseus';
 import { getGeneratorManifest } from '../../game/characters/appearanceRuntime';
 import { buildCraftCatalog } from '../../lib/craft/craftCatalog';
-import { craft } from '../../game/stations/stationCraftBridge';
+import { cancelStationCrafts, craft } from '../../game/stations/stationCraftBridge';
 import { useCollectionInventoryStore } from '../../stores/collectionInventoryStore';
 import { useAuthStore } from '../../stores/authStore';
 import { usePlacedStationsStore } from '../../stores/placedStationsStore';
@@ -48,6 +48,10 @@ export function StationGamePanel({ stationId, placedId, onClose }: {
   }, [placedGone, pushNotice, onClose]);
   const applySnapshot = useCollectionInventoryStore((state) => state.applyServerTotals);
   const setInventoryError = useCollectionInventoryStore((state) => state.setInventoryError);
+  // Fechar o card (por qualquer caminho: X, Esc, afastar-se, estação sumiu)
+  // desiste de um craft com tempo de preparo ainda em espera — o servidor
+  // descarta o pedido e NADA é criado.
+  useEffect(() => () => cancelStationCrafts(), []);
   const [data, setData] = useState<{ stations: StationsPayload; craft: CraftPayload; manifest: Awaited<ReturnType<typeof getGeneratorManifest>> } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [tab, setTab] = useState(0);
@@ -108,9 +112,9 @@ export function StationGamePanel({ stationId, placedId, onClose }: {
           onClose={onClose}
           banner={placed ? <PlacedStationBanner station={placed} /> : undefined}
           gambits={gambits}
-          onCraft={async (targetId, quantity) => {
+          onCraft={async (targetId, quantity, choices, prepSeconds) => {
             try {
-              const result = await craft(stationId, targetId, quantity, placedId);
+              const result = await craft({ stationId, targetId, quantity, placedId, choices, prepSeconds });
               applySnapshot(result.items);
             } catch (reason) {
               const message = reason instanceof Error ? reason.message : 'Falha ao criar item.';

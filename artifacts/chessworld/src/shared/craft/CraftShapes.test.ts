@@ -1,11 +1,17 @@
 import { describe, expect, it } from 'vitest';
 import {
+  autoChoicesFor,
   canCraft,
   classifyCraftEntityId,
+  craftPrepSeconds,
   craftableTargetIds,
+  ingredientOptionPrepSeconds,
+  ingredientOptions,
   isInventoryItemId,
   missingIngredientsFor,
+  recipeIngredientItemIds,
   recipeOutputQuantity,
+  resolveRecipeChoices,
   sameIngredientBag,
   slugifyCraftItemName,
   validateCraftItemConfig,
@@ -248,5 +254,110 @@ describe('sameIngredientBag', () => {
         ],
       ),
     ).toBe(true);
+  });
+});
+
+describe('ingredientes alternativos ("ou") e tempo de preparo', () => {
+  const recipe: CraftRecipeConfig = {
+    targetId: 'pocao-de-cura',
+    ingredients: [
+      {
+        itemId: 'herb:queen_thorn',
+        quantity: 2,
+        prepSeconds: 0,
+        alternatives: [
+          { itemId: 'herb:red_herb', prepSeconds: 5 },
+          { itemId: 'mineral:ouro', prepSeconds: 20 },
+        ],
+      },
+      { itemId: 'mineral:pedra', quantity: 1 },
+    ],
+  };
+
+  it('valida alternativas: únicas na receita, item de inventário, tempo 0..300', () => {
+    expect(validateCraftRecipeConfig(recipe).ok).toBe(true);
+    const dup = validateCraftRecipeConfig({
+      ...recipe,
+      ingredients: [
+        { ...recipe.ingredients[0], alternatives: [{ itemId: 'mineral:pedra' }] },
+        recipe.ingredients[1],
+      ],
+    });
+    expect(dup.ok).toBe(false);
+    expect(dup.errors.some((e) => e.includes('repetido'))).toBe(true);
+    const self = validateCraftRecipeConfig({
+      ...recipe,
+      ingredients: [{ ...recipe.ingredients[0], alternatives: [{ itemId: 'pocao-de-cura' }] }],
+    });
+    expect(self.ok).toBe(false);
+    const badTime = validateCraftRecipeConfig({
+      ...recipe,
+      ingredients: [{ itemId: 'herb:queen_thorn', quantity: 1, alternatives: [{ itemId: 'herb:red_herb', prepSeconds: 301 }] }],
+    });
+    expect(badTime.ok).toBe(false);
+    expect(badTime.errors.some((e) => e.includes('prepSeconds'))).toBe(true);
+    const tooMany = validateCraftRecipeConfig({
+      ...recipe,
+      ingredients: [
+        {
+          itemId: 'herb:queen_thorn',
+          quantity: 1,
+          alternatives: [{ itemId: 'a' }, { itemId: 'b' }, { itemId: 'c' }, { itemId: 'd' }],
+        },
+      ],
+    });
+    expect(tooMany.ok).toBe(false);
+    // Lista vazia é tolerada na leitura (registro sem alternativas).
+    expect(
+      validateCraftRecipeConfig({ ...recipe, ingredients: [{ itemId: 'herb:queen_thorn', quantity: 1, alternatives: [] }] }).ok,
+    ).toBe(true);
+  });
+
+  it('ingredientOptions lista principal + alternativas; tempo só vale com alternativas', () => {
+    expect(ingredientOptions(recipe.ingredients[0]).map((o) => o.itemId)).toEqual([
+      'herb:queen_thorn',
+      'herb:red_herb',
+      'mineral:ouro',
+    ]);
+    expect(ingredientOptionPrepSeconds(recipe.ingredients[0], 'herb:queen_thorn')).toBe(0);
+    expect(ingredientOptionPrepSeconds(recipe.ingredients[0], 'herb:red_herb')).toBe(5);
+    expect(ingredientOptionPrepSeconds({ itemId: 'x', quantity: 1, prepSeconds: 9 }, 'x')).toBe(0);
+    expect(recipeIngredientItemIds(recipe)).toEqual(['herb:queen_thorn', 'herb:red_herb', 'mineral:ouro', 'mineral:pedra']);
+  });
+
+  it('resolveRecipeChoices aplica a escolha, calcula o maior tempo e recusa escolha inválida', () => {
+    const primary = resolveRecipeChoices(recipe);
+    expect(primary.ok && primary.ingredients.map((i) => i.itemId)).toEqual(['herb:queen_thorn', 'mineral:pedra']);
+    expect(primary.ok && primary.prepSeconds).toBe(0);
+    const alt = resolveRecipeChoices(recipe, { 'herb:queen_thorn': 'mineral:ouro' });
+    expect(alt.ok && alt.ingredients[0]).toEqual({ primaryId: 'herb:queen_thorn', itemId: 'mineral:ouro', quantity: 2, prepSeconds: 20 });
+    expect(craftPrepSeconds(recipe, { 'herb:queen_thorn': 'mineral:ouro' })).toBe(20);
+    expect(resolveRecipeChoices(recipe, { 'herb:queen_thorn': 'mineral:pedra' }).ok).toBe(false);
+    expect(resolveRecipeChoices(recipe, { 'mineral:pedra': 'mineral:pedra' }).ok).toBe(true);
+    expect(resolveRecipeChoices(recipe, { 'mineral:pedra': 'herb:red_herb' }).ok).toBe(false);
+    expect(resolveRecipeChoices(recipe, { 'nao-existe': 'mineral:pedra' }).ok).toBe(false);
+  });
+
+  it('craftabilidade considera qualquer opção do card (escolha automática) ou a escolha dada', () => {
+    const counts = { 'mineral:ouro': 2, 'mineral:pedra': 1 };
+    expect(autoChoicesFor(recipe, counts)).toEqual({ 'herb:queen_thorn': 'mineral:ouro' });
+    expect(canCraft(recipe, counts)).toBe(true);
+    expect(missingIngredientsFor(recipe, counts, { 'herb:queen_thorn': 'herb:red_herb' })).toEqual([
+      { itemId: 'herb:red_herb', need: 2, have: 0 },
+    ]);
+    expect(autoChoicesFor(recipe, {})).toEqual({ 'herb:queen_thorn': 'herb:queen_thorn' });
+    expect(craftableTargetIds({ [recipe.targetId]: recipe }, counts)).toEqual(['pocao-de-cura']);
+  });
+
+  it('sameIngredientBag distingue alternativas e tempos', () => {
+    const base = recipe.ingredients;
+    expect(sameIngredientBag(base, [...base].reverse())).toBe(true);
+    expect(sameIngredientBag(base, [{ itemId: 'herb:queen_thorn', quantity: 2 }, base[1]])).toBe(false);
+    expect(
+      sameIngredientBag(base, [
+        { ...base[0], alternatives: [{ itemId: 'herb:red_herb', prepSeconds: 7 }, { itemId: 'mineral:ouro', prepSeconds: 20 }] },
+        base[1],
+      ]),
+    ).toBe(false);
   });
 });

@@ -19,12 +19,12 @@ import {
   type PlayerCharacterConfigV1,
 } from '../shared/characters/PlayerCharacterShapes.js';
 import { verifySupabaseToken } from '../auth/supabaseAuth.js';
-import { isInventoryItemId } from '../shared/craft/CraftShapes.js';
+import { craftPrepSeconds, isInventoryItemId } from '../shared/craft/CraftShapes.js';
 import { INVENTORY_DROP_MAX_DISTANCE, INVENTORY_PICKUP_MAX_DISTANCE, WORLD_DROP_TTL_MS, yieldItemKeyFor } from '../shared/collection/CollectionShapes.js';
 import { applyInventoryDeltas, clearInventory, getInventory, giveWithDurability, hasDurability, takeWithDurability } from '../collection/inventoryRepository.js';
-import { executePlayerCraft } from '../craft/craftService.js';
+import { executePlayerCraft, parseCraftChoices } from '../craft/craftService.js';
 import { PLACEABLE_STACK_LIMIT, placeableStationFor } from '../shared/craft/PlaceableStations.js';
-import { getCraftItemsCached } from '../craft/craftRepository.js';
+import { getCraftItemsCached, getCraftRecipesCached } from '../craft/craftRepository.js';
 import { PlacedStationManager, maxDurabilityForItem, type PlacedReply } from './PlacedStationManager.js';
 import { BIGCHESS_COUNTER_TICK_MS, BIGCHESS_TICK_MS, BigChessManager } from '../bigchess/BigChessManager.js';
 import { progressService } from '../progress/progressService.js';
@@ -53,6 +53,17 @@ const logProgressError = (error: unknown): void => {
   console.warn(`[WorldRoom] progresso não registrado: ${error instanceof Error ? error.message : String(error)}`);
 };
 type RoomReply = { event: 'inventory_changed' | 'inventory_error' | 'craft_result' | 'craft_error' | 'eat_result'; payload: Record<string, unknown> };
+/**
+ * Craft em andamento de uma sessão (do pedido até a resposta). `cancel` vira
+ * a rejeição do timer de preparo enquanto ele existe; antes/depois só marca
+ * `cancelled`, que o handler consulta em cada etapa.
+ */
+interface PendingCraft {
+  requestId: string;
+  cancelled: string | null;
+  cancel: (message: string) => void;
+}
+
 interface RoomRequestEntry { kind: string; fingerprint: string; task: Promise<RoomReply>; settled: boolean; }
 
 export class WorldRoom extends Room<WorldState> {
@@ -105,6 +116,12 @@ export class WorldRoom extends Room<WorldState> {
   private persistQueue = new Map<string, Promise<void>>();
   /** Per-session idempotent operation cache. */
   private inventoryRequests = new Map<string, Map<string, RoomRequestEntry>>();
+  /**
+   * Craft com tempo de preparo em andamento, por sessão (um por vez). O
+   * servidor é quem espera: fechar a estação (`craft_cancel`), sair da sala ou
+   * cair cancela ANTES de o item existir — o cliente só mostra o loader.
+   */
+  private pendingCrafts = new Map<string, PendingCraft>();
   private dropLocks = new Map<string, Promise<void>>();
   /** Estações portáteis posicionadas no mapa (place/pickup/craft privado/permissões/expiração); criado em onCreate. */
   private placedStations!: PlacedStationManager;
@@ -689,8 +706,14 @@ export class WorldRoom extends Room<WorldState> {
       void this.runRoomRequest(client, 'inventory_pickup', body?.requestId, JSON.stringify([body?.dropId]), () => this.handleInventoryPickup(client, data));
     });
     this.onMessage('craft_item', (client, data) => {
-      const body = data as { requestId?: unknown; stationId?: unknown; targetId?: unknown; quantity?: unknown; placedId?: unknown };
-      void this.runRoomRequest(client, 'craft_item', body?.requestId, JSON.stringify([body?.stationId, body?.targetId, body?.quantity, body?.placedId ?? null]), () => this.handleCraftItem(client, data));
+      const body = data as { requestId?: unknown; stationId?: unknown; targetId?: unknown; quantity?: unknown; placedId?: unknown; choices?: unknown };
+      void this.runRoomRequest(client, 'craft_item', body?.requestId, JSON.stringify([body?.stationId, body?.targetId, body?.quantity, body?.placedId ?? null, body?.choices ?? null]), () => this.handleCraftItem(client, data));
+    });
+    // Desiste de um craft com tempo de preparo (fechou a estação): nada é criado.
+    this.onMessage('craft_cancel', (client, data) => {
+      const body = data as { requestId?: unknown };
+      const pending = this.pendingCrafts.get(client.sessionId);
+      if (pending && (typeof body?.requestId !== 'string' || body.requestId === pending.requestId)) pending.cancel('Criação cancelada');
     });
     // Comer (badge `food`): o servidor consome só o necessário para encher a energia.
     this.onMessage('eat_item', (client, data) => {
@@ -860,18 +883,92 @@ export class WorldRoom extends Room<WorldState> {
 
   private async handleCraftItem(client: Client, data: unknown): Promise<RoomReply> {
     const player = this.state.players.get(client.sessionId);
-    const body = data as { stationId?: unknown; targetId?: unknown; quantity?: unknown; placedId?: unknown };
+    const body = data as { requestId?: unknown; stationId?: unknown; targetId?: unknown; quantity?: unknown; placedId?: unknown; choices?: unknown };
     if (!player || player.id.startsWith('anon:')) return { event: 'craft_error', payload: { message: 'Autenticação obrigatória' } };
     if (!this.region.startsWith('craft:')) return { event: 'craft_error', payload: { message: 'Craft disponível apenas no Mundo de Coleta' } };
-    // Estação portátil posicionada: dono/autorizado, perto dela, gasta 1 de durabilidade.
-    if (typeof body?.placedId === 'string' && body.placedId.length > 0) return this.placedStations.handleCraft(player, body.placedId, body);
-    if (typeof body?.stationId !== 'string' || !this.isNearCraftStation(player.x, player.y, body.stationId)) {
+    const usePlaced = typeof body?.placedId === 'string' && body.placedId.length > 0;
+    const nearPublic = () => typeof body?.stationId === 'string' && this.isNearCraftStation(player.x, player.y, body.stationId);
+    if (!usePlaced && !nearPublic()) {
       return { event: 'craft_error', payload: { message: 'Você precisa estar perto da estação selecionada' } };
     }
-    const result = await executePlayerCraft(player.id, body.stationId, body.targetId, body.quantity);
-    return result.ok
-      ? { event: 'craft_result', payload: { items: result.items, ...(result.gambits !== undefined ? { gambits: result.gambits } : {}) } }
-      : { event: 'craft_error', payload: { message: result.message } };
+    // Bilhete registrado ANTES do primeiro await: um craft_cancel (fechou a
+    // estação) que chegue enquanto a receita ainda é lida já conta — senão o
+    // item nasceria com a tela fechada. Só UM por sessão, do pedido até a
+    // resposta: o loader nunca "empilha" criações.
+    if (this.pendingCrafts.has(client.sessionId)) return { event: 'craft_error', payload: { message: 'Aguarde a criação em andamento' } };
+    const pending: PendingCraft = {
+      requestId: typeof body.requestId === 'string' ? body.requestId : '',
+      cancelled: null,
+      cancel: (message) => { pending.cancelled = message; },
+    };
+    this.pendingCrafts.set(client.sessionId, pending);
+    try {
+      // Tempo de preparo (opção "ou" com tempo): o servidor espera aqui. Escolha
+      // inválida dá 0 e cai na recusa normal do executePlayerCraft logo abaixo.
+      const plan = await this.craftPrepPlan(body.targetId, body.choices);
+      if (plan.seconds > 0) {
+        if (pending.cancelled) return { event: 'craft_error', payload: { message: pending.cancelled } };
+        const waited = await this.waitCraftPrep(pending, plan.seconds);
+        if (!waited.ok) return { event: 'craft_error', payload: { message: waited.message } };
+        // Depois da espera tudo pode ter mudado: desmaiou, saiu de perto, sumiu.
+        if (!this.state.players.get(client.sessionId) || this.combatResolver.isDead(client.sessionId)) {
+          return { event: 'craft_error', payload: { message: 'Criação cancelada' } };
+        }
+        if (!usePlaced && !nearPublic()) {
+          return { event: 'craft_error', payload: { message: 'Você se afastou da estação — nada foi criado' } };
+        }
+        // Receita editada pelo admin durante o preparo: o que o jogador viu (e o
+        // tempo que esperou) já não vale — não executa a receita nova sem espera.
+        const again = await this.craftPrepPlan(body.targetId, body.choices);
+        if (pending.cancelled) return { event: 'craft_error', payload: { message: pending.cancelled } };
+        if (again.fingerprint !== plan.fingerprint) {
+          return { event: 'craft_error', payload: { message: 'A receita mudou durante o preparo — tente de novo' } };
+        }
+      }
+      // Estação portátil posicionada: dono/autorizado, perto dela, gasta 1 de durabilidade.
+      if (usePlaced) return await this.placedStations.handleCraft(player, body.placedId as string, body);
+      const result = await executePlayerCraft(player.id, body.stationId, body.targetId, body.quantity, body.choices);
+      return result.ok
+        ? { event: 'craft_result', payload: { items: result.items, ...(result.gambits !== undefined ? { gambits: result.gambits } : {}) } }
+        : { event: 'craft_error', payload: { message: result.message } };
+    } finally {
+      if (this.pendingCrafts.get(client.sessionId) === pending) this.pendingCrafts.delete(client.sessionId);
+    }
+  }
+
+  /**
+   * Plano de preparo do craft pedido: segundos (0 = instantâneo, receita
+   * desconhecida ou escolha inválida) e a impressão digital da receita, para
+   * detectar edição durante a espera.
+   */
+  private async craftPrepPlan(targetId: unknown, rawChoices: unknown): Promise<{ seconds: number; fingerprint: string }> {
+    if (typeof targetId !== 'string') return { seconds: 0, fingerprint: '' };
+    const parsed = parseCraftChoices(rawChoices);
+    if (!parsed.ok) return { seconds: 0, fingerprint: '' };
+    const recipe = (await getCraftRecipesCached())[targetId];
+    if (!recipe) return { seconds: 0, fingerprint: '' };
+    // Sem escolha explícita vale a opção principal — que também pode ter tempo.
+    return { seconds: craftPrepSeconds(recipe, parsed.choices), fingerprint: JSON.stringify(recipe) };
+  }
+
+  /**
+   * Espera o tempo de preparo de um craft já registrado em `pendingCrafts`.
+   * Resolve ok=false se o jogador cancelar (`craft_cancel`) ou sair/cair
+   * (onLeave) — inclusive se o cancelamento chegou antes do timer existir.
+   */
+  private waitCraftPrep(pending: PendingCraft, seconds: number): Promise<{ ok: true } | { ok: false; message: string }> {
+    if (pending.cancelled) return Promise.resolve({ ok: false, message: pending.cancelled });
+    return new Promise((resolve) => {
+      const timer = this.clock.setTimeout(() => {
+        pending.cancel = (message) => { pending.cancelled = message; };
+        resolve(pending.cancelled ? { ok: false, message: pending.cancelled } : { ok: true });
+      }, seconds * 1000);
+      pending.cancel = (message) => {
+        pending.cancelled = message;
+        timer.clear();
+        resolve({ ok: false, message });
+      };
+    });
   }
 
   private async handleEatItem(client: Client, data: unknown): Promise<RoomReply> {
@@ -1399,6 +1496,7 @@ export class WorldRoom extends Room<WorldState> {
     this.characterLoadSeq.delete(client.sessionId);
     this.playerCharacters.delete(client.sessionId);
     this.equipSeq.delete(client.sessionId);
+    this.pendingCrafts.get(client.sessionId)?.cancel('Você saiu antes de terminar a criação');
     this.inventoryRequests.delete(client.sessionId);
     this.movementGuards.delete(client.sessionId);
     this.progressUnsubs.get(client.sessionId)?.();

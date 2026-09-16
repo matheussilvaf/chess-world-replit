@@ -47,7 +47,9 @@ import {
   parseWeaponAssetId,
 } from '../../../shared/combat/WeaponShapes';
 import {
+  CRAFT_PREP_SECONDS_PRESETS,
   MAX_GAMBITS_COST,
+  MAX_INGREDIENT_ALTERNATIVES,
   MAX_INGREDIENT_QUANTITY,
   MAX_OUTPUT_QUANTITY,
   MAX_RECIPE_INGREDIENTS,
@@ -55,11 +57,14 @@ import {
   MIN_INGREDIENT_QUANTITY,
   MIN_OUTPUT_QUANTITY,
   classifyCraftEntityId,
+  ingredientAlternatives,
   recipeGambitsCost,
+  recipeIngredientItemIds,
   recipeOutputQuantity,
   sameIngredientBag,
   slugifyCraftItemName,
   type CraftIngredient,
+  type CraftIngredientOption,
   type CraftItemConfig,
   type CraftRecipeConfig,
 } from '../../../shared/craft/CraftShapes';
@@ -392,11 +397,14 @@ export function CraftAdminPage() {
       : draft.length > 0
     : false;
   const dirty = ingredientsDirty || outputDirty || gambitsDirty;
-  /** Refs mortas: só ids fora de qualquer classe ou craft items excluídos. */
-  const unknownRefs = draft.filter((i) => {
-    const kind = classifyCraftEntityId(i.itemId);
-    return kind === null || (kind === 'custom' && items[i.itemId] === undefined);
-  });
+  /** Refs mortas (principais E alternativas): ids fora de qualquer classe ou craft items excluídos. */
+  const unknownRefs = recipeIngredientItemIds({ ingredients: draft })
+    .filter((itemId) => {
+      const kind = classifyCraftEntityId(itemId);
+      return kind === null || (kind === 'custom' && items[itemId] === undefined);
+    })
+    .map((itemId) => ({ itemId }));
+  const usedIds = new Set(recipeIngredientItemIds({ ingredients: draft }));
 
   const setDraftFor = (targetId: string, list: CraftIngredient[]) => {
     setRecipeDrafts((prev) => ({ ...prev, [targetId]: list }));
@@ -428,8 +436,57 @@ export function CraftAdminPage() {
   const addIngredient = (itemId: string) => {
     if (!selectedTarget || draft.length >= MAX_RECIPE_INGREDIENTS) return;
     if (itemId === selectedTarget) return;
-    if (draft.some((i) => i.itemId === itemId)) return;
+    if (usedIds.has(itemId)) return;
     setDraftFor(selectedTarget, [...draft, { itemId, quantity: 1 }]);
+  };
+
+  // ---- alternativas ("ou") + tempo de preparo por opção
+  const addAlternative = (index: number, itemId: string) => {
+    if (!selectedTarget || itemId === selectedTarget || usedIds.has(itemId)) return;
+    setDraftFor(
+      selectedTarget,
+      draft.map((e, i) => {
+        if (i !== index) return e;
+        const alternatives = ingredientAlternatives(e);
+        if (alternatives.length >= MAX_INGREDIENT_ALTERNATIVES) return e;
+        return { ...e, alternatives: [...alternatives, { itemId }] };
+      }),
+    );
+  };
+
+  /** Remove uma alternativa; sem nenhuma sobrando, o card volta a ser simples (tempo zerado). */
+  const removeAlternative = (index: number, itemId: string) => {
+    if (!selectedTarget) return;
+    setDraftFor(
+      selectedTarget,
+      draft.map((e, i) => {
+        if (i !== index) return e;
+        const alternatives = ingredientAlternatives(e).filter((option) => option.itemId !== itemId);
+        if (alternatives.length === 0) return { itemId: e.itemId, quantity: e.quantity };
+        return { ...e, alternatives };
+      }),
+    );
+  };
+
+  /** Tempo de preparo de UMA opção do card (principal ou alternativa); 0 = instantâneo (chave removida). */
+  const setOptionSeconds = (index: number, optionItemId: string, seconds: number) => {
+    if (!selectedTarget) return;
+    setDraftFor(
+      selectedTarget,
+      draft.map((e, i) => {
+        if (i !== index) return e;
+        if (optionItemId === e.itemId) {
+          const rest: CraftIngredient = { itemId: e.itemId, quantity: e.quantity, alternatives: e.alternatives };
+          return seconds > 0 ? { ...rest, prepSeconds: seconds } : rest;
+        }
+        return {
+          ...e,
+          alternatives: ingredientAlternatives(e).map((option): CraftIngredientOption =>
+            option.itemId === optionItemId ? (seconds > 0 ? { itemId: option.itemId, prepSeconds: seconds } : { itemId: option.itemId }) : option,
+          ),
+        };
+      }),
+    );
   };
 
   const removeIngredient = (index: number) => {
@@ -637,7 +694,7 @@ export function CraftAdminPage() {
   // ------------------------------------------------- picker de ingredientes
   /** Seções com as entradas ainda elegíveis (sem o alvo e sem as já usadas). */
   const pickerSections = useMemo(() => {
-    const used = new Set(draft.map((d) => d.itemId));
+    const used = new Set(recipeIngredientItemIds({ ingredients: draft }));
     return catalog.sections
       .map((section) => ({
         ...section,
@@ -1061,6 +1118,75 @@ export function CraftAdminPage() {
                               ingEntry?.name ?? entry.itemId
                             )}
                           </p>
+                          {/* Alternativas ("ou"): o jogador escolhe UMA das opções; cada uma com tempo de preparo. */}
+                          {ingredientAlternatives(entry).length > 0 && (
+                            <div className="w-full space-y-1" data-testid={`recipe-alternatives-${entry.itemId}`}>
+                              <PrepSecondsSelect
+                                label={ingEntry?.name ?? entry.itemId}
+                                value={entry.prepSeconds ?? 0}
+                                onChange={(seconds) => setOptionSeconds(slot, entry.itemId, seconds)}
+                                disabled={busy}
+                              />
+                              {ingredientAlternatives(entry).map((option) => {
+                                const optionEntry = catalog.byId.get(option.itemId) ?? null;
+                                const optionUnknown = unknownRefs.some((u) => u.itemId === option.itemId);
+                                return (
+                                  <div
+                                    key={option.itemId}
+                                    className={`rounded-md border px-1 py-1 ${
+                                      optionUnknown ? 'border-rose-500/50 bg-rose-500/[0.06]' : 'border-slate-700/60 bg-slate-900/60'
+                                    }`}
+                                  >
+                                    <div className="flex items-center gap-1">
+                                      <span className="text-[9px] font-bold uppercase tracking-wide text-cyan-300/90">ou</span>
+                                      <CatalogThumb thumb={optionEntry?.thumb ?? { kind: 'none' }} size={18} />
+                                      <span className={`min-w-0 flex-1 truncate text-[10px] ${optionUnknown ? 'text-rose-300' : 'text-slate-300'}`}>
+                                        {optionUnknown ? `${option.itemId} (removido)` : (optionEntry?.name ?? option.itemId)}
+                                      </span>
+                                      <button
+                                        type="button"
+                                        title="Remover alternativa"
+                                        className="p-0.5 rounded text-slate-500 hover:text-rose-300"
+                                        onClick={() => removeAlternative(slot, option.itemId)}
+                                        disabled={busy}
+                                      >
+                                        <X className="w-3 h-3" />
+                                      </button>
+                                    </div>
+                                    <PrepSecondsSelect
+                                      label={optionEntry?.name ?? option.itemId}
+                                      value={option.prepSeconds ?? 0}
+                                      onChange={(seconds) => setOptionSeconds(slot, option.itemId, seconds)}
+                                      disabled={busy}
+                                    />
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          )}
+                          {ingredientAlternatives(entry).length < MAX_INGREDIENT_ALTERNATIVES && pickerSections.length > 0 && (
+                            <select
+                              value=""
+                              title="Aceitar outro item no lugar deste (o jogador escolhe qual usar)"
+                              data-testid={`recipe-add-alternative-${entry.itemId}`}
+                              className="w-full bg-slate-900/80 border border-cyan-500/30 rounded-md px-1 py-0.5 text-[10px] text-cyan-200 focus:outline-none focus:border-cyan-500/60"
+                              onChange={(e) => {
+                                if (e.target.value) addAlternative(slot, e.target.value);
+                              }}
+                              disabled={busy || tableMissing}
+                            >
+                              <option value="">+ ou…</option>
+                              {pickerSections.map((section) => (
+                                <optgroup key={section.id} label={section.label}>
+                                  {section.entries.map((it) => (
+                                    <option key={it.id} value={it.id}>
+                                      {it.name}
+                                    </option>
+                                  ))}
+                                </optgroup>
+                              ))}
+                            </select>
+                          )}
                           <div className="flex items-center gap-1">
                             <button
                               type="button"
@@ -1147,7 +1273,9 @@ export function CraftAdminPage() {
 
                 <p className="text-[10px] font-mono text-slate-500 mb-3">
                   {draft.length}/{MAX_RECIPE_INGREDIENTS} ingredientes · qualquer item do jogo (menos o
-                  próprio) · quantidade {MIN_INGREDIENT_QUANTITY}–{MAX_INGREDIENT_QUANTITY}
+                  próprio) · quantidade {MIN_INGREDIENT_QUANTITY}–{MAX_INGREDIENT_QUANTITY} · "+ ou…" aceita
+                  até {MAX_INGREDIENT_ALTERNATIVES} itens alternativos no mesmo card (mesma quantidade; o jogador
+                  escolhe qual usar e cada opção pode ter tempo de preparo)
                 </p>
 
                 <div className="flex flex-wrap items-center gap-2">
@@ -1201,5 +1329,39 @@ export function CraftAdminPage() {
         />
       )}
     </div>
+  );
+}
+
+/** Select compacto de tempo de preparo de UMA opção (0 = Instantâneo). */
+function PrepSecondsSelect({
+  label,
+  value,
+  onChange,
+  disabled,
+}: {
+  label: string;
+  value: number;
+  onChange: (seconds: number) => void;
+  disabled?: boolean;
+}) {
+  // Valor fora dos presets (gravado por outra via) continua selecionável.
+  const options = CRAFT_PREP_SECONDS_PRESETS.includes(value)
+    ? CRAFT_PREP_SECONDS_PRESETS
+    : [...CRAFT_PREP_SECONDS_PRESETS, value].sort((a, b) => a - b);
+  return (
+    <select
+      value={value}
+      title={`Tempo de preparo quando o jogador escolhe "${label}"`}
+      aria-label={`Tempo de preparo de ${label}`}
+      className="w-full bg-slate-900/80 border border-slate-700/70 rounded-md px-1 py-0.5 text-[10px] text-slate-300 focus:outline-none focus:border-cyan-500/60"
+      onChange={(e) => onChange(Number(e.target.value))}
+      disabled={disabled}
+    >
+      {options.map((seconds) => (
+        <option key={seconds} value={seconds}>
+          {seconds === 0 ? 'Instantâneo' : `${seconds} s`}
+        </option>
+      ))}
+    </select>
   );
 }

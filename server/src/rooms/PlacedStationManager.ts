@@ -192,7 +192,7 @@ export class PlacedStationManager {
   // ----------------------------------------------------------------- craft
 
   /** Craft numa estação portátil: dono ou autorizado, perto, com durabilidade; cada craft gasta 1. */
-  async handleCraft(player: PlayerState, placedId: string, body: { stationId?: unknown; targetId?: unknown; quantity?: unknown }): Promise<PlacedReply> {
+  async handleCraft(player: PlayerState, placedId: string, body: { stationId?: unknown; targetId?: unknown; quantity?: unknown; choices?: unknown }): Promise<PlacedReply> {
     return this.host.withLock(`placed:${placedId}`, async () => {
       const placed = this.host.state.placedStations.get(placedId);
       if (!placed) return craftError('Esta estação não está mais aqui');
@@ -205,7 +205,7 @@ export class PlacedStationManager {
       if (!def || distanceToRect(player.x, player.y, placedStationRect(def, placed.x, placed.y)) > PLACED_STATION_USE_DISTANCE) {
         return craftError('Você precisa estar perto da estação');
       }
-      const result = await executePlayerCraft(player.id, body.stationId, body.targetId, body.quantity);
+      const result = await executePlayerCraft(player.id, body.stationId, body.targetId, body.quantity, body.choices);
       if (!result.ok) return craftError(result.message);
       const still = this.host.state.placedStations.get(placedId);
       if (still) still.durability = Math.max(0, still.durability - 1);

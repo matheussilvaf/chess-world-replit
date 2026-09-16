@@ -149,6 +149,8 @@ export interface SkillsConfig {
   /** itemId (badge `smelting`) → XP por craft. */
   smelting: Record<string, number>;
   cooking: CookingXp;
+  /** itemId (badge `potion` + receita) → XP por craft. */
+  alchemy: Record<string, number>;
 }
 
 export interface EnergySkillsConfig {
@@ -203,6 +205,7 @@ export const DEFAULT_ENERGY_SKILLS_CONFIG: EnergySkillsConfig = {
     forging: {},
     smelting: {},
     cooking: { items: {}, eat: 2 },
+    alchemy: {},
   },
 };
 
@@ -394,6 +397,7 @@ export function parseEnergySkillsConfig(input: unknown): EnergySkillsParseResult
       items: readItemMap(cookingItemsIn, 'skills.cooking.items', XP_VALUE_RANGE, isItemId),
       eat: readInt(cookingIn.eat, XP_VALUE_RANGE, 'skills.cooking.eat', d.skills.cooking.eat),
     },
+    alchemy: readItemMap(skillsIn.alchemy, 'skills.alchemy', XP_VALUE_RANGE, isItemId),
   };
 
   if (errors.length > 0) return { ok: false, errors };

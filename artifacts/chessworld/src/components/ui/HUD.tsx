@@ -9,12 +9,13 @@ import { REGIONS } from '../../config/game';
 import { voiceClient } from '../../game/voice/livekitVoiceClient';
 import { leaveWorldRoom } from '../../game/network/colyseusClient';
 import {
-  User, MessageSquare, Users, Settings, DoorOpen, Mic, Maximize, Minimize, TreePine, Castle, Crown, Swords,
+  User, MessageSquare, Users, Settings, DoorOpen, Mic, Maximize, Minimize, TreePine, Castle, Crown, Swords, BookOpen,
 } from 'lucide-react';
 import { isProvisionalRating } from '../../shared/rating/Glicko2';
 import { useRatingStore } from '../../stores/ratingStore';
 import { CollectionInventoryButton } from '../game/CollectionInventoryPanel';
 import { useInventoryUiStore } from '../../stores/inventoryUiStore';
+import { useRecipeBookStore } from '../../stores/recipeBookStore';
 import { formatCrowns, useWalletStore } from '../../stores/walletStore';
 
 // iPhone Safari has no Fullscreen API for arbitrary elements — hide the button there.
@@ -43,6 +44,8 @@ export function HUD() {
   const [isFullscreen, setIsFullscreen] = useState(!!document.fullscreenElement);
   const inventoryOpen = useInventoryUiStore((s) => s.open);
   const toggleInventory = useInventoryUiStore((s) => s.toggleInventory);
+  const recipeBookOpen = useRecipeBookStore((s) => s.open);
+  const toggleRecipeBook = useRecipeBookStore((s) => s.toggleBook);
 
   const regionInfo = REGIONS.find(r => r.id === region);
   const inGame = !!matchId;
@@ -220,6 +223,20 @@ export function HUD() {
             />
           )}
           <CollectionInventoryButton onClick={toggleInventory} active={inventoryOpen} />
+          <button
+            type="button"
+            onClick={toggleRecipeBook}
+            title="Livro de Receitas"
+            aria-pressed={recipeBookOpen}
+            data-testid="hud-recipe-book"
+            className={`relative flex h-9 w-9 items-center justify-center rounded-lg border transition-all sm:h-10 sm:w-10 ${
+              recipeBookOpen
+                ? 'border-amber-400/70 bg-[#3b2411] text-amber-100'
+                : 'border-slate-700/50 bg-slate-900/90 text-slate-300 hover:bg-slate-800 hover:text-white'
+            }`}
+          >
+            <BookOpen className="h-4 w-4" />
+          </button>
           <HUDButton icon={<Mic className="w-4 h-4" />} onClick={toggleVoiceChat} label="Voice" />
           <HUDButton icon={<Settings className="w-4 h-4" />} onClick={toggleSettings} label="Settings" />
           {FULLSCREEN_SUPPORTED && (

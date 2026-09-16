@@ -29,6 +29,7 @@ import { CharacterCreationModal } from './character-creation/CharacterCreationMo
 import { ToolHotbar } from './game/ToolHotbar';
 import { CollectionInventoryPanel } from './game/CollectionInventoryPanel';
 import { SkillsPanel } from './game/SkillsPanel';
+import { RecipeBookModal } from './game/RecipeBookModal';
 import { InventoryDropPlacement } from './game/inventory/InventoryDropPlacement';
 import { PerformanceHud } from './game/PerformanceHud';
 import { usePlayerCharacterStore } from '../stores/playerCharacterStore';
@@ -40,6 +41,7 @@ import type { CraftThumb } from '../lib/craft/craftCatalog';
 import { clearStationCraftBridge, rejectStationCraft, resolveStationCraft, setStationCraftSender } from '../game/stations/stationCraftBridge';
 import { clearEatBridge, rejectEat, resolveEat, setEatSender, type EatResult } from '../game/progress/eatBridge';
 import { ensureProgressConfig, useProgressStore } from '../stores/progressStore';
+import { useRecipeBookStore } from '../stores/recipeBookStore';
 import type { ProgressSnapshot } from '../shared/progress/EnergySkillsShapes';
 import { StationGamePanel } from './game/StationGamePanel';
 import { PlacedStationOverlays } from './game/stations/PlacedStationOverlays';
@@ -73,6 +75,7 @@ export function GameCanvas() {
   const [stationPlacedId, setStationPlacedId] = useState<string | null>(null);
   const inventoryOpen = useInventoryUiStore((s) => s.open);
   const skillsOpen = useProgressStore((s) => s.skillsOpen);
+  const recipeBookOpen = useRecipeBookStore((s) => s.open);
   const dropPlacementActive = useInventoryUiStore((s) => !!s.placement);
   const closeStationPanel = useCallback(() => {
     setStationId(null);
@@ -651,7 +654,10 @@ export function GameCanvas() {
       useBigChessStore.getState().trackRequest(requestId, { kind: 'attack', square });
       room.send('bigchess_attack', { requestId, square });
     };
-    setStationCraftSender((payload) => room.send('craft_item', payload));
+    setStationCraftSender({
+      send: (payload) => room.send('craft_item', payload),
+      cancel: (requestId) => room.send('craft_cancel', { requestId }),
+    });
     // Energia + habilidades: snapshot empurrado pela sala; comer via hotbar.
     setEatSender((payload) => room.send('eat_item', payload));
     void ensureProgressConfig();
@@ -683,6 +689,10 @@ export function GameCanvas() {
     const removeCraftResult = room.onMessage('craft_result', (data: { requestId: string; items: Array<{ itemKey: string; qty: number }>; gambits?: number }) => {
       // Receita que cobra gambits: o servidor devolve o saldo já debitado.
       if (typeof data.gambits === 'number') useAuthStore.getState().patchProfile({ gambits: data.gambits });
+      // Snapshot aplicado aqui também: um craft com tempo de preparo pode
+      // terminar no servidor no instante em que o card fechou (cancelamento
+      // cruzando com a conclusão) — o inventário precisa refletir o item.
+      if (Array.isArray(data.items)) useCollectionInventoryStore.getState().applyServerTotals(data.items);
       resolveStationCraft(data.requestId, { items: data.items });
     });
     const removeCraftError = room.onMessage('craft_error', (data: { requestId?: string; message?: string }) => {
@@ -1356,6 +1366,7 @@ export function GameCanvas() {
       <ToolHotbar />
       {inventoryOpen && <CollectionInventoryPanel />}
       {skillsOpen && <SkillsPanel />}
+      {recipeBookOpen && <RecipeBookModal />}
       {dropPlacementActive && <InventoryDropPlacement />}
       {stationId && (
         <StationGamePanel

@@ -2,12 +2,14 @@ import { useEffect, useState } from 'react';
 import { getColyseusHttpUrl } from '../../config/colyseus';
 import { getGeneratorManifest } from '../../game/characters/appearanceRuntime';
 import { buildCraftCatalog, type CraftCatalog, type CraftCatalogEntry } from '../craft/craftCatalog';
-import type { CraftItemConfig } from '../../shared/craft/CraftShapes';
+import type { CraftItemConfig, CraftRecipeConfig } from '../../shared/craft/CraftShapes';
 import type { CraftBadgeMap } from '../../shared/craft/CraftBadges';
 
 interface CraftData {
   items: Record<string, CraftItemConfig>;
   badges: CraftBadgeMap;
+  /** Receitas por item alvo (livro de receitas). */
+  recipes: Record<string, CraftRecipeConfig>;
 }
 
 let catalogPromise: Promise<CraftCatalog> | null = null;
@@ -15,7 +17,7 @@ let craftDataPromise: Promise<CraftData> | null = null;
 /** Última resposta boa — leitura síncrona para o runtime (hotbar, comer). */
 let craftDataCache: CraftData | null = null;
 
-/** GET /api/craft-data (itens + badges), cacheado por sessão de página. */
+/** GET /api/craft-data (itens + badges + receitas), cacheado por sessão de página. */
 function loadCraftData(): Promise<CraftData> {
   if (craftDataPromise) return craftDataPromise;
   craftDataPromise = (async () => {
@@ -23,8 +25,12 @@ function loadCraftData(): Promise<CraftData> {
     if (!base) throw new Error('Catálogo indisponível');
     const response = await fetch(`${base.replace(/\/api$/, '')}/api/craft-data`);
     if (!response.ok) throw new Error('Catálogo indisponível');
-    const data = (await response.json()) as { items?: Record<string, CraftItemConfig>; badges?: CraftBadgeMap };
-    craftDataCache = { items: data.items ?? {}, badges: data.badges ?? {} };
+    const data = (await response.json()) as {
+      items?: Record<string, CraftItemConfig>;
+      badges?: CraftBadgeMap;
+      recipes?: Record<string, CraftRecipeConfig>;
+    };
+    craftDataCache = { items: data.items ?? {}, badges: data.badges ?? {}, recipes: data.recipes ?? {} };
     return craftDataCache;
   })().catch((error) => {
     craftDataPromise = null;
@@ -37,8 +43,8 @@ function loadCraftData(): Promise<CraftData> {
  * Bancada DEV: injeta itens + badges SEM rede (chamar antes do 1º load; um
  * catálogo já montado é descartado para incluir os itens injetados).
  */
-export function primeCraftData(data: CraftData): void {
-  craftDataCache = { items: { ...data.items }, badges: { ...data.badges } };
+export function primeCraftData(data: Omit<CraftData, 'recipes'> & { recipes?: CraftData['recipes'] }): void {
+  craftDataCache = { items: { ...data.items }, badges: { ...data.badges }, recipes: { ...(data.recipes ?? {}) } };
   craftDataPromise = Promise.resolve(craftDataCache);
   catalogPromise = null;
 }
@@ -51,6 +57,11 @@ export function loadCraftItems(): Promise<Record<string, CraftItemConfig>> {
 /** Badges (`food`, `forging`…) por item, cacheadas junto com os itens. */
 export function loadCraftBadges(): Promise<CraftBadgeMap> {
   return loadCraftData().then((data) => data.badges);
+}
+
+/** Receitas por item alvo (livro de receitas), cacheadas junto com os itens. */
+export function loadCraftRecipes(): Promise<Record<string, CraftRecipeConfig>> {
+  return loadCraftData().then((data) => data.recipes);
 }
 
 /** Badges já carregadas (null antes do 1º load) — para checagens síncronas no jogo. */
