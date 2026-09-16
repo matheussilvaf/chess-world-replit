@@ -125,6 +125,8 @@ export function CraftAdminPage() {
   const [gambitsDrafts, setGambitsDrafts] = useState<Record<string, number>>({});
   /** Texto cru dos inputs de quantidade (digitação livre, commit só de nº válido). */
   const [rawQty, setRawQty] = useState<Record<string, string>>({});
+  /** Card com o seletor de "ou" aberto (`${targetId}:${slot}`); só um por vez. */
+  const [altPickerKey, setAltPickerKey] = useState<string | null>(null);
   /** Acordeão da coluna esquerda (ferramentas abertas por padrão). */
   const [openSections, setOpenSections] = useState<Partial<Record<CraftSectionId, boolean>>>({
     tools: true,
@@ -452,6 +454,7 @@ export function CraftAdminPage() {
         return { ...e, alternatives: [...alternatives, { itemId }] };
       }),
     );
+    setAltPickerKey(null);
   };
 
   /** Remove uma alternativa; sem nenhuma sobrando, o card volta a ser simples (tempo zerado). */
@@ -492,6 +495,8 @@ export function CraftAdminPage() {
   const removeIngredient = (index: number) => {
     if (!selectedTarget) return;
     setDraftFor(selectedTarget, draft.filter((_, i) => i !== index));
+    // Os slots seguintes mudam de índice — um seletor de "ou" aberto perderia o card.
+    setAltPickerKey(null);
   };
 
   const mutateQty = (index: number, delta: number) => {
@@ -1118,75 +1123,112 @@ export function CraftAdminPage() {
                               ingEntry?.name ?? entry.itemId
                             )}
                           </p>
-                          {/* Alternativas ("ou"): o jogador escolhe UMA das opções; cada uma com tempo de preparo. */}
-                          {ingredientAlternatives(entry).length > 0 && (
-                            <div className="w-full space-y-1" data-testid={`recipe-alternatives-${entry.itemId}`}>
-                              <PrepSecondsSelect
-                                label={ingEntry?.name ?? entry.itemId}
-                                value={entry.prepSeconds ?? 0}
-                                onChange={(seconds) => setOptionSeconds(slot, entry.itemId, seconds)}
-                                disabled={busy}
-                              />
-                              {ingredientAlternatives(entry).map((option) => {
-                                const optionEntry = catalog.byId.get(option.itemId) ?? null;
-                                const optionUnknown = unknownRefs.some((u) => u.itemId === option.itemId);
-                                return (
-                                  <div
-                                    key={option.itemId}
-                                    className={`rounded-md border px-1 py-1 ${
-                                      optionUnknown ? 'border-rose-500/50 bg-rose-500/[0.06]' : 'border-slate-700/60 bg-slate-900/60'
-                                    }`}
-                                  >
-                                    <div className="flex items-center gap-1">
-                                      <span className="text-[9px] font-bold uppercase tracking-wide text-cyan-300/90">ou</span>
-                                      <CatalogThumb thumb={optionEntry?.thumb ?? { kind: 'none' }} size={18} />
-                                      <span className={`min-w-0 flex-1 truncate text-[10px] ${optionUnknown ? 'text-rose-300' : 'text-slate-300'}`}>
-                                        {optionUnknown ? `${option.itemId} (removido)` : (optionEntry?.name ?? option.itemId)}
-                                      </span>
-                                      <button
-                                        type="button"
-                                        title="Remover alternativa"
-                                        className="p-0.5 rounded text-slate-500 hover:text-rose-300"
-                                        onClick={() => removeAlternative(slot, option.itemId)}
+                          {/* "ou": o jogador escolhe UMA das opções do card. Com alternativas, cada
+                              opção (a principal também) vira uma linha com seu tempo de preparo. */}
+                          {(() => {
+                            const alternatives = ingredientAlternatives(entry);
+                            const pickerKey = `${selectedTarget}:${slot}`;
+                            const pickerOpen = altPickerKey === pickerKey;
+                            const canAddMore = alternatives.length < MAX_INGREDIENT_ALTERNATIVES && pickerSections.length > 0;
+                            return (
+                              <div className="w-full space-y-1" data-testid={`recipe-alternatives-${entry.itemId}`}>
+                                {alternatives.length > 0 && (
+                                  <PrepSecondsSelect
+                                    label={ingEntry?.name ?? entry.itemId}
+                                    value={entry.prepSeconds ?? 0}
+                                    onChange={(seconds) => setOptionSeconds(slot, entry.itemId, seconds)}
+                                    disabled={busy}
+                                  />
+                                )}
+                                {alternatives.map((option) => {
+                                  const optionEntry = catalog.byId.get(option.itemId) ?? null;
+                                  const optionUnknown = unknownRefs.some((u) => u.itemId === option.itemId);
+                                  return (
+                                    <div
+                                      key={option.itemId}
+                                      data-testid={`recipe-alternative-${entry.itemId}-${option.itemId}`}
+                                      className={`rounded-md border px-1 py-1 space-y-1 ${
+                                        optionUnknown ? 'border-rose-500/50 bg-rose-500/[0.06]' : 'border-cyan-500/25 bg-cyan-500/[0.04]'
+                                      }`}
+                                    >
+                                      <div className="flex items-center gap-1">
+                                        <span className="text-[9px] font-bold uppercase tracking-wide text-cyan-300/90">ou</span>
+                                        <CatalogThumb thumb={optionEntry?.thumb ?? { kind: 'none' }} size={18} />
+                                        <span className={`min-w-0 flex-1 truncate text-[10px] ${optionUnknown ? 'text-rose-300' : 'text-slate-200'}`}>
+                                          {optionUnknown ? `${option.itemId} (removido)` : (optionEntry?.name ?? option.itemId)}
+                                        </span>
+                                        <button
+                                          type="button"
+                                          title="Remover esta opção"
+                                          className="p-0.5 rounded text-slate-500 hover:text-rose-300"
+                                          onClick={() => removeAlternative(slot, option.itemId)}
+                                          disabled={busy}
+                                        >
+                                          <X className="w-3 h-3" />
+                                        </button>
+                                      </div>
+                                      <PrepSecondsSelect
+                                        label={optionEntry?.name ?? option.itemId}
+                                        value={option.prepSeconds ?? 0}
+                                        onChange={(seconds) => setOptionSeconds(slot, option.itemId, seconds)}
                                         disabled={busy}
-                                      >
-                                        <X className="w-3 h-3" />
-                                      </button>
+                                      />
                                     </div>
-                                    <PrepSecondsSelect
-                                      label={optionEntry?.name ?? option.itemId}
-                                      value={option.prepSeconds ?? 0}
-                                      onChange={(seconds) => setOptionSeconds(slot, option.itemId, seconds)}
-                                      disabled={busy}
-                                    />
+                                  );
+                                })}
+                                {pickerOpen ? (
+                                  <div
+                                    className="rounded-md border border-dashed border-cyan-500/40 bg-cyan-500/[0.04] px-1 py-1 flex items-center gap-1"
+                                    data-testid={`recipe-alternative-picker-${entry.itemId}`}
+                                  >
+                                    <span className="text-[9px] font-bold uppercase tracking-wide text-cyan-300/90">ou</span>
+                                    <select
+                                      autoFocus
+                                      value=""
+                                      aria-label={`Item alternativo para ${ingEntry?.name ?? entry.itemId}`}
+                                      className="min-w-0 flex-1 bg-slate-900/80 border border-cyan-500/40 rounded-md px-1 py-0.5 text-[10px] text-cyan-100 focus:outline-none focus:border-cyan-400/70"
+                                      onChange={(e) => {
+                                        if (e.target.value) addAlternative(slot, e.target.value);
+                                      }}
+                                      disabled={busy || tableMissing}
+                                    >
+                                      <option value="">Escolha o item…</option>
+                                      {pickerSections.map((section) => (
+                                        <optgroup key={section.id} label={section.label}>
+                                          {section.entries.map((it) => (
+                                            <option key={it.id} value={it.id}>
+                                              {it.name}
+                                            </option>
+                                          ))}
+                                        </optgroup>
+                                      ))}
+                                    </select>
+                                    <button
+                                      type="button"
+                                      title="Cancelar"
+                                      className="p-0.5 rounded text-slate-500 hover:text-rose-300"
+                                      onClick={() => setAltPickerKey(null)}
+                                    >
+                                      <X className="w-3 h-3" />
+                                    </button>
                                   </div>
-                                );
-                              })}
-                            </div>
-                          )}
-                          {ingredientAlternatives(entry).length < MAX_INGREDIENT_ALTERNATIVES && pickerSections.length > 0 && (
-                            <select
-                              value=""
-                              title="Aceitar outro item no lugar deste (o jogador escolhe qual usar)"
-                              data-testid={`recipe-add-alternative-${entry.itemId}`}
-                              className="w-full bg-slate-900/80 border border-cyan-500/30 rounded-md px-1 py-0.5 text-[10px] text-cyan-200 focus:outline-none focus:border-cyan-500/60"
-                              onChange={(e) => {
-                                if (e.target.value) addAlternative(slot, e.target.value);
-                              }}
-                              disabled={busy || tableMissing}
-                            >
-                              <option value="">+ ou…</option>
-                              {pickerSections.map((section) => (
-                                <optgroup key={section.id} label={section.label}>
-                                  {section.entries.map((it) => (
-                                    <option key={it.id} value={it.id}>
-                                      {it.name}
-                                    </option>
-                                  ))}
-                                </optgroup>
-                              ))}
-                            </select>
-                          )}
+                                ) : (
+                                  canAddMore && (
+                                    <button
+                                      type="button"
+                                      title="Aceitar outro item no lugar deste — o jogador escolhe qual usar na estação"
+                                      data-testid={`recipe-add-alternative-${entry.itemId}`}
+                                      className="w-full inline-flex items-center justify-center gap-1 rounded-md border border-cyan-500/40 bg-cyan-500/10 px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wide text-cyan-200 hover:bg-cyan-500/20 disabled:opacity-40"
+                                      onClick={() => setAltPickerKey(pickerKey)}
+                                      disabled={busy || tableMissing}
+                                    >
+                                      <Plus className="w-3 h-3" /> ou
+                                    </button>
+                                  )
+                                )}
+                              </div>
+                            );
+                          })()}
                           <div className="flex items-center gap-1">
                             <button
                               type="button"
@@ -1273,9 +1315,9 @@ export function CraftAdminPage() {
 
                 <p className="text-[10px] font-mono text-slate-500 mb-3">
                   {draft.length}/{MAX_RECIPE_INGREDIENTS} ingredientes · qualquer item do jogo (menos o
-                  próprio) · quantidade {MIN_INGREDIENT_QUANTITY}–{MAX_INGREDIENT_QUANTITY} · "+ ou…" aceita
-                  até {MAX_INGREDIENT_ALTERNATIVES} itens alternativos no mesmo card (mesma quantidade; o jogador
-                  escolhe qual usar e cada opção pode ter tempo de preparo)
+                  próprio) · quantidade {MIN_INGREDIENT_QUANTITY}–{MAX_INGREDIENT_QUANTITY} · o botão "ou" de um
+                  card aceita até {MAX_INGREDIENT_ALTERNATIVES} itens alternativos (mesma quantidade; na estação o
+                  jogador vê um select com o primeiro pré-selecionado e cada opção pode ter tempo de preparo)
                 </p>
 
                 <div className="flex flex-wrap items-center gap-2">
@@ -1349,19 +1391,21 @@ function PrepSecondsSelect({
     ? CRAFT_PREP_SECONDS_PRESETS
     : [...CRAFT_PREP_SECONDS_PRESETS, value].sort((a, b) => a - b);
   return (
-    <select
-      value={value}
-      title={`Tempo de preparo quando o jogador escolhe "${label}"`}
-      aria-label={`Tempo de preparo de ${label}`}
-      className="w-full bg-slate-900/80 border border-slate-700/70 rounded-md px-1 py-0.5 text-[10px] text-slate-300 focus:outline-none focus:border-cyan-500/60"
-      onChange={(e) => onChange(Number(e.target.value))}
-      disabled={disabled}
-    >
-      {options.map((seconds) => (
-        <option key={seconds} value={seconds}>
-          {seconds === 0 ? 'Instantâneo' : `${seconds} s`}
-        </option>
-      ))}
-    </select>
+    <label className="flex w-full items-center gap-1" title={`Tempo de preparo quando o jogador escolhe "${label}"`}>
+      <span className="shrink-0 text-[9px] text-slate-500">tempo</span>
+      <select
+        value={value}
+        aria-label={`Tempo de preparo de ${label}`}
+        className="min-w-0 flex-1 bg-slate-900/80 border border-slate-700/70 rounded-md px-1 py-0.5 text-[10px] text-slate-300 focus:outline-none focus:border-cyan-500/60"
+        onChange={(e) => onChange(Number(e.target.value))}
+        disabled={disabled}
+      >
+        {options.map((seconds) => (
+          <option key={seconds} value={seconds}>
+            {seconds === 0 ? 'Instantâneo' : `${seconds} s`}
+          </option>
+        ))}
+      </select>
+    </label>
   );
 }
