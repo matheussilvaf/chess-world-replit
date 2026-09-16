@@ -115,10 +115,15 @@ export interface CraftItemConfig {
 
 /**
  * Opção alternativa de um ingrediente ("ou"): o jogador pode entregar este
- * item NO LUGAR do principal, na mesma quantidade do card.
+ * item NO LUGAR do principal, cada opção com a SUA quantidade e o seu tempo.
  */
 export interface CraftIngredientOption {
   itemId: string;
+  /**
+   * Quantas unidades DESTA opção a receita consome — inteiro 1..999.
+   * Ausente (registro legado) = a quantidade do item principal do card.
+   */
+  quantity?: number;
   /**
    * Tempo de preparo em segundos quando ESTA opção é a escolhida — inteiro
    * 0..300 (0/ausente = instantâneo). Só tem efeito em cards com alternativas.
@@ -134,7 +139,8 @@ export interface CraftIngredient {
   prepSeconds?: number;
   /**
    * Itens aceitos no lugar do principal ("ou"), 1..3, únicos em toda a
-   * receita. Ausente/vazio = ingrediente simples. A quantidade é a do card.
+   * receita. Ausente/vazio = ingrediente simples. Cada opção tem a própria
+   * quantidade (ausente = a do principal) e o próprio tempo de preparo.
    */
   alternatives?: CraftIngredientOption[];
 }
@@ -304,6 +310,14 @@ export function validateCraftRecipeConfig(
         continue;
       }
       checkOptionId(`${label}.itemId`, option.itemId);
+      // Ausente = quantidade do principal (registro legado); presente, segue a mesma faixa.
+      const optionQuantity = option.quantity;
+      if (
+        optionQuantity !== undefined &&
+        (!isInt(optionQuantity) || optionQuantity < MIN_INGREDIENT_QUANTITY || optionQuantity > MAX_INGREDIENT_QUANTITY)
+      ) {
+        errors.push(`${label}.quantity: inteiro ${MIN_INGREDIENT_QUANTITY}–${MAX_INGREDIENT_QUANTITY}`);
+      }
       checkPrepSeconds(`${label}.prepSeconds`, option.prepSeconds);
     }
   }
@@ -335,12 +349,28 @@ export function ingredientHasAlternatives(ing: CraftIngredient): boolean {
   return ingredientAlternatives(ing).length > 0;
 }
 
-/** Todas as opções do card na ordem exibida: o principal primeiro, depois as alternativas. */
+/**
+ * Todas as opções do card na ordem exibida: o principal primeiro, depois as
+ * alternativas. Toda opção sai com `quantity` resolvida (ver ingredientOptionQuantity).
+ */
 export function ingredientOptions(ing: CraftIngredient): CraftIngredientOption[] {
   return [
-    { itemId: ing.itemId, ...(ing.prepSeconds !== undefined ? { prepSeconds: ing.prepSeconds } : {}) },
-    ...ingredientAlternatives(ing),
+    { itemId: ing.itemId, quantity: ing.quantity, ...(ing.prepSeconds !== undefined ? { prepSeconds: ing.prepSeconds } : {}) },
+    ...ingredientAlternatives(ing).map((option) => ({ ...option, quantity: ingredientOptionQuantity(ing, option.itemId) })),
   ];
+}
+
+/**
+ * Quantidade consumida quando `chosenItemId` é a opção usada: a da própria
+ * opção; alternativa legada sem quantidade (ou item fora do card) = a do principal.
+ */
+export function ingredientOptionQuantity(ing: CraftIngredient, chosenItemId: string): number {
+  if (chosenItemId === ing.itemId) return ing.quantity;
+  const option = ingredientAlternatives(ing).find((entry) => entry.itemId === chosenItemId);
+  const quantity = option?.quantity;
+  return typeof quantity === 'number' && Number.isInteger(quantity) && quantity >= MIN_INGREDIENT_QUANTITY
+    ? quantity
+    : ing.quantity;
 }
 
 /** Ids de item que uma receita pode consumir (principais + alternativas). */
@@ -395,7 +425,12 @@ export function resolveRecipeChoices(recipe: CraftRecipeConfig, choices?: CraftC
     }
     const seconds = ingredientOptionPrepSeconds(ing, chosen);
     prepSeconds = Math.max(prepSeconds, seconds);
-    ingredients.push({ primaryId: ing.itemId, itemId: chosen, quantity: ing.quantity, prepSeconds: seconds });
+    ingredients.push({
+      primaryId: ing.itemId,
+      itemId: chosen,
+      quantity: ingredientOptionQuantity(ing, chosen),
+      prepSeconds: seconds,
+    });
   }
   const cardIds = new Set(recipe.ingredients.map((ing) => ing.itemId));
   for (const key of Object.keys(picked)) {
@@ -423,8 +458,10 @@ export function autoChoicesFor(
   const choices: Record<string, string> = {};
   for (const ing of recipe.ingredients) {
     if (!ingredientHasAlternatives(ing)) continue;
-    const need = ing.quantity * multiplier;
-    const covered = ingredientOptions(ing).find((option) => (counts[option.itemId] ?? 0) >= need);
+    // Cada opção tem a própria quantidade — a cobertura é por opção.
+    const covered = ingredientOptions(ing).find(
+      (option) => (counts[option.itemId] ?? 0) >= ingredientOptionQuantity(ing, option.itemId) * multiplier,
+    );
     choices[ing.itemId] = covered?.itemId ?? ing.itemId;
   }
   return choices;
@@ -433,12 +470,14 @@ export function autoChoicesFor(
 /** Order-independent equality of two ingredient bags (dirty checks/tests). */
 export function sameIngredientBag(a: CraftIngredient[], b: CraftIngredient[]): boolean {
   if (a.length !== b.length) return false;
-  const optionKey = (option: CraftIngredientOption) => `${option.itemId}@${option.prepSeconds ?? 0}`;
   const entryKey = (e: CraftIngredient) => {
     const alternatives = ingredientAlternatives(e);
     if (alternatives.length === 0) return `${e.itemId}:${e.quantity}`;
-    // Com alternativas os tempos contam (inclusive o do principal) e a ordem
-    // das opções também — ela é a ordem do select no jogo.
+    // Com alternativas contam a quantidade EFETIVA de cada opção (legado sem
+    // quantidade == a do principal), os tempos (inclusive o do principal) e a
+    // ordem das opções — ela é a ordem do select no jogo.
+    const optionKey = (option: CraftIngredientOption) =>
+      `${option.itemId}:${ingredientOptionQuantity(e, option.itemId)}@${option.prepSeconds ?? 0}`;
     return `${e.itemId}:${e.quantity}@${e.prepSeconds ?? 0}|${alternatives.map(optionKey).join(',')}`;
   };
   const key = (list: CraftIngredient[]) =>

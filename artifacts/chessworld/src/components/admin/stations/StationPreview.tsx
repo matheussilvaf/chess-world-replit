@@ -39,6 +39,7 @@ import {
   craftPrepSeconds,
   ingredientHasAlternatives,
   ingredientOptionPrepSeconds,
+  ingredientOptionQuantity,
   ingredientOptions,
   missingIngredientsFor,
   recipeGambitsCost,
@@ -540,7 +541,8 @@ export function StationPreview({
                 <div className="space-y-0.5">
                   {selectedRecipe.ingredients.map((ing) => {
                     const chosenId = choices[ing.itemId] ?? ing.itemId;
-                    const need = ing.quantity * qty;
+                    // Cada opção do "ou" tem a própria quantidade.
+                    const need = ingredientOptionQuantity(ing, chosenId) * qty;
                     const have = inventory[chosenId] ?? 0;
                     const ok = have >= need;
                     const hasAlternatives = ingredientHasAlternatives(ing);
@@ -558,9 +560,10 @@ export function StationPreview({
                             >
                               {ingredientOptions(ing).map((option) => {
                                 const seconds = ingredientOptionPrepSeconds(ing, option.itemId);
+                                const optionNeed = ingredientOptionQuantity(ing, option.itemId) * qty;
                                 return (
                                   <option key={option.itemId} value={option.itemId}>
-                                    {resolveItem(option.itemId)?.name ?? option.itemId}
+                                    {optionNeed}x {resolveItem(option.itemId)?.name ?? option.itemId}
                                     {seconds > 0 ? ` · ${seconds}s` : ''}
                                   </option>
                                 );

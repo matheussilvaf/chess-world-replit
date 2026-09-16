@@ -6,6 +6,7 @@ import {
   craftPrepSeconds,
   craftableTargetIds,
   ingredientOptionPrepSeconds,
+  ingredientOptionQuantity,
   ingredientOptions,
   isInventoryItemId,
   missingIngredientsFor,
@@ -267,7 +268,7 @@ describe('ingredientes alternativos ("ou") e tempo de preparo', () => {
         prepSeconds: 0,
         alternatives: [
           { itemId: 'herb:red_herb', prepSeconds: 5 },
-          { itemId: 'mineral:ouro', prepSeconds: 20 },
+          { itemId: 'mineral:ouro', quantity: 5, prepSeconds: 20 },
         ],
       },
       { itemId: 'mineral:pedra', quantity: 1 },
@@ -296,6 +297,12 @@ describe('ingredientes alternativos ("ou") e tempo de preparo', () => {
     });
     expect(badTime.ok).toBe(false);
     expect(badTime.errors.some((e) => e.includes('prepSeconds'))).toBe(true);
+    const badQty = validateCraftRecipeConfig({
+      ...recipe,
+      ingredients: [{ itemId: 'herb:queen_thorn', quantity: 1, alternatives: [{ itemId: 'herb:red_herb', quantity: 0 }] }],
+    });
+    expect(badQty.ok).toBe(false);
+    expect(badQty.errors.some((e) => e.includes('alternatives[0].quantity'))).toBe(true);
     const tooMany = validateCraftRecipeConfig({
       ...recipe,
       ingredients: [
@@ -321,6 +328,12 @@ describe('ingredientes alternativos ("ou") e tempo de preparo', () => {
     ]);
     expect(ingredientOptionPrepSeconds(recipe.ingredients[0], 'herb:queen_thorn')).toBe(0);
     expect(ingredientOptionPrepSeconds(recipe.ingredients[0], 'herb:red_herb')).toBe(5);
+    // Quantidade por opção: própria quando definida; legado sem quantidade = a do principal.
+    expect(ingredientOptions(recipe.ingredients[0]).map((o) => o.quantity)).toEqual([2, 2, 5]);
+    expect(ingredientOptionQuantity(recipe.ingredients[0], 'herb:queen_thorn')).toBe(2);
+    expect(ingredientOptionQuantity(recipe.ingredients[0], 'herb:red_herb')).toBe(2);
+    expect(ingredientOptionQuantity(recipe.ingredients[0], 'mineral:ouro')).toBe(5);
+    expect(ingredientOptionQuantity(recipe.ingredients[0], 'nao-e-opcao')).toBe(2);
     expect(ingredientOptionPrepSeconds({ itemId: 'x', quantity: 1, prepSeconds: 9 }, 'x')).toBe(0);
     expect(recipeIngredientItemIds(recipe)).toEqual(['herb:queen_thorn', 'herb:red_herb', 'mineral:ouro', 'mineral:pedra']);
   });
@@ -330,7 +343,9 @@ describe('ingredientes alternativos ("ou") e tempo de preparo', () => {
     expect(primary.ok && primary.ingredients.map((i) => i.itemId)).toEqual(['herb:queen_thorn', 'mineral:pedra']);
     expect(primary.ok && primary.prepSeconds).toBe(0);
     const alt = resolveRecipeChoices(recipe, { 'herb:queen_thorn': 'mineral:ouro' });
-    expect(alt.ok && alt.ingredients[0]).toEqual({ primaryId: 'herb:queen_thorn', itemId: 'mineral:ouro', quantity: 2, prepSeconds: 20 });
+    expect(alt.ok && alt.ingredients[0]).toEqual({ primaryId: 'herb:queen_thorn', itemId: 'mineral:ouro', quantity: 5, prepSeconds: 20 });
+    const legacy = resolveRecipeChoices(recipe, { 'herb:queen_thorn': 'herb:red_herb' });
+    expect(legacy.ok && legacy.ingredients[0].quantity).toBe(2);
     expect(craftPrepSeconds(recipe, { 'herb:queen_thorn': 'mineral:ouro' })).toBe(20);
     expect(resolveRecipeChoices(recipe, { 'herb:queen_thorn': 'mineral:pedra' }).ok).toBe(false);
     expect(resolveRecipeChoices(recipe, { 'mineral:pedra': 'mineral:pedra' }).ok).toBe(true);
@@ -339,9 +354,15 @@ describe('ingredientes alternativos ("ou") e tempo de preparo', () => {
   });
 
   it('craftabilidade considera qualquer opção do card (escolha automática) ou a escolha dada', () => {
-    const counts = { 'mineral:ouro': 2, 'mineral:pedra': 1 };
+    // mineral:ouro pede 5 (quantidade própria): com 2 não cobre; com 5 cobre.
+    expect(autoChoicesFor(recipe, { 'mineral:ouro': 2, 'mineral:pedra': 1 })).toEqual({ 'herb:queen_thorn': 'herb:queen_thorn' });
+    expect(canCraft(recipe, { 'mineral:ouro': 2, 'mineral:pedra': 1 })).toBe(false);
+    const counts = { 'mineral:ouro': 5, 'mineral:pedra': 1 };
     expect(autoChoicesFor(recipe, counts)).toEqual({ 'herb:queen_thorn': 'mineral:ouro' });
     expect(canCraft(recipe, counts)).toBe(true);
+    expect(missingIngredientsFor(recipe, { 'mineral:ouro': 4, 'mineral:pedra': 1 }, { 'herb:queen_thorn': 'mineral:ouro' })).toEqual([
+      { itemId: 'mineral:ouro', need: 5, have: 4 },
+    ]);
     expect(missingIngredientsFor(recipe, counts, { 'herb:queen_thorn': 'herb:red_herb' })).toEqual([
       { itemId: 'herb:red_herb', need: 2, have: 0 },
     ]);
@@ -349,9 +370,22 @@ describe('ingredientes alternativos ("ou") e tempo de preparo', () => {
     expect(craftableTargetIds({ [recipe.targetId]: recipe }, counts)).toEqual(['pocao-de-cura']);
   });
 
-  it('sameIngredientBag distingue alternativas e tempos', () => {
+  it('sameIngredientBag distingue alternativas, quantidades por opção e tempos', () => {
     const base = recipe.ingredients;
     expect(sameIngredientBag(base, [...base].reverse())).toBe(true);
+    // Alternativa legada sem quantidade == a mesma com a quantidade do principal explícita.
+    expect(
+      sameIngredientBag(base, [
+        { ...base[0], alternatives: [{ itemId: 'herb:red_herb', quantity: 2, prepSeconds: 5 }, { itemId: 'mineral:ouro', quantity: 5, prepSeconds: 20 }] },
+        base[1],
+      ]),
+    ).toBe(true);
+    expect(
+      sameIngredientBag(base, [
+        { ...base[0], alternatives: [{ itemId: 'herb:red_herb', quantity: 3, prepSeconds: 5 }, { itemId: 'mineral:ouro', quantity: 5, prepSeconds: 20 }] },
+        base[1],
+      ]),
+    ).toBe(false);
     expect(sameIngredientBag(base, [{ itemId: 'herb:queen_thorn', quantity: 2 }, base[1]])).toBe(false);
     expect(
       sameIngredientBag(base, [

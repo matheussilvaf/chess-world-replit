@@ -18,6 +18,7 @@ import type { CraftCatalogEntry } from '../../lib/craft/craftCatalog';
 import {
   ingredientHasAlternatives,
   ingredientOptionPrepSeconds,
+  ingredientOptionQuantity,
   ingredientOptions,
   recipeGambitsCost,
   recipeOutputQuantity,
@@ -398,7 +399,9 @@ function IngredientRow({
       {options.map((option, index) => {
         const entry = data.catalog.byId.get(option.itemId) ?? null;
         const have = inventory[option.itemId] ?? 0;
-        const ok = have >= ingredient.quantity;
+        // Cada opção do "ou" tem a própria quantidade.
+        const quantity = ingredientOptionQuantity(ingredient, option.itemId);
+        const ok = have >= quantity;
         const seconds = ingredientOptionPrepSeconds(ingredient, option.itemId);
         return (
           <div key={option.itemId} className={`flex items-center gap-2 ${index > 0 ? 'mt-1 border-t border-dashed border-[#8a5a2b]/40 pt-1' : ''}`}>
@@ -412,7 +415,7 @@ function IngredientRow({
             </span>
             <span className="min-w-0 flex-1">
               <span className="block truncate text-sm text-amber-50">
-                {entry?.name ?? option.itemId} <span className="text-amber-200/60">x{ingredient.quantity}</span>
+                {entry?.name ?? option.itemId} <span className="text-amber-200/60">x{quantity}</span>
               </span>
               {seconds > 0 && (
                 <span className="flex items-center gap-1 text-[10px] text-amber-200/60">
@@ -424,7 +427,7 @@ function IngredientRow({
               className={`flex shrink-0 items-center gap-1 text-xs font-semibold tabular-nums ${ok ? 'text-emerald-400' : 'text-rose-300'}`}
               title={ok ? 'Você tem o suficiente' : 'Faltam no inventário'}
             >
-              {have}/{ingredient.quantity}
+              {have}/{quantity}
               {ok && <Check className="h-3.5 w-3.5" />}
             </span>
           </div>

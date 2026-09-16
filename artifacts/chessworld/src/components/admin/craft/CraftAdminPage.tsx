@@ -58,6 +58,7 @@ import {
   MIN_OUTPUT_QUANTITY,
   classifyCraftEntityId,
   ingredientAlternatives,
+  ingredientOptionQuantity,
   recipeGambitsCost,
   recipeIngredientItemIds,
   recipeOutputQuantity,
@@ -451,10 +452,23 @@ export function CraftAdminPage() {
         if (i !== index) return e;
         const alternatives = ingredientAlternatives(e);
         if (alternatives.length >= MAX_INGREDIENT_ALTERNATIVES) return e;
-        return { ...e, alternatives: [...alternatives, { itemId }] };
+        // Cada opção tem a própria quantidade; a nova começa igual à do principal.
+        return { ...e, alternatives: [...alternatives, { itemId, quantity: e.quantity }] };
       }),
     );
     setAltPickerKey(null);
+  };
+
+  /** Chave do texto em digitação de um input de quantidade (por receita + item/opção). */
+  const qtyKey = (itemId: string) => `${selectedTarget}:${itemId}`;
+
+  /** Descarta o texto em digitação dos inputs de quantidade desses itens (senão volta "fantasma" ao readicionar). */
+  const clearRawQty = (itemIds: string[]) => {
+    setRawQty((prev) => {
+      const next = { ...prev };
+      for (const itemId of itemIds) delete next[qtyKey(itemId)];
+      return next;
+    });
   };
 
   /** Remove uma alternativa; sem nenhuma sobrando, o card volta a ser simples (tempo zerado). */
@@ -469,6 +483,7 @@ export function CraftAdminPage() {
         return { ...e, alternatives };
       }),
     );
+    clearRawQty([itemId]);
   };
 
   /** Tempo de preparo de UMA opção do card (principal ou alternativa); 0 = instantâneo (chave removida). */
@@ -484,9 +499,15 @@ export function CraftAdminPage() {
         }
         return {
           ...e,
-          alternatives: ingredientAlternatives(e).map((option): CraftIngredientOption =>
-            option.itemId === optionItemId ? (seconds > 0 ? { itemId: option.itemId, prepSeconds: seconds } : { itemId: option.itemId }) : option,
-          ),
+          alternatives: ingredientAlternatives(e).map((option): CraftIngredientOption => {
+            if (option.itemId !== optionItemId) return option;
+            // Só o tempo muda — a quantidade própria da opção fica.
+            const kept: CraftIngredientOption = {
+              itemId: option.itemId,
+              ...(option.quantity !== undefined ? { quantity: option.quantity } : {}),
+            };
+            return seconds > 0 ? { ...kept, prepSeconds: seconds } : kept;
+          }),
         };
       }),
     );
@@ -494,41 +515,35 @@ export function CraftAdminPage() {
 
   const removeIngredient = (index: number) => {
     if (!selectedTarget) return;
+    const removed = draft[index];
     setDraftFor(selectedTarget, draft.filter((_, i) => i !== index));
     // Os slots seguintes mudam de índice — um seletor de "ou" aberto perderia o card.
     setAltPickerKey(null);
+    if (removed) clearRawQty([removed.itemId, ...ingredientAlternatives(removed).map((option) => option.itemId)]);
   };
 
-  const mutateQty = (index: number, delta: number) => {
-    if (!selectedTarget) return;
+  /** Quantidade de UMA opção do card (principal ou alternativa) — cada "ou" tem a sua. */
+  const setOptionQuantity = (index: number, optionItemId: string, value: number) => {
+    if (!selectedTarget || !Number.isFinite(value) || !Number.isInteger(value)) return;
+    const quantity = Math.max(MIN_INGREDIENT_QUANTITY, Math.min(MAX_INGREDIENT_QUANTITY, value));
     setDraftFor(
       selectedTarget,
-      draft.map((e, i) =>
-        i === index
-          ? {
-              ...e,
-              quantity: Math.max(
-                MIN_INGREDIENT_QUANTITY,
-                Math.min(MAX_INGREDIENT_QUANTITY, e.quantity + delta),
-              ),
-            }
-          : e,
-      ),
+      draft.map((e, i) => {
+        if (i !== index) return e;
+        if (optionItemId === e.itemId) return { ...e, quantity };
+        return {
+          ...e,
+          alternatives: ingredientAlternatives(e).map((option) =>
+            option.itemId === optionItemId ? { ...option, quantity } : option,
+          ),
+        };
+      }),
     );
   };
 
-  const commitQty = (index: number, raw: string) => {
-    if (!selectedTarget || raw.trim() === '') return;
-    const v = Number(raw);
-    if (!Number.isFinite(v) || !Number.isInteger(v)) return;
-    setDraftFor(
-      selectedTarget,
-      draft.map((e, i) =>
-        i === index
-          ? { ...e, quantity: Math.max(MIN_INGREDIENT_QUANTITY, Math.min(MAX_INGREDIENT_QUANTITY, v)) }
-          : e,
-      ),
-    );
+  const commitOptionQty = (index: number, optionItemId: string, raw: string) => {
+    if (raw.trim() === '') return;
+    setOptionQuantity(index, optionItemId, Number(raw));
   };
 
   /** Chave sentinela no rawQty para o input da quantidade produzida (nunca é itemId). */
@@ -573,8 +588,6 @@ export function CraftAdminPage() {
     if (!Number.isFinite(v) || !Number.isInteger(v)) return;
     setGambitsDraft(v);
   };
-
-  const qtyKey = (itemId: string) => `${selectedTarget}:${itemId}`;
 
   const handleSaveRecipe = async () => {
     if (!selectedTarget || draft.length === 0 || unknownRefs.length > 0) return;
@@ -1123,26 +1136,52 @@ export function CraftAdminPage() {
                               ingEntry?.name ?? entry.itemId
                             )}
                           </p>
-                          {/* "ou": o jogador escolhe UMA das opções do card. Com alternativas, cada
-                              opção (a principal também) vira uma linha com seu tempo de preparo. */}
+                          {/* Cada opção do card tem a própria quantidade ("ou" = o jogador escolhe UMA);
+                              com alternativas, cada opção (a principal também) ganha o tempo de preparo. */}
                           {(() => {
                             const alternatives = ingredientAlternatives(entry);
                             const pickerKey = `${selectedTarget}:${slot}`;
                             const pickerOpen = altPickerKey === pickerKey;
                             const canAddMore = alternatives.length < MAX_INGREDIENT_ALTERNATIVES && pickerSections.length > 0;
+                            const primaryName = ingEntry?.name ?? entry.itemId;
+                            const stepper = (optionItemId: string, label: string, quantity: number) => (
+                              <QtyStepper
+                                label={label}
+                                value={quantity}
+                                raw={rawQty[qtyKey(optionItemId)]}
+                                onRaw={(raw) =>
+                                  setRawQty((prev) => {
+                                    const next = { ...prev };
+                                    if (raw === null) delete next[qtyKey(optionItemId)];
+                                    else next[qtyKey(optionItemId)] = raw;
+                                    return next;
+                                  })
+                                }
+                                onCommit={(raw) => commitOptionQty(slot, optionItemId, raw)}
+                                onStep={(delta) => setOptionQuantity(slot, optionItemId, quantity + delta)}
+                                disabled={busy}
+                                testId={`recipe-qty-${optionItemId}`}
+                              />
+                            );
                             return (
                               <div className="w-full space-y-1" data-testid={`recipe-alternatives-${entry.itemId}`}>
-                                {alternatives.length > 0 && (
-                                  <PrepSecondsSelect
-                                    label={ingEntry?.name ?? entry.itemId}
-                                    value={entry.prepSeconds ?? 0}
-                                    onChange={(seconds) => setOptionSeconds(slot, entry.itemId, seconds)}
-                                    disabled={busy}
-                                  />
+                                {alternatives.length > 0 ? (
+                                  <div className="flex items-center gap-1">
+                                    <PrepSecondsSelect
+                                      label={primaryName}
+                                      value={entry.prepSeconds ?? 0}
+                                      onChange={(seconds) => setOptionSeconds(slot, entry.itemId, seconds)}
+                                      disabled={busy}
+                                    />
+                                    {stepper(entry.itemId, primaryName, entry.quantity)}
+                                  </div>
+                                ) : (
+                                  <div className="flex justify-center">{stepper(entry.itemId, primaryName, entry.quantity)}</div>
                                 )}
                                 {alternatives.map((option) => {
                                   const optionEntry = catalog.byId.get(option.itemId) ?? null;
                                   const optionUnknown = unknownRefs.some((u) => u.itemId === option.itemId);
+                                  const optionName = optionEntry?.name ?? option.itemId;
                                   return (
                                     <div
                                       key={option.itemId}
@@ -1155,7 +1194,7 @@ export function CraftAdminPage() {
                                         <span className="text-[9px] font-bold uppercase tracking-wide text-cyan-300/90">ou</span>
                                         <CatalogThumb thumb={optionEntry?.thumb ?? { kind: 'none' }} size={18} />
                                         <span className={`min-w-0 flex-1 truncate text-[10px] ${optionUnknown ? 'text-rose-300' : 'text-slate-200'}`}>
-                                          {optionUnknown ? `${option.itemId} (removido)` : (optionEntry?.name ?? option.itemId)}
+                                          {optionUnknown ? `${option.itemId} (removido)` : optionName}
                                         </span>
                                         <button
                                           type="button"
@@ -1167,12 +1206,15 @@ export function CraftAdminPage() {
                                           <X className="w-3 h-3" />
                                         </button>
                                       </div>
-                                      <PrepSecondsSelect
-                                        label={optionEntry?.name ?? option.itemId}
-                                        value={option.prepSeconds ?? 0}
-                                        onChange={(seconds) => setOptionSeconds(slot, option.itemId, seconds)}
-                                        disabled={busy}
-                                      />
+                                      <div className="flex items-center gap-1">
+                                        <PrepSecondsSelect
+                                          label={optionName}
+                                          value={option.prepSeconds ?? 0}
+                                          onChange={(seconds) => setOptionSeconds(slot, option.itemId, seconds)}
+                                          disabled={busy}
+                                        />
+                                        {stepper(option.itemId, optionName, ingredientOptionQuantity(entry, option.itemId))}
+                                      </div>
                                     </div>
                                   );
                                 })}
@@ -1229,44 +1271,6 @@ export function CraftAdminPage() {
                               </div>
                             );
                           })()}
-                          <div className="flex items-center gap-1">
-                            <button
-                              type="button"
-                              className="p-0.5 rounded bg-slate-800/90 border border-slate-700/60 text-slate-300 hover:bg-slate-700 disabled:opacity-40"
-                              onClick={() => mutateQty(slot, -1)}
-                              disabled={busy || entry.quantity <= MIN_INGREDIENT_QUANTITY}
-                            >
-                              <Minus className="w-3 h-3" />
-                            </button>
-                            <input
-                              type="number"
-                              min={MIN_INGREDIENT_QUANTITY}
-                              max={MAX_INGREDIENT_QUANTITY}
-                              value={rawQty[qtyKey(entry.itemId)] ?? String(entry.quantity)}
-                              onChange={(e) => {
-                                const raw = e.target.value;
-                                setRawQty((prev) => ({ ...prev, [qtyKey(entry.itemId)]: raw }));
-                                commitQty(slot, raw);
-                              }}
-                              onBlur={() =>
-                                setRawQty((prev) => {
-                                  const next = { ...prev };
-                                  delete next[qtyKey(entry.itemId)];
-                                  return next;
-                                })
-                              }
-                              className="w-12 text-center bg-slate-900/80 border border-slate-700/70 rounded px-1 py-0.5 text-xs font-mono focus:outline-none focus:border-cyan-500/60"
-                              disabled={busy}
-                            />
-                            <button
-                              type="button"
-                              className="p-0.5 rounded bg-slate-800/90 border border-slate-700/60 text-slate-300 hover:bg-slate-700 disabled:opacity-40"
-                              onClick={() => mutateQty(slot, 1)}
-                              disabled={busy || entry.quantity >= MAX_INGREDIENT_QUANTITY}
-                            >
-                              <Plus className="w-3 h-3" />
-                            </button>
-                          </div>
                         </div>
                       );
                     }
@@ -1316,8 +1320,8 @@ export function CraftAdminPage() {
                 <p className="text-[10px] font-mono text-slate-500 mb-3">
                   {draft.length}/{MAX_RECIPE_INGREDIENTS} ingredientes · qualquer item do jogo (menos o
                   próprio) · quantidade {MIN_INGREDIENT_QUANTITY}–{MAX_INGREDIENT_QUANTITY} · o botão "ou" de um
-                  card aceita até {MAX_INGREDIENT_ALTERNATIVES} itens alternativos (mesma quantidade; na estação o
-                  jogador vê um select com o primeiro pré-selecionado e cada opção pode ter tempo de preparo)
+                  card aceita até {MAX_INGREDIENT_ALTERNATIVES} itens alternativos, cada um com a própria quantidade
+                  e tempo de preparo (na estação o jogador vê um select com o primeiro pré-selecionado)
                 </p>
 
                 <div className="flex flex-wrap items-center gap-2">
@@ -1407,5 +1411,68 @@ function PrepSecondsSelect({
         ))}
       </select>
     </label>
+  );
+}
+
+/** Stepper compacto (− input +) da quantidade de UMA opção do card (principal ou "ou"). */
+function QtyStepper({
+  label,
+  value,
+  raw,
+  onRaw,
+  onCommit,
+  onStep,
+  disabled,
+  testId,
+}: {
+  label: string;
+  value: number;
+  /** Texto em digitação (ainda não aplicado); undefined = mostra `value`. */
+  raw: string | undefined;
+  /** null = digitação encerrada (volta a espelhar `value`). */
+  onRaw: (raw: string | null) => void;
+  onCommit: (raw: string) => void;
+  onStep: (delta: number) => void;
+  disabled?: boolean;
+  testId?: string;
+}) {
+  const buttonClass =
+    'p-0.5 rounded bg-slate-800/90 border border-slate-700/60 text-slate-300 hover:bg-slate-700 disabled:opacity-40';
+  return (
+    <div className="flex shrink-0 items-center gap-0.5" data-testid={testId}>
+      <button
+        type="button"
+        title="Menos"
+        className={buttonClass}
+        onClick={() => onStep(-1)}
+        disabled={disabled || value <= MIN_INGREDIENT_QUANTITY}
+      >
+        <Minus className="w-3 h-3" />
+      </button>
+      <input
+        type="number"
+        min={MIN_INGREDIENT_QUANTITY}
+        max={MAX_INGREDIENT_QUANTITY}
+        aria-label={`Quantidade de ${label}`}
+        title={`Quantas unidades de "${label}" a receita consome`}
+        value={raw ?? String(value)}
+        onChange={(e) => {
+          onRaw(e.target.value);
+          onCommit(e.target.value);
+        }}
+        onBlur={() => onRaw(null)}
+        className="w-11 text-center bg-slate-900/80 border border-slate-700/70 rounded px-1 py-0.5 text-xs font-mono focus:outline-none focus:border-cyan-500/60"
+        disabled={disabled}
+      />
+      <button
+        type="button"
+        title="Mais"
+        className={buttonClass}
+        onClick={() => onStep(1)}
+        disabled={disabled || value >= MAX_INGREDIENT_QUANTITY}
+      >
+        <Plus className="w-3 h-3" />
+      </button>
+    </div>
   );
 }

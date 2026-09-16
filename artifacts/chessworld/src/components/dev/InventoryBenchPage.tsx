@@ -57,7 +57,7 @@ const SWORD_ICON =
 
 // Itens/badges sem rede: o bife é `food` + `edible` (só `edible` deixa comer).
 // Receitas + filiação às estações alimentam o Livro de Receitas (`?receitas=1`):
-// a espada aceita ferro OU cobre (cobre com 5s de preparo) e custa 1 gambit.
+// a espada aceita 2 ferro OU 3 cobre (cobre com 5s de preparo) e custa 1 gambit.
 primeCraftData({
   items: {
     [STEAK]: { itemId: STEAK, name: 'Bife assado', imageUrl: STEAK_ICON },
@@ -69,7 +69,7 @@ primeCraftData({
     [TRAINING_SWORD]: {
       targetId: TRAINING_SWORD,
       ingredients: [
-        { itemId: 'mineral:ferro', quantity: 2, alternatives: [{ itemId: 'mineral:cobre', prepSeconds: 5 }] },
+        { itemId: 'mineral:ferro', quantity: 2, alternatives: [{ itemId: 'mineral:cobre', quantity: 3, prepSeconds: 5 }] },
         { itemId: 'mineral:pedra', quantity: 1 },
       ],
       gambitsCost: 1,
@@ -231,8 +231,13 @@ export function InventoryBenchPage() {
       const progress = useProgressStore.getState();
       if (!progress.skillsOpen) progress.toggleSkills();
     }
-    // `?receitas=1` abre o Livro de Receitas (fecha o inventário — são exclusivos).
-    if (params.has('receitas')) openRecipeBook();
+    // `?receitas=1` abre o Livro de Receitas (fecha o inventário — são exclusivos);
+    // `?receitas=<itemId>` abre já com esse item selecionado (ex.: a espada, com "ou").
+    const recipeBook = params.get('receitas');
+    if (recipeBook !== null) {
+      openRecipeBook();
+      if (recipeBook !== '' && recipeBook !== '1') useRecipeBookStore.getState().select(recipeBook);
+    }
   }, [seeded, openInventory, openRecipeBook]);
 
   if (!seeded) return null;

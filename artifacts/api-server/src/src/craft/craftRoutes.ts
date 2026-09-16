@@ -19,6 +19,7 @@ import { requireSupabaseAdmin } from '../auth/supabaseAuth.js';
 import {
   classifyCraftEntityId,
   ingredientAlternatives,
+  ingredientOptionQuantity,
   recipeIngredientItemIds,
   validateCraftItemConfig,
   validateCraftRecipeConfig,
@@ -324,14 +325,20 @@ craftRecipesAdminRouter.put('/:targetId', async (req: Request, res: Response) =>
     return;
   }
   // Alternativas ("ou") só persistem quando existem; o tempo de preparo só
-  // faz sentido junto delas (0/ausente = instantâneo, nunca gravado).
+  // faz sentido junto delas (0/ausente = instantâneo, nunca gravado). A
+  // quantidade de cada opção é sempre gravada explícita — "ausente = a do
+  // principal" fica só para registros legados.
   const cleanSeconds = (seconds: number | undefined) =>
     typeof seconds === 'number' && seconds > 0 ? { prepSeconds: seconds } : {};
   const config: CraftRecipeConfig = {
     targetId,
     ingredients: body.ingredients.map((i): CraftIngredient => {
       const alternatives = ingredientAlternatives(i).map(
-        (option): CraftIngredientOption => ({ itemId: option.itemId, ...cleanSeconds(option.prepSeconds) }),
+        (option): CraftIngredientOption => ({
+          itemId: option.itemId,
+          quantity: ingredientOptionQuantity(i, option.itemId),
+          ...cleanSeconds(option.prepSeconds),
+        }),
       );
       if (alternatives.length === 0) return { itemId: i.itemId, quantity: i.quantity };
       return { itemId: i.itemId, quantity: i.quantity, ...cleanSeconds(i.prepSeconds), alternatives };
