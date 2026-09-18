@@ -5,21 +5,25 @@ import {
   DEFAULT_SPEED_BY_LEVEL,
   HP_REGEN_LABELS,
   HP_REGEN_OPTIONS,
+  HUNTING_LEVEL_PROFILES,
   HUNTING_LEVEL_LABELS,
   HUNTING_LEVELS,
   HUNTING_LIMITS,
+  LEVEL_PROFILE_FIELDS,
   MONSTER_TREE_ANIMAL_KEY,
   RESIDENT_REACTIONS,
   RESIDENT_REACTION_LABELS,
+  configuredAnimalCount,
   defaultHuntingConfig,
+  defaultLevelProfiles,
   defaultVariantConfig,
   parseHuntingConfig,
-  reservedAnchorCount,
   type AnimalVariantConfig,
   type HpRegenSeconds,
   type HuntingCategory,
   type HuntingConfig,
   type HuntingContractConfig,
+  type HuntingLevel,
   type HuntingManifest,
   type HuntingManifestAnimal,
 } from '../../../shared/hunting/HuntingShapes';
@@ -30,7 +34,7 @@ import { RigApiError } from '../rig-editor/rigApi';
 import { NumberField, SqlBox, inputClass } from '../shared/AdminFields';
 import { AnimalRigPanel } from './AnimalRigPanel';
 
-type Tab = 'hunts' | 'residents' | 'contracts' | 'general';
+type Tab = 'hunts' | 'residents' | 'contracts' | 'ai' | 'general';
 const clone = (value: HuntingConfig): HuntingConfig => JSON.parse(JSON.stringify(value)) as HuntingConfig;
 const button = 'inline-flex items-center gap-1.5 rounded-md border border-slate-700 bg-slate-800 px-3 py-2 text-xs font-medium text-slate-200 hover:bg-slate-700 disabled:opacity-40';
 const range = (min: number, max: number) => ({ min, max });
@@ -74,7 +78,24 @@ function VariantEditor({ variantId, variant, manifest, category, update }: {
       <Field label="Nível"><select className={`${inputClass} w-full`} value={variant.level} onChange={(event) => update((next) => { next.level = event.target.value as AnimalVariantConfig['level']; })}>
         {HUNTING_LEVELS.map((level) => <option key={level} value={level}>{HUNTING_LEVEL_LABELS[level]}</option>)}
       </select></Field>
-      <Field label="Quantidade no mapa"><div className="flex items-center gap-2"><NumberField value={variant.spawnCount} range={HUNTING_LIMITS.spawnCount} onChange={(value) => update((next) => { next.spawnCount = value; })} /><Toggle checked={variant.spawnMode === 'random'} label="random" onChange={(value) => update((next) => { next.spawnMode = value ? 'random' : 'fixed'; })} /></div></Field>
+      <Field label="Quantidade no mapa">
+        <div className="flex items-center gap-2">
+          {variant.spawnMode === 'fixed'
+            ? <NumberField value={variant.spawnCount} range={HUNTING_LIMITS.spawnCount} onChange={(value) => update((next) => { next.spawnCount = value; })} />
+            : <>
+              <NumberField label="mín" value={variant.spawnMin} range={HUNTING_LIMITS.spawnCount} onChange={(value) => update((next) => { next.spawnMin = value; })} />
+              <span className="text-[10px] text-slate-500">mín</span>
+              <NumberField label="máx" value={variant.spawnMax} range={HUNTING_LIMITS.spawnCount} onChange={(value) => update((next) => { next.spawnMax = value; })} />
+              <span className="text-[10px] text-slate-500">máx</span>
+            </>}
+          <Toggle checked={variant.spawnMode === 'random'} label="random" onChange={(value) => update((next) => { next.spawnMode = value ? 'random' : 'fixed'; })} />
+        </div>
+        <p className="mt-1 text-[10px] text-slate-500">{variant.spawnMode === 'fixed'
+          ? 'Anchors são só pontos de spawn: pode passar do total de anchors (animais repetem anchor).'
+          : variant.spawnMax < variant.spawnMin
+            ? `Faixa invertida: vale de ${variant.spawnMax} a ${variant.spawnMin} (ajustada ao salvar).`
+            : 'O sistema sorteia uma quantidade entre mín e máx quando o mundo abre.'}</p>
+      </Field>
       <Field label="Distância de combat break"><NumberField value={variant.combatBreakDistance} range={HUNTING_LIMITS.combatBreak} suffix="px" onChange={(value) => update((next) => { next.combatBreakDistance = value; })} /></Field>
       <Field label="Regeneração de HP"><select className={`${inputClass} w-full`} value={variant.hpRegenSeconds} onChange={(event) => update((next) => { next.hpRegenSeconds = Number(event.target.value) as HpRegenSeconds; })}>
         {HP_REGEN_OPTIONS.map((seconds) => <option key={seconds} value={seconds}>{HP_REGEN_LABELS[seconds]}</option>)}
@@ -85,7 +106,13 @@ function VariantEditor({ variantId, variant, manifest, category, update }: {
       <div className="flex flex-wrap gap-2">{HUNTING_LEVELS.map((level) => <label key={level} className={`rounded border p-1.5 ${variant.level === level ? 'border-cyan-500 bg-cyan-950/30' : 'border-slate-800'}`}>
         <span className="mr-1 text-[10px] text-slate-400">{HUNTING_LEVEL_LABELS[level]}</span>
         <NumberField value={variant.speedByLevel[level] ?? DEFAULT_SPEED_BY_LEVEL[level]} range={HUNTING_LIMITS.speed} className="w-16" onChange={(value) => update((next) => { next.speedByLevel[level] = value; })} />
-      </label>)}</div>
+      </label>)}
+        <label className="rounded border border-slate-800 p-1.5">
+          <span className="mr-1 text-[10px] text-slate-400">Passada da corrida</span>
+          <NumberField value={variant.runStridePx} range={HUNTING_LIMITS.stride} className="w-16" suffix="px" onChange={(value) => update((next) => { next.runStridePx = value; })} />
+        </label>
+      </div>
+      <p className="mt-1 text-[10px] text-slate-500">px que o animal avança por salto na corrida — define o ritmo da animação</p>
     </div>
     {category === 'residents' && <div className="mt-3 grid gap-3 sm:grid-cols-3">
       <Field label="Tipo de reação"><div className="flex">{RESIDENT_REACTIONS.map((reaction) => <button type="button" key={reaction} onClick={() => update((next) => { next.reaction = reaction; })}
@@ -136,6 +163,42 @@ function Contracts({ config, manifest, update }: { config: HuntingConfig; manife
       </div>
     </div>)}
   </div>;
+}
+
+function AiProfiles({ config, update }: { config: HuntingConfig; update: (apply: (next: HuntingConfig) => void) => void }) {
+  const profiles = config.levelProfiles ?? defaultLevelProfiles();
+  const edit = (level: HuntingLevel, key: (typeof LEVEL_PROFILE_FIELDS)[number]['key'], value: number) => update((next) => {
+    const all = next.levelProfiles ?? defaultLevelProfiles();
+    all[level] = { ...(all[level] ?? HUNTING_LEVEL_PROFILES[level]), [key]: value };
+    next.levelProfiles = all;
+  });
+  const restore = (level: HuntingLevel) => update((next) => {
+    const all = next.levelProfiles ?? defaultLevelProfiles();
+    all[level] = { ...HUNTING_LEVEL_PROFILES[level] };
+    next.levelProfiles = all;
+  });
+  return <section className="rounded-xl border border-slate-700 bg-slate-900/60 p-4">
+    <p className="mb-4 text-xs text-slate-400">Ajusta como cada nível de dificuldade persegue, ataca, esquiva e recua. A velocidade continua por animal (Velocidade por nível).</p>
+    <div className="overflow-x-auto">
+      <table className="w-full min-w-[760px] border-collapse text-xs">
+        <thead><tr className="border-b border-slate-700">
+          <th className="p-2 text-left font-medium text-slate-400">Parâmetro</th>
+          {HUNTING_LEVELS.map((level) => <th key={level} className="p-2 text-center font-medium text-slate-300">{HUNTING_LEVEL_LABELS[level]}</th>)}
+        </tr></thead>
+        <tbody>{LEVEL_PROFILE_FIELDS.map((field) => <tr key={field.key} className="border-b border-slate-800/70 last:border-0">
+          <td className="p-2"><span className="text-slate-200">{field.label}</span>{field.unit && <span className="ml-1 text-slate-500">({field.unit})</span>}<p className="mt-0.5 text-[10px] text-slate-500">{field.hint}</p></td>
+          {HUNTING_LEVELS.map((level) => <td key={level} className="p-2 text-center">
+            <NumberField value={profiles[level]?.[field.key] ?? HUNTING_LEVEL_PROFILES[level][field.key]} range={{ min: field.min, max: field.max }} step={field.step} className="w-24" suffix={field.unit} onChange={(value) => edit(level, field.key, value)} />
+          </td>)}
+        </tr>)}</tbody>
+      </table>
+    </div>
+    <div className="mt-4 flex flex-wrap items-center gap-2">
+      <span className="text-xs text-slate-500">Restaurar padrões:</span>
+      {HUNTING_LEVELS.map((level) => <button key={level} type="button" className={button} onClick={() => restore(level)}>{HUNTING_LEVEL_LABELS[level]}</button>)}
+      <button type="button" className={button} onClick={() => update((next) => { next.levelProfiles = defaultLevelProfiles(); })}>Restaurar todos</button>
+    </div>
+  </section>;
 }
 
 export default function HuntingControllerPage() {
@@ -197,14 +260,16 @@ export default function HuntingControllerPage() {
     } catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)); } finally { setBusy(false); }
   };
 
-  const huntsUsed = reservedAnchorCount(config.variants, 'hunts');
-  const residentsUsed = reservedAnchorCount(config.variants, 'residents');
+  const huntsUsed = configuredAnimalCount(config.variants, 'hunts');
+  const residentsUsed = configuredAnimalCount(config.variants, 'residents');
+  const huntsRandom = Object.entries(config.variants).some(([id, variant]) => id.startsWith('hunts/') && variant.spawnMode === 'random');
+  const residentsRandom = Object.entries(config.variants).some(([id, variant]) => id.startsWith('residents/') && !id.startsWith(`${MONSTER_TREE_ANIMAL_KEY}/`) && variant.spawnMode === 'random');
   const treeUsed = Object.entries(config.variants).filter(([id]) => id.startsWith(`${MONSTER_TREE_ANIMAL_KEY}/`))
-    .reduce((sum, [, variant]) => sum + (variant.spawnMode === 'random' ? Math.min(1, variant.spawnCount) : variant.spawnCount), 0);
+    .reduce((sum, [, variant]) => sum + (variant.spawnMode === 'random' ? variant.spawnMax : variant.spawnCount), 0);
   const budgets = [
-    { text: `Anchor points de caça: ${CRAFTING_WORLD_MAP.huntAnchors.length - huntsUsed} de ${CRAFTING_WORLD_MAP.huntAnchors.length} disponíveis`, negative: huntsUsed > CRAFTING_WORLD_MAP.huntAnchors.length },
-    { text: `Anchor points residentes: ${CRAFTING_WORLD_MAP.residentAnchors.length - residentsUsed} de ${CRAFTING_WORLD_MAP.residentAnchors.length} disponíveis`, negative: residentsUsed > CRAFTING_WORLD_MAP.residentAnchors.length },
-    { text: `Árvores-monstro: ${treeUsed}/${CRAFTING_WORLD_MAP.monsterTreeAnchors.length}`, negative: treeUsed > CRAFTING_WORLD_MAP.monsterTreeAnchors.length },
+    { text: `Anchor points de caça: ${CRAFTING_WORLD_MAP.huntAnchors.length} pontos de spawn · ${huntsUsed} animais configurados${huntsRandom ? ' (random conta o máx)' : ''}`, detail: huntsUsed > CRAFTING_WORLD_MAP.huntAnchors.length ? 'Excedentes nascem em anchors aleatórios (podem repetir).' : '', negative: false },
+    { text: `Anchor points residentes: ${CRAFTING_WORLD_MAP.residentAnchors.length} pontos de spawn · ${residentsUsed} animais configurados${residentsRandom ? ' (random conta o máx)' : ''}`, detail: residentsUsed > CRAFTING_WORLD_MAP.residentAnchors.length ? 'Excedentes nascem em anchors aleatórios (podem repetir).' : '', negative: false },
+    { text: `Árvores-monstro: ${treeUsed}/${CRAFTING_WORLD_MAP.monsterTreeAnchors.length}`, detail: '', negative: treeUsed > CRAFTING_WORLD_MAP.monsterTreeAnchors.length },
   ];
   const animals = manifest?.animals.filter((animal) => animal.category === tab) ?? [];
 
@@ -216,25 +281,26 @@ export default function HuntingControllerPage() {
         </div></div>
         <button type="button" disabled={busy || !dirty} onClick={() => void save()} className={`${button} border-emerald-700 bg-emerald-950 text-emerald-200`}><Save className="h-4 w-4" /> Salvar configuração</button>
       </header>
-      <div className="mb-5 grid gap-2 md:grid-cols-3">{budgets.map((budget) => <div key={budget.text} className={`rounded-lg border p-3 text-xs ${budget.negative ? 'border-rose-600 bg-rose-950/40 text-rose-300' : 'border-slate-800 bg-slate-900 text-slate-300'}`}>{budget.text}{budget.negative && <p className="mt-1 font-semibold">Atenção: animais compartilharão anchors.</p>}</div>)}</div>
+      <div className="mb-5 grid gap-2 md:grid-cols-3">{budgets.map((budget) => <div key={budget.text} className={`rounded-lg border p-3 text-xs ${budget.negative ? 'border-rose-600 bg-rose-950/40 text-rose-300' : 'border-slate-800 bg-slate-900 text-slate-300'}`}>{budget.text}{budget.detail && <p className="mt-1 text-slate-400">{budget.detail}</p>}</div>)}</div>
       {tableMissing && <div className="mb-4 rounded-lg border border-amber-500/40 bg-amber-500/10 p-3 text-xs text-amber-200"><p className="mb-2 font-semibold">Tabelas ausentes. Execute os SQLs no Supabase.</p>{tableSql && <SqlBox sql={tableSql} />}{playerTableSql && <SqlBox className="mt-2" sql={playerTableSql} />}</div>}
       {!persisted && <p className="mb-4 rounded border border-cyan-800 bg-cyan-950/30 p-3 text-xs text-cyan-200">Ainda não há configuração salva; os padrões estão sendo exibidos.</p>}
       {error && <p className="mb-4 rounded border border-rose-800 bg-rose-950/40 p-3 text-xs text-rose-300">{error}</p>}
       {success && <p className="mb-4 rounded border border-emerald-800 bg-emerald-950/40 p-3 text-xs text-emerald-300">{success}</p>}
       <nav className="mb-5 flex flex-wrap gap-2">{([
-        ['hunts', 'Caças (hunts)'], ['residents', 'Residentes'], ['contracts', 'Contratos'], ['general', 'Geral'],
+        ['hunts', 'Caças (hunts)'], ['residents', 'Residentes'], ['contracts', 'Contratos'], ['ai', 'Comportamento (IA)'], ['general', 'Geral'],
       ] as [Tab, string][]).map(([id, label]) => <button type="button" key={id} className={`${button} ${tab === id ? 'border-cyan-500 bg-cyan-950 text-cyan-200' : ''}`} onClick={() => setTab(id)}>{label}</button>)}</nav>
       {busy && !manifest ? <div className="flex items-center gap-2 text-sm text-slate-500"><Loader2 className="h-4 w-4 animate-spin" /> Carregando…</div>
         : (tab === 'hunts' || tab === 'residents') ? <div className="space-y-4">{animals.map((animal) => <AnimalCard key={animal.animalKey} animal={animal} config={config} updateVariant={updateVariant} />)}</div>
           : tab === 'contracts' && manifest ? <Contracts config={config} manifest={manifest} update={update} />
-            : <section className="max-w-2xl rounded-xl border border-slate-700 bg-slate-900/60 p-4"><h2 className="mb-4 flex items-center gap-2 text-lg font-semibold text-white"><Target className="h-5 w-5 text-cyan-400" /> Geral</h2>
+            : tab === 'ai' ? <AiProfiles config={config} update={update} />
+              : <section className="max-w-2xl rounded-xl border border-slate-700 bg-slate-900/60 p-4"><h2 className="mb-4 flex items-center gap-2 text-lg font-semibold text-white"><Target className="h-5 w-5 text-cyan-400" /> Geral</h2>
               <div className="space-y-3">
                 <Field label="Dano com as mãos"><NumberField value={config.general.handDamage} range={range(0, HUNTING_LIMITS.damage.max)} onChange={(value) => update((next) => { next.general.handDamage = value; })} /></Field>
                 <Field label="Respawn das caças"><NumberField value={config.general.huntsRespawnSeconds} range={HUNTING_LIMITS.respawn} suffix="s" onChange={(value) => update((next) => { next.general.huntsRespawnSeconds = value; })} /></Field>
                 <Field label="Raio de interação do NPC"><NumberField value={config.general.npcInteractRadius} range={range(32, 2000)} suffix="px" onChange={(value) => update((next) => { next.general.npcInteractRadius = value; })} /></Field>
                 <Field label="Sistema"><Toggle checked={config.general.enabled} label="Caça habilitada" onChange={(value) => update((next) => { next.general.enabled = value; })} /></Field>
               </div>
-            </section>}
+              </section>}
     </div>
   </main>;
 }

@@ -1,10 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import {
+  DEFAULT_RUN_STRIDE_PX,
   DEFAULT_SPEED_BY_LEVEL,
+  HUNTING_LEVEL_PROFILES,
+  configuredAnimalCount,
   defaultVariantConfig,
   parseHuntingConfig,
+  parseVariantConfig,
   parseVariantId,
-  reservedAnchorCount,
   rigIdForAnimal,
   rollSpawnCount,
 } from './HuntingShapes.js';
@@ -44,19 +47,38 @@ describe('HuntingShapes', () => {
     expect(cfg.variants['bogus']).toBeUndefined();
     expect(cfg.contracts).toHaveLength(1);
     expect(cfg.contracts[0]).toMatchObject({ id: 'c-1', quantity: 1, cooldownHours: 1.5, enabled: true });
+    expect(cfg.levelProfiles).toEqual(HUNTING_LEVEL_PROFILES);
+
+    const clamped = parseHuntingConfig({ levelProfiles: { easy: { aggression: 5 } } });
+    expect(clamped.levelProfiles.easy.aggression).toBe(1);
   });
 
-  it('anchor budget counts random as one reserved anchor and ignores the monster tree', () => {
+  it('configured population counts fixed totals and random maxima, and ignores the monster tree', () => {
     const v = {
       'hunts/bear/a': { ...defaultVariantConfig(), spawnCount: 3 },
-      'hunts/bear/b': { ...defaultVariantConfig(), spawnMode: 'random' as const, spawnCount: 5 },
+      'hunts/bear/b': { ...defaultVariantConfig(), spawnMode: 'random' as const, spawnMin: 2, spawnMax: 5 },
       'residents/tree/t': { ...defaultVariantConfig(), spawnCount: 9 },
       'residents/fox/f': { ...defaultVariantConfig(), spawnCount: 2 },
     };
-    expect(reservedAnchorCount(v, 'hunts')).toBe(4);
-    expect(reservedAnchorCount(v, 'residents')).toBe(2);
+    expect(configuredAnimalCount(v, 'hunts')).toBe(8);
+    expect(configuredAnimalCount(v, 'residents')).toBe(2);
     expect(rollSpawnCount(v['hunts/bear/b'], () => 0.999)).toBe(5);
+    expect(rollSpawnCount(v['hunts/bear/b'], () => 0)).toBe(2);
     expect(rollSpawnCount(v['hunts/bear/a'], () => 0.999)).toBe(3);
+  });
+
+  it('normalizes random spawn bounds and the running stride', () => {
+    const variant = parseVariantConfig({ spawnMin: 12, spawnMax: 3 });
+    expect(variant.spawnMin).toBe(3);
+    expect(variant.spawnMax).toBe(12);
+    expect(variant.runStridePx).toBe(DEFAULT_RUN_STRIDE_PX);
+    // saved before the range existed: 'random' meant 0..spawnCount — keep the maximum, never a 0..0 range
+    const legacy = parseVariantConfig({ spawnMode: 'random', spawnCount: 7 });
+    expect([legacy.spawnMin, legacy.spawnMax]).toEqual([1, 7]);
+    const legacyZero = parseVariantConfig({ spawnMode: 'random', spawnCount: 0 });
+    expect(legacyZero.spawnMin).toBe(1);
+    expect(legacyZero.spawnMax).toBeGreaterThanOrEqual(1);
+    expect(rollSpawnCount(legacyZero, () => 0)).toBeGreaterThanOrEqual(1);
   });
 });
 

@@ -54,7 +54,7 @@ import { totalSkillLevel } from '../shared/progress/EnergySkillsShapes';
 import { BigChessOverlays } from './game/bigchess/BigChessOverlays';
 import { bigChessPieceFor, parseBigChessSlots, type BigChessPieceView } from '../shared/bigchess/BigChessShapes';
 import { parseAllowedIds } from '../shared/craft/PlaceableStations';
-import { HUNT_MSG, type HuntContractsPayload, type HuntEventPayload, type HuntStatePayload } from '../shared/hunting/HuntingShapes';
+import { DEFAULT_RUN_STRIDE_PX, HUNT_MSG, type HuntContractsPayload, type HuntEventPayload, type HuntStatePayload } from '../shared/hunting/HuntingShapes';
 import type { AnimalView } from '../game/hunting/AnimalLayer';
 import type { NpcView } from '../game/hunting/NpcLayer';
 import { useHuntingStore } from '../stores/huntingStore';
@@ -934,6 +934,7 @@ export function GameCanvas() {
         y: Number(animal.y),
         dir: Number(animal.dir ?? 0),
         anim: animal.anim === 'walk' || animal.anim === 'run' || animal.anim === 'attack' ? animal.anim : 'idle',
+        stride: Number(animal.stride ?? DEFAULT_RUN_STRIDE_PX),
         hp: Number(animal.hp ?? 0),
         maxHp: Number(animal.maxHp ?? 1),
         level: animal.level === 'easy' || animal.level === 'moderate' || animal.level === 'hard' ? animal.level : 'medium',

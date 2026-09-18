@@ -14,6 +14,7 @@ import {
   ensureAnimalTexture,
   type AnimalRig,
 } from './huntingAssets';
+import { AnimalPlayback, type AnimalPlaybackState } from './animalPlayback';
 
 export interface AnimalView {
   id: string;
@@ -23,6 +24,7 @@ export interface AnimalView {
   y: number;
   dir: number;
   anim: AnimalAnimation;
+  stride: number;
   hp: number;
   maxHp: number;
   level: HuntingLevel;
@@ -37,6 +39,8 @@ interface Entry {
   label: Phaser.GameObjects.Text;
   bar: Phaser.GameObjects.Graphics;
   interpolator: RemotePlayerInterpolator;
+  playback: AnimalPlayback;
+  playbackState: AnimalPlaybackState;
   rig: AnimalRig | null;
   dying: boolean;
 }
@@ -62,6 +66,7 @@ export class AnimalLayer {
       if (entry) {
         entry.view = view;
         entry.interpolator.pushSnapshot(view.x, view.y);
+        entry.playback.push(view.anim, view.dir, view.stride, Date.now());
         if (view.dead) this.fade(entry);
       } else {
         this.add(view);
@@ -80,6 +85,7 @@ export class AnimalLayer {
     const moved = entry.view.x !== view.x || entry.view.y !== view.y;
     entry.view = view;
     if (moved) entry.interpolator.pushSnapshot(view.x, view.y);
+    entry.playback.push(view.anim, view.dir, view.stride, Date.now());
     if (view.dead) this.fade(entry);
   }
 
@@ -94,9 +100,15 @@ export class AnimalLayer {
       fontFamily: 'monospace', fontSize: '10px', color: '#ffffff', stroke: '#000000', strokeThickness: 3,
     }).setOrigin(0.5, 1);
     container.add([bar, label]);
+    const playback = new AnimalPlayback();
+    playback.push(view.anim, view.dir, view.stride, Date.now());
     const entry: Entry = {
       view, container, sprite: null, label, bar,
-      interpolator: new RemotePlayerInterpolator(view.x, view.y), rig: null, dying: false,
+      interpolator: new RemotePlayerInterpolator(view.x, view.y),
+      playback,
+      playbackState: playback.update(Date.now(), view.x, view.y),
+      rig: null,
+      dying: false,
     };
     this.entries.set(view.id, entry);
     void Promise.all([ensureAnimalTexture(this.scene, view.variantId), ensureAnimalRig(view.variantId)]).then(([ok, rig]) => {
@@ -116,6 +128,7 @@ export class AnimalLayer {
     const bounds = Phaser.Geom.Rectangle.Inflate(new Phaser.Geom.Rectangle(view.x, view.y, view.width, view.height), 200, 200);
     for (const entry of this.entries.values()) {
       const pos = entry.interpolator.getPosition(deltaMs);
+      entry.playbackState = entry.playback.update(Date.now(), pos.x, pos.y);
       entry.container.setPosition(pos.x, pos.y).setDepth(this.depthForY(pos.y));
       if (!bounds.contains(pos.x, pos.y) || entry.dying) continue;
       this.refresh(entry);
@@ -123,7 +136,7 @@ export class AnimalLayer {
   }
 
   private refresh(entry: Entry): void {
-    const { view, sprite } = entry;
+    const { view, sprite, playbackState } = entry;
     entry.label.setText(view.name).setColor(view.contractOwner && view.contractOwner === this.localUserId() ? '#facc15' : '#ffffff');
     entry.label.setY(sprite ? -Math.max(34, sprite.displayHeight * (1 - sprite.originY) + 7) : -42);
     entry.bar.setY(entry.label.y + 2);
@@ -134,19 +147,27 @@ export class AnimalLayer {
         .fillRect(-BAR_W / 2 + 1, 1, (BAR_W - 2) * Math.max(0, view.hp / view.maxHp), 2);
     }
     if (!sprite) return;
-    const direction = ANIMAL_DIRECTIONS[view.dir] ?? 'south';
-    const key = animalAnimationKey(view.variantId, view.anim, direction);
-    if (sprite.anims.currentAnim?.key !== key && this.scene.anims.exists(key)) sprite.play(key);
+    const direction = ANIMAL_DIRECTIONS[playbackState.dir] ?? 'south';
+    if (playbackState.frame !== null) {
+      sprite.anims.stop();
+      const row = entry.rig?.config?.directions[direction] ?? ANIMAL_DIRECTIONS.indexOf(direction);
+      sprite.setFrame(row * 12 + ANIMAL_ANIMATION_COLUMNS.run[playbackState.frame]);
+      return;
+    }
+    const key = animalAnimationKey(view.variantId, playbackState.anim, direction);
+    // after a run (frames set by hand, animation stopped) the looping anims must restart even when the key is unchanged
+    const restart = !sprite.anims.isPlaying && playbackState.anim !== 'attack';
+    if ((sprite.anims.currentAnim?.key !== key || restart) && this.scene.anims.exists(key)) sprite.play(key);
   }
 
   tryProjectileHit(rects: Phaser.Geom.Rectangle[]): boolean {
     for (const entry of this.entries.values()) {
       if (entry.view.dead || !entry.sprite) continue;
-      const direction = ANIMAL_DIRECTIONS[entry.view.dir] ?? 'south';
-      const columns = ANIMAL_ANIMATION_COLUMNS[entry.view.anim];
+      const direction = ANIMAL_DIRECTIONS[entry.playbackState.dir] ?? 'south';
+      const columns = ANIMAL_ANIMATION_COLUMNS[entry.playbackState.anim];
       const frameColumn = Number(entry.sprite.frame.name);
       const localFrame = Math.max(0, columns.indexOf(frameColumn % 12));
-      const hurtboxes = animalHurtboxes(entry.rig ?? { origin: { x: 0.5, y: 0.8 }, config: null }, entry.view.anim, direction, localFrame);
+      const hurtboxes = animalHurtboxes(entry.rig ?? { origin: { x: 0.5, y: 0.8 }, config: null }, entry.playbackState.anim, direction, localFrame);
       for (const hurtbox of hurtboxes) {
         const world = new Phaser.Geom.Rectangle(
           entry.container.x + hurtbox.x, entry.container.y + hurtbox.y, hurtbox.width, hurtbox.height,

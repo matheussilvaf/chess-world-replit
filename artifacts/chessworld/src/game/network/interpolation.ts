@@ -1,5 +1,3 @@
-import Phaser from 'phaser';
-
 interface Snapshot {
   x: number;
   y: number;
@@ -10,7 +8,7 @@ interface Snapshot {
 // nominais, mas o transporte agrupa/atrasa pacotes). 120ms ≈ 3-4 intervalos
 // de envio — com 70ms qualquer soluço de rede estourava o buffer e o sprite
 // corria atrás da posição (efeito "borracha"/trancos).
-const INTERPOLATION_DELAY_MS = 120;
+export const INTERPOLATION_DELAY_MS = 120;
 const MAX_BUFFER_SIZE = 12;
 // Constante de tempo (ms) do catch-up exponencial quando não há par de
 // snapshots para interpolar — em TEMPO, não por frame (senão a 30 FPS o
@@ -60,8 +58,8 @@ export class RemotePlayerInterpolator {
     if (prev && next) {
       const duration = next.timestamp - prev.timestamp;
       const t = duration > 0 ? Math.min((renderTime - prev.timestamp) / duration, 1) : 1;
-      this.currentX = Phaser.Math.Linear(prev.x, next.x, t);
-      this.currentY = Phaser.Math.Linear(prev.y, next.y, t);
+      this.currentX = prev.x + (next.x - prev.x) * t;
+      this.currentY = prev.y + (next.y - prev.y) * t;
     } else {
       // Sem par (rajada perdida, jogador parado, buffer recém-criado):
       // aproxima do último snapshot com meia-vida constante em tempo.

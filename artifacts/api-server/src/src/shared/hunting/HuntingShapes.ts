@@ -49,34 +49,65 @@ export const HUNTING_LEVELS = ['easy', 'medium', 'moderate', 'hard'] as const;
 export type HuntingLevel = (typeof HUNTING_LEVELS)[number];
 export const HUNTING_LEVEL_LABELS: Record<HuntingLevel, string> = { easy: 'Fácil', medium: 'Médio', moderate: 'Moderado', hard: 'Difícil' };
 
-/** Behaviour tuning of one level (speed lives per variant: `speedByLevel`). */
+/** Behaviour tuning of one level (speed lives per variant: `speedByLevel`). Editable in the admin (`HuntingConfig.levelProfiles`). */
 export interface HuntingLevelProfile {
-  /** How often the animal decides to attack when in range (0..1 per decision). */
+  /** How often the animal decides to attack when in range (0..1 per decision, decisions every 100 ms). */
   aggression: number;
   /** Delay between noticing a threat and reacting (ms). */
   reactionMs: number;
   /** Minimum time between two bites (ms). */
   attackCooldownMs: number;
-  /** Chance to sidestep/retreat when the player starts a swing nearby (0..1). */
+  /** Chance to sidestep (leap sideways) when the player starts a swing nearby (0..1). */
   dodgeChance: number;
-  /** Retreats when hp/maxHp drops below this, then re-engages after recovering a bit. */
-  retreatHpRatio: number;
-  /** Fraction of maxHp recovered while retreating before re-attacking. */
-  reengageHpRatio: number;
-  /** Extra chase persistence multiplier applied to combatBreakDistance (1 = as configured). */
-  persistence: number;
   /** Chance to circle/flank instead of charging straight (0..1). */
   flankChance: number;
+  /** Retreats when hp/maxHp drops below this (0 = never retreats). */
+  retreatHpRatio: number;
+  /** Re-engages once hp/maxHp recovered to this ratio while retreating. */
+  reengageHpRatio: number;
+  /** Longest retreat (ms) — after this it re-attacks even without recovering. */
+  retreatMaxMs: number;
+  /** Fraction of maxHp recovered per second while retreating. */
+  retreatHealPerSecond: number;
+  /** Extra chase persistence multiplier applied to combatBreakDistance (1 = as configured). */
+  persistence: number;
+  /** Farther than this (px) from a standing target the animal RUNS; closer it stalks (walks). It always runs after a moving target. */
+  runDistance: number;
 }
+export const LEVEL_PROFILE_FIELDS: readonly { key: keyof HuntingLevelProfile; label: string; hint: string; min: number; max: number; step: number; unit?: string }[] = [
+  { key: 'aggression', label: 'Agressividade', hint: 'Chance de morder quando está ao alcance (avaliada 10× por segundo)', min: 0, max: 1, step: 0.05 },
+  { key: 'reactionMs', label: 'Tempo de reação', hint: 'Espera entre perceber o jogador e reagir', min: 0, max: 5000, step: 50, unit: 'ms' },
+  { key: 'attackCooldownMs', label: 'Intervalo entre mordidas', hint: 'Tempo mínimo entre dois ataques', min: 300, max: 10000, step: 50, unit: 'ms' },
+  { key: 'dodgeChance', label: 'Chance de esquiva', hint: 'Salta para o lado quando o jogador começa um golpe perto', min: 0, max: 1, step: 0.05 },
+  { key: 'flankChance', label: 'Chance de flanquear', hint: 'Contorna o jogador em vez de atacar de frente', min: 0, max: 1, step: 0.05 },
+  { key: 'retreatHpRatio', label: 'Recua abaixo de', hint: 'Fração do HP em que o animal foge (0 = nunca recua)', min: 0, max: 0.9, step: 0.05 },
+  { key: 'reengageHpRatio', label: 'Volta a atacar com', hint: 'Fração do HP recuperada que encerra a fuga', min: 0, max: 1, step: 0.05 },
+  { key: 'retreatMaxMs', label: 'Fuga máxima', hint: 'Depois desse tempo volta a atacar mesmo sem se recuperar', min: 500, max: 30000, step: 250, unit: 'ms' },
+  { key: 'retreatHealPerSecond', label: 'Cura durante a fuga', hint: 'Fração do HP máximo recuperada por segundo enquanto foge', min: 0, max: 0.5, step: 0.01, unit: '/s' },
+  { key: 'persistence', label: 'Persistência', hint: 'Multiplica a distância de combat break durante a perseguição', min: 0.5, max: 3, step: 0.1, unit: '×' },
+  { key: 'runDistance', label: 'Corre a partir de', hint: 'Mais longe que isso de um alvo parado ele corre; mais perto, anda. Alvo em movimento: sempre corre', min: 0, max: 1000, step: 10, unit: 'px' },
+];
+/** Defaults of each level — the admin can override every value (`HuntingConfig.levelProfiles`). */
 export const HUNTING_LEVEL_PROFILES: Record<HuntingLevel, HuntingLevelProfile> = {
-  easy:     { aggression: 0.35, reactionMs: 900, attackCooldownMs: 2200, dodgeChance: 0.0,  retreatHpRatio: 0.15, reengageHpRatio: 0.6, persistence: 1.0, flankChance: 0.0 },
-  medium:   { aggression: 0.6,  reactionMs: 550, attackCooldownMs: 1600, dodgeChance: 0.15, retreatHpRatio: 0.25, reengageHpRatio: 0.5, persistence: 1.0, flankChance: 0.2 },
-  moderate: { aggression: 0.8,  reactionMs: 300, attackCooldownMs: 1200, dodgeChance: 0.35, retreatHpRatio: 0.3,  reengageHpRatio: 0.45, persistence: 1.0, flankChance: 0.4 },
-  hard:     { aggression: 0.95, reactionMs: 120, attackCooldownMs: 850,  dodgeChance: 0.55, retreatHpRatio: 0.35, reengageHpRatio: 0.4, persistence: 1.0, flankChance: 0.6 },
+  easy:     { aggression: 0.5,  reactionMs: 800, attackCooldownMs: 1800, dodgeChance: 0.0,  flankChance: 0.0,  retreatHpRatio: 0.15, reengageHpRatio: 0.5,  retreatMaxMs: 5000, retreatHealPerSecond: 0.02, persistence: 1.0, runDistance: 160 },
+  medium:   { aggression: 0.75, reactionMs: 500, attackCooldownMs: 1400, dodgeChance: 0.15, flankChance: 0.15, retreatHpRatio: 0.2,  reengageHpRatio: 0.45, retreatMaxMs: 4000, retreatHealPerSecond: 0.02, persistence: 1.0, runDistance: 140 },
+  moderate: { aggression: 0.9,  reactionMs: 300, attackCooldownMs: 1000, dodgeChance: 0.3,  flankChance: 0.3,  retreatHpRatio: 0.25, reengageHpRatio: 0.4,  retreatMaxMs: 3500, retreatHealPerSecond: 0.03, persistence: 1.2, runDistance: 120 },
+  hard:     { aggression: 1.0,  reactionMs: 120, attackCooldownMs: 750,  dodgeChance: 0.5,  flankChance: 0.45, retreatHpRatio: 0.3,  reengageHpRatio: 0.4,  retreatMaxMs: 3000, retreatHealPerSecond: 0.04, persistence: 1.5, runDistance: 100 },
 };
+export type HuntingLevelProfiles = Record<HuntingLevel, HuntingLevelProfile>;
+export function defaultLevelProfiles(): HuntingLevelProfiles {
+  return { easy: { ...HUNTING_LEVEL_PROFILES.easy }, medium: { ...HUNTING_LEVEL_PROFILES.medium }, moderate: { ...HUNTING_LEVEL_PROFILES.moderate }, hard: { ...HUNTING_LEVEL_PROFILES.hard } };
+}
 /** Suggested run speed (px/s) per level; wandering uses ANIMAL_WANDER_SPEED_FACTOR of it. */
 export const DEFAULT_SPEED_BY_LEVEL: Record<HuntingLevel, number> = { easy: 70, medium: 95, moderate: 120, hard: 150 };
+/** Wandering (walk) speed = run speed × this. */
 export const ANIMAL_WANDER_SPEED_FACTOR = 0.55;
+/** Stalking a standing target inside `runDistance` (walk) = run speed × this. */
+export const ANIMAL_APPROACH_SPEED_FACTOR = 0.7;
+/** Hunt animals (contract targets) notice players inside this radius (px). */
+export const ANIMAL_HUNT_AGGRO_RADIUS = 260;
+/** Default run stride (px covered by one leap) — see HuntingMotion. */
+export const DEFAULT_RUN_STRIDE_PX = 40;
 
 export const HP_REGEN_OPTIONS = [0, 5, 10, 20, 30, 60] as const;
 export type HpRegenSeconds = (typeof HP_REGEN_OPTIONS)[number];
@@ -86,6 +117,7 @@ export const RESIDENT_REACTIONS = ['attacked', 'radius'] as const;
 export type ResidentReaction = (typeof RESIDENT_REACTIONS)[number];
 export const RESIDENT_REACTION_LABELS: Record<ResidentReaction, string> = { attacked: 'Reage ao ser atacado', radius: 'Reage ao entrar no raio' };
 
+/** 'fixed' spawns exactly `spawnCount`; 'random' rolls once per room between `spawnMin` and `spawnMax` (inclusive). */
 export type SpawnMode = 'fixed' | 'random';
 
 // ───────────────────────── Config document ─────────────────────────
@@ -103,8 +135,13 @@ export interface AnimalVariantConfig {
   /** Run speed px/s per level (editable suggestions). */
   speedByLevel: Record<HuntingLevel, number>;
   spawnMode: SpawnMode;
-  /** Ambient population (spawnMode 'fixed'); 'random' picks 0..spawnCount at room start. */
+  /** Ambient population (spawnMode 'fixed'). Anchors are only spawn points: counts above the anchor total reuse random anchors. */
   spawnCount: number;
+  /** Random population range (spawnMode 'random'), rolled once per room. */
+  spawnMin: number;
+  spawnMax: number;
+  /** Px covered by one running leap (drives run animation speed and the burst movement). */
+  runStridePx: number;
   /** Distance (px) between animal and its target that ends the fight. */
   combatBreakDistance: number;
   hpRegenSeconds: HpRegenSeconds;
@@ -146,11 +183,13 @@ export interface HuntingConfig {
   /** variantId → config. Unknown variants (asset removed) are kept but ignored at runtime. */
   variants: Record<string, AnimalVariantConfig>;
   contracts: HuntingContractConfig[];
+  /** Behaviour (AI) tuning per difficulty level — defaults in HUNTING_LEVEL_PROFILES. */
+  levelProfiles: HuntingLevelProfiles;
 }
 
 export const HUNTING_LIMITS = {
   hp: { min: 1, max: 100000 }, damage: { min: 0, max: 10000 }, xp: { min: 0, max: 1000000 },
-  speed: { min: 10, max: 600 }, spawnCount: { min: 0, max: 200 }, combatBreak: { min: 50, max: 4000 },
+  speed: { min: 10, max: 600 }, spawnCount: { min: 0, max: 200 }, stride: { min: 8, max: 200 }, combatBreak: { min: 50, max: 4000 },
   radius: { min: 16, max: 2000 }, respawn: { min: 0, max: 86400 }, quantity: { min: 1, max: 200 },
   timeLimit: { min: 1, max: 1440 }, crowns: { min: 0, max: 1000000 }, cooldownHours: { min: 0, max: 720 },
   contracts: 200, nameLength: 40,
@@ -159,8 +198,8 @@ export const HUNTING_LIMITS = {
 export function defaultVariantConfig(name = 'Animal'): AnimalVariantConfig {
   return {
     name, hp: 60, damage: 8, xpEnabled: true, xp: 15, level: 'medium',
-    speedByLevel: { ...DEFAULT_SPEED_BY_LEVEL }, spawnMode: 'fixed', spawnCount: 0,
-    combatBreakDistance: 420, hpRegenSeconds: 10,
+    speedByLevel: { ...DEFAULT_SPEED_BY_LEVEL }, spawnMode: 'fixed', spawnCount: 0, spawnMin: 1, spawnMax: 4,
+    runStridePx: DEFAULT_RUN_STRIDE_PX, combatBreakDistance: 420, hpRegenSeconds: 10,
     reaction: 'attacked', radius: 160, respawnCooldownSeconds: 60,
   };
 }
@@ -170,6 +209,7 @@ export function defaultHuntingConfig(): HuntingConfig {
     general: { handDamage: 5, huntsRespawnSeconds: 120, npcInteractRadius: 220, enabled: true },
     variants: {},
     contracts: [],
+    levelProfiles: defaultLevelProfiles(),
   };
 }
 
@@ -213,7 +253,8 @@ export const ANIMAL_BITE_RANGE = 44;
 /**
  * Room state schema (server/src/schemas, synced to the client):
  *  AnimalState { id, variantId, name, x, y, dir (index into ANIMAL_DIRECTIONS), anim (AnimalAnimation),
- *                hp, maxHp, level (HuntingLevel), dead (boolean), contractOwner (user id or '') }
+ *                hp, maxHp, level (HuntingLevel), dead (boolean), contractOwner (user id or ''),
+ *                stride (effective run stride px — client drives the run frames by distance, see HuntingMotion) }
  *  NpcState    { id (NPC_BARBARIAN_ID), x, y, dir (index into NPC_DIRECTION_ORDER), isMoving }
  * WorldState gets `animals: MapSchema<AnimalState>` and `npcs: MapSchema<NpcState>` (craft:* rooms only).
  */
@@ -295,6 +336,12 @@ export function parseVariantConfig(raw: unknown, fallbackName = 'Animal'): Anima
   const speedByLevel = {} as Record<HuntingLevel, number>;
   for (const lvl of HUNTING_LEVELS) speedByLevel[lvl] = num(speeds[lvl], DEFAULT_SPEED_BY_LEVEL[lvl], HUNTING_LIMITS.speed.min, HUNTING_LIMITS.speed.max);
   const regenRaw = typeof raw.hpRegenSeconds === 'number' ? raw.hpRegenSeconds : Number(raw.hpRegenSeconds);
+  const spawnCount = num(raw.spawnCount, d.spawnCount, HUNTING_LIMITS.spawnCount.min, HUNTING_LIMITS.spawnCount.max);
+  // configs saved before spawnMin/spawnMax existed used 0..spawnCount for 'random': keep that maximum (0 → default range)
+  const legacyMax = spawnCount > 0 ? spawnCount : d.spawnMax;
+  const boundA = num(raw.spawnMin, d.spawnMin, HUNTING_LIMITS.spawnCount.min, HUNTING_LIMITS.spawnCount.max);
+  const boundB = num(raw.spawnMax, Math.max(boundA, legacyMax), HUNTING_LIMITS.spawnCount.min, HUNTING_LIMITS.spawnCount.max);
+  const spawnMin = Math.min(boundA, boundB), spawnMax = Math.max(boundA, boundB);
   return {
     name: str(raw.name, d.name, HUNTING_LIMITS.nameLength),
     hp: num(raw.hp, d.hp, HUNTING_LIMITS.hp.min, HUNTING_LIMITS.hp.max),
@@ -304,7 +351,8 @@ export function parseVariantConfig(raw: unknown, fallbackName = 'Animal'): Anima
     level: oneOf(raw.level, HUNTING_LEVELS, d.level),
     speedByLevel,
     spawnMode: oneOf(raw.spawnMode, ['fixed', 'random'] as const, d.spawnMode),
-    spawnCount: num(raw.spawnCount, d.spawnCount, HUNTING_LIMITS.spawnCount.min, HUNTING_LIMITS.spawnCount.max),
+    spawnCount, spawnMin, spawnMax,
+    runStridePx: num(raw.runStridePx, d.runStridePx, HUNTING_LIMITS.stride.min, HUNTING_LIMITS.stride.max),
     combatBreakDistance: num(raw.combatBreakDistance, d.combatBreakDistance, HUNTING_LIMITS.combatBreak.min, HUNTING_LIMITS.combatBreak.max),
     hpRegenSeconds: (HP_REGEN_OPTIONS as readonly number[]).includes(regenRaw) ? (regenRaw as HpRegenSeconds) : d.hpRegenSeconds,
     reaction: oneOf(raw.reaction, RESIDENT_REACTIONS, d.reaction),
@@ -325,6 +373,23 @@ export function parseContractConfig(raw: unknown): HuntingContractConfig | null 
     cooldownHours: num(raw.cooldownHours, 24, HUNTING_LIMITS.cooldownHours.min, HUNTING_LIMITS.cooldownHours.max, false),
     enabled: bool(raw.enabled, true),
   };
+}
+
+export function parseLevelProfile(raw: unknown, level: HuntingLevel): HuntingLevelProfile {
+  const d = HUNTING_LEVEL_PROFILES[level];
+  const out = { ...d };
+  if (!isRec(raw)) return out;
+  for (const field of LEVEL_PROFILE_FIELDS) {
+    const integer = field.step >= 1;
+    out[field.key] = num(raw[field.key], d[field.key], field.min, field.max, integer);
+  }
+  return out;
+}
+export function parseLevelProfiles(raw: unknown): HuntingLevelProfiles {
+  const source = isRec(raw) ? raw : {};
+  const out = defaultLevelProfiles();
+  for (const level of HUNTING_LEVELS) out[level] = parseLevelProfile(source[level], level);
+  return out;
 }
 
 /** Lenient parser: fills defaults, drops malformed contracts/variants, dedupes contract ids. */
@@ -356,26 +421,37 @@ export function parseHuntingConfig(raw: unknown): HuntingConfig {
       contracts.push(parsed);
     }
   }
-  return { schemaVersion: HUNTING_CONFIG_SCHEMA_VERSION, general, variants, contracts };
+  return { schemaVersion: HUNTING_CONFIG_SCHEMA_VERSION, general, variants, contracts, levelProfiles: parseLevelProfiles(raw.levelProfiles) };
 }
 
-/** Effective ambient population of a variant (deterministic for 'fixed', 0..n for 'random'). */
+/** Effective ambient population of a variant: exact for 'fixed'; 'random' rolls spawnMin..spawnMax (inclusive). Roll ONCE per room. */
 export function rollSpawnCount(v: AnimalVariantConfig, rand: () => number = Math.random): number {
-  if (v.spawnMode === 'random') return Math.floor(rand() * (v.spawnCount + 1));
+  if (v.spawnMode === 'random') {
+    const min = Math.min(v.spawnMin, v.spawnMax), max = Math.max(v.spawnMin, v.spawnMax);
+    return min + Math.floor(Math.min(0.999999, Math.max(0, rand())) * (max - min + 1));
+  }
   return v.spawnCount;
 }
-/** Anchor budget shown at the top of the admin page: 'random' counts as 1 reserved anchor. */
-export function reservedAnchorCount(variants: Record<string, AnimalVariantConfig>, category: HuntingCategory): number {
+/** Signature of the spawn settings — when it changes the server re-rolls a 'random' population. */
+export function spawnSignature(v: AnimalVariantConfig): string { return `${v.spawnMode}:${v.spawnCount}:${v.spawnMin}:${v.spawnMax}`; }
+/**
+ * Ambient animals configured for a category (shown next to the anchor total in the admin).
+ * Anchors are spawn/respawn POINTS, not a cap: extra animals share random anchors. 'random' counts its maximum.
+ * The monster tree is excluded (it has its own anchors, one tree per anchor).
+ */
+export function configuredAnimalCount(variants: Record<string, AnimalVariantConfig>, category: HuntingCategory): number {
   let total = 0;
   for (const [id, v] of Object.entries(variants)) {
     const parsed = parseVariantId(id);
     if (!parsed || parsed.category !== category || parsed.animalKey === MONSTER_TREE_ANIMAL_KEY) continue;
-    total += v.spawnMode === 'random' ? Math.min(1, v.spawnCount) : v.spawnCount;
+    total += v.spawnMode === 'random' ? Math.max(v.spawnMin, v.spawnMax) : v.spawnCount;
   }
   return total;
 }
 export function runSpeedFor(v: AnimalVariantConfig): number { return v.speedByLevel[v.level] ?? DEFAULT_SPEED_BY_LEVEL[v.level]; }
-export function levelProfileFor(v: AnimalVariantConfig): HuntingLevelProfile { return HUNTING_LEVEL_PROFILES[v.level]; }
+export function levelProfileFor(config: Pick<HuntingConfig, 'levelProfiles'>, v: AnimalVariantConfig): HuntingLevelProfile {
+  return config.levelProfiles?.[v.level] ?? HUNTING_LEVEL_PROFILES[v.level];
+}
 
 export const HUNTING_CONFIG_TABLE_SQL = `create table if not exists hunting_config (
   config_id text primary key default 'default',

@@ -4,14 +4,16 @@ import type { PlayerState } from '../schemas/PlayerState.js';
 import { AnimalState } from '../schemas/AnimalState.js';
 import { NpcState } from '../schemas/NpcState.js';
 import {
+  ANIMAL_ANIMATION_FPS,
+  ANIMAL_APPROACH_SPEED_FACTOR,
   ANIMAL_ATTACK_DURATION_MS,
   ANIMAL_ATTACK_HIT_FRAMES,
   ANIMAL_BITE_RANGE,
   ANIMAL_DEFAULT_HITBOX,
   ANIMAL_DEFAULT_HURTBOX,
   ANIMAL_DIRECTIONS,
+  ANIMAL_HUNT_AGGRO_RADIUS,
   ANIMAL_WANDER_SPEED_FACTOR,
-  HUNTING_LEVEL_PROFILES,
   HUNT_MSG,
   MONSTER_TREE_ANIMAL_KEY,
   NPC_BARBARIAN_ID,
@@ -19,15 +21,19 @@ import {
   NPC_TALK_HOLD_MS,
   NPC_WALK_SPEED,
   animalDirectionFromVector,
+  levelProfileFor,
   parseVariantId,
   rigIdForAnimal,
   rollSpawnCount,
   runSpeedFor,
+  spawnSignature,
   type AnimalVariantConfig,
   type HuntingConfig,
   type HuntingContractConfig,
+  type HuntingLevelProfile,
   type PlayerHuntingRecord,
 } from '../shared/hunting/HuntingShapes.js';
+import { effectiveRunStride, runDistanceBetween } from '../shared/hunting/HuntingMotion.js';
 import { CRAFTING_WORLD_MAP, type MapAnchor } from '../shared/hunting/craftingWorldMapData.js';
 import { getCraftingWorldGeometry } from '../shared/hunting/HuntingMapGeometry.js';
 import { rectanglesIntersect, type LocalRectangle } from '../shared/combat/CharacterCombatShapes.js';
@@ -43,7 +49,8 @@ import { addCrowns } from '../bigchess/bigChessRepository.js';
 import { getHuntingConfigCached } from './huntingConfigRepository.js';
 import { getPlayerHunting, updateIfActiveMatches, upsertPlayerHunting } from './playerHuntingRepository.js';
 
-type AiMode = 'rooted' | 'return' | 'wander' | 'alert' | 'chase' | 'attack' | 'retreat';
+type AiMode = 'rooted' | 'return' | 'wander' | 'alert' | 'chase' | 'attack' | 'retreat' | 'dodge';
+type Gait = 'walk' | 'run';
 interface RuntimeAnimal {
   state: AnimalState;
   variant: AnimalVariantConfig;
@@ -62,7 +69,24 @@ interface RuntimeAnimal {
   treeAnchorY?: number;
   regenStartedAt: number;
   regenStartHp: number;
+  /** ms since the current run started (-1 = not running); drives the leap bursts of HuntingMotion. */
+  runElapsedMs: number;
+  /** Gait chosen while chasing (hysteresis around profile.runDistance). */
+  chaseGait: Gait;
+  /** Last known position/velocity of the chased player (per decision). */
+  targetTrack: { sessionId: string; x: number; y: number; at: number; vx: number; vy: number } | null;
+  retreatUntil: number;
+  retreatCooldownUntil: number;
+  dodgeUntil: number;
+  nextDodgeAt: number;
+  /** -1 / 0 / 1: circling side while flanking, re-rolled every couple of seconds. */
+  flankSide: number;
+  flankUntil: number;
 }
+/** Below this player speed (px/s) the target counts as standing still (animal may stalk instead of running). */
+const TARGET_MOVING_SPEED = 25;
+/** The animal stops this far from the player (px) instead of walking into it. */
+const STANDOFF_FACTOR = 0.75;
 
 export interface HuntingHost {
   state: WorldState;
@@ -96,6 +120,8 @@ export class HuntingManager {
   private readonly consumedShots = new Map<string, number>();
   private readonly pendingAmbient = new Map<string, number>();
   private readonly ambientDesired = new Map<string, number>();
+  /** 'random' populations are rolled once per room and only re-rolled when the spawn settings change. */
+  private readonly ambientRolls = new Map<string, { signature: string; count: number }>();
   private npcTarget: { x: number; y: number } | null = null;
   private npcPauseUntil = 0;
   private npcTalkUntil = 0;
@@ -154,7 +180,8 @@ export class HuntingManager {
 
   private reconcileAmbient(): void {
     const desired = new Map<string, number>();
-    for (const [variantId, variant] of Object.entries(this.config.variants)) desired.set(variantId, rollSpawnCount(variant));
+    for (const [variantId, variant] of Object.entries(this.config.variants)) desired.set(variantId, this.desiredCount(variantId, variant));
+    for (const variantId of [...this.ambientRolls.keys()]) if (!desired.has(variantId)) this.ambientRolls.delete(variantId);
     this.ambientDesired.clear();
     for (const [variantId, count] of desired) this.ambientDesired.set(variantId, count);
     for (const animal of this.runtime.values()) {
@@ -165,6 +192,12 @@ export class HuntingManager {
         animal.state.maxHp = next.hp;
         animal.state.hp = Math.min(animal.state.hp, next.hp);
         animal.state.level = next.level;
+        const stride = effectiveRunStride(next.runStridePx, runSpeedFor(next));
+        if (stride !== animal.state.stride) {
+          // the client restarts its distance-driven cycle when the stride changes — restart the burst phase too
+          animal.state.stride = stride;
+          if (animal.runElapsedMs >= 0) animal.runElapsedMs = 0;
+        }
       }
     }
     for (const [variantId, count] of desired) {
@@ -176,6 +209,16 @@ export class HuntingManager {
     for (const animal of [...this.runtime.values()]) {
       if (animal.ambient && !desired.has(animal.state.variantId)) this.removeAnimal(animal.state.id);
     }
+  }
+
+  /** Population wanted for a variant: exact for 'fixed'; 'random' keeps its first roll until mode/min/max change. */
+  private desiredCount(variantId: string, variant: AnimalVariantConfig): number {
+    const signature = spawnSignature(variant);
+    const previous = this.ambientRolls.get(variantId);
+    if (previous && previous.signature === signature) return previous.count;
+    const count = rollSpawnCount(variant);
+    this.ambientRolls.set(variantId, { signature, count });
+    return count;
   }
 
   private anchorPoint(anchors: readonly MapAnchor[], npc = false, usedName?: Set<string>): { x: number; y: number; name: string } | null {
@@ -204,7 +247,7 @@ export class HuntingManager {
     Object.assign(state, {
       id, variantId, name: variant.name, x: point.x, y: point.y, dir: 0,
       anim: 'idle', hp: variant.hp, maxHp: variant.hp, level: variant.level,
-      dead: false, contractOwner: owner,
+      dead: false, contractOwner: owner, stride: effectiveRunStride(variant.runStridePx, runSpeedFor(variant)),
     });
     const rt: RuntimeAnimal = {
       state, variant, mode: isTree ? 'rooted' : 'wander', targetSessionId: '',
@@ -213,6 +256,8 @@ export class HuntingManager {
       nextAttackAt: 0, hitSwings: new Set(), ambient, treeAnchor: isTree ? point.name : undefined,
       treeAnchorX: isTree ? point.x : undefined, treeAnchorY: isTree ? point.y : undefined,
       regenStartedAt: 0, regenStartHp: variant.hp,
+      runElapsedMs: -1, chaseGait: 'run', targetTrack: null, retreatUntil: 0, retreatCooldownUntil: 0,
+      dodgeUntil: 0, nextDodgeAt: 0, flankSide: 0, flankUntil: 0,
     };
     this.runtime.set(id, rt);
     this.host.state.animals.set(id, state);
@@ -252,7 +297,7 @@ export class HuntingManager {
         continue;
       }
       if (decide) this.decide(animal, now);
-      this.moveAnimal(animal, dtMs / 1000, now);
+      this.moveAnimal(animal, dtMs, now);
     }
     this.moveNpc(dtMs / 1000, now);
   }
@@ -267,15 +312,59 @@ export class HuntingManager {
     return found;
   }
 
+  private profileFor(animal: RuntimeAnimal): HuntingLevelProfile { return levelProfileFor(this.config, animal.variant); }
+
+  private face(animal: RuntimeAnimal, dx: number, dy: number): void {
+    if (Math.abs(dx) + Math.abs(dy) > 0.5) animal.state.dir = ANIMAL_DIRECTIONS.indexOf(animalDirectionFromVector(dx, dy));
+  }
+
+  /** Velocity estimate (px/s, lightly smoothed) of the chased player from its position at the previous decision. */
+  private trackTarget(animal: RuntimeAnimal, target: PlayerState, now: number): { vx: number; vy: number; speed: number } {
+    const track = animal.targetTrack;
+    let vx = 0, vy = 0;
+    if (track && track.sessionId === animal.targetSessionId && now > track.at && now - track.at < 1000) {
+      const dt = (now - track.at) / 1000;
+      vx = track.vx * 0.4 + ((target.x - track.x) / dt) * 0.6;
+      vy = track.vy * 0.4 + ((target.y - track.y) / dt) * 0.6;
+    }
+    animal.targetTrack = { sessionId: animal.targetSessionId, x: target.x, y: target.y, at: now, vx, vy };
+    return { vx, vy, speed: Math.hypot(vx, vy) };
+  }
+
+  private acquireTarget(animal: RuntimeAnimal, sessionId: string, target: PlayerState, now: number, profile: HuntingLevelProfile): void {
+    animal.targetSessionId = sessionId;
+    animal.targetTrack = null;
+    animal.reactAt = now + profile.reactionMs;
+    animal.mode = 'alert';
+    animal.chaseGait = Math.hypot(target.x - animal.state.x, target.y - animal.state.y) > profile.runDistance ? 'run' : 'walk';
+    this.face(animal, target.x - animal.state.x, target.y - animal.state.y);
+  }
+
+  /** Picks a walkable point away from the player (straight away first, then angled). */
+  private fleeFrom(animal: RuntimeAnimal, target: PlayerState): void {
+    const away = Math.atan2(animal.state.y - target.y, animal.state.x - target.x);
+    const walkable = (px: number, py: number) => this.geometry.isWalkableForAnimal(px, py);
+    for (const turn of [0, 0.6, -0.6, 1.2, -1.2, Math.PI]) {
+      const tx = animal.state.x + Math.cos(away + turn) * 160, ty = animal.state.y + Math.sin(away + turn) * 160;
+      if (this.geometry.segmentWalkable(animal.state.x, animal.state.y, tx, ty, walkable)) {
+        animal.targetX = tx; animal.targetY = ty;
+        return;
+      }
+    }
+    animal.targetX = animal.state.x; animal.targetY = animal.state.y;
+  }
+
   private decide(animal: RuntimeAnimal, now: number): void {
     const parsed = parseVariantId(animal.state.variantId);
-    const profile = HUNTING_LEVEL_PROFILES[animal.variant.level];
+    const profile = this.profileFor(animal);
+    const isTree = parsed?.animalKey === MONSTER_TREE_ANIMAL_KEY;
     let target = animal.targetSessionId ? this.host.state.players.get(animal.targetSessionId) : undefined;
     if (target && (target.currentBoardId || target.hp <= 0 || this.host.isDead(animal.targetSessionId))) target = undefined;
     if (target && Math.hypot(target.x - animal.state.x, target.y - animal.state.y) > animal.variant.combatBreakDistance * profile.persistence) target = undefined;
     if (!target) {
       animal.targetSessionId = '';
-      if (parsed?.animalKey === MONSTER_TREE_ANIMAL_KEY) {
+      animal.targetTrack = null;
+      if (isTree) {
         const atAnchor = Math.hypot((animal.treeAnchorX ?? animal.state.x) - animal.state.x, (animal.treeAnchorY ?? animal.state.y) - animal.state.y) < 8;
         animal.mode = atAnchor ? 'rooted' : 'return';
         animal.targetX = animal.treeAnchorX ?? animal.state.x;
@@ -283,57 +372,103 @@ export class HuntingManager {
         this.regen(animal, 100, now);
         return;
       }
-      const nearest = this.nearestPlayer(animal.state.x, animal.state.y, parsed?.category === 'hunts' ? 260 : animal.variant.radius);
+      const nearest = this.nearestPlayer(animal.state.x, animal.state.y, parsed?.category === 'hunts' ? ANIMAL_HUNT_AGGRO_RADIUS : animal.variant.radius);
       if (nearest && (parsed?.category === 'hunts' || animal.variant.reaction === 'radius')) {
-        animal.targetSessionId = nearest[0];
-        animal.reactAt = now + profile.reactionMs;
-        animal.mode = 'alert';
+        this.acquireTarget(animal, nearest[0], nearest[1], now, profile);
         target = nearest[1];
       }
     }
     if (!target) {
-      if (parsed?.animalKey !== MONSTER_TREE_ANIMAL_KEY) animal.mode = 'wander';
+      if (!isTree && animal.mode !== 'wander') {
+        animal.mode = 'wander';
+        animal.targetX = animal.state.x; animal.targetY = animal.state.y;
+        animal.pauseUntil = now + randomBetween(500, 1500);
+      }
       this.regen(animal, 100, now);
       return;
     }
-    if (animal.state.hp / animal.state.maxHp < profile.retreatHpRatio) animal.mode = 'retreat';
+    // ── retreat (only below the level's hp ratio, bounded in time, with a cooldown so it does not flee forever)
+    const hpRatio = animal.state.hp / animal.state.maxHp;
+    if (animal.mode !== 'retreat' && profile.retreatHpRatio > 0 && hpRatio < profile.retreatHpRatio && now >= animal.retreatCooldownUntil) {
+      animal.mode = 'retreat';
+      animal.retreatUntil = now + profile.retreatMaxMs;
+    }
     if (animal.mode === 'retreat') {
-      animal.state.hp = Math.min(animal.state.maxHp, animal.state.hp + animal.state.maxHp * 0.01);
-      if (animal.state.hp / animal.state.maxHp >= profile.reengageHpRatio) animal.mode = 'chase';
-      animal.targetX = animal.state.x - (target.x - animal.state.x);
-      animal.targetY = animal.state.y - (target.y - animal.state.y);
-      return;
+      animal.state.hp = Math.min(animal.state.maxHp, animal.state.hp + animal.state.maxHp * profile.retreatHealPerSecond * 0.1);
+      if (animal.state.hp / animal.state.maxHp >= profile.reengageHpRatio || now >= animal.retreatUntil) {
+        animal.mode = 'chase';
+        animal.retreatCooldownUntil = now + 6000;
+        animal.chaseGait = 'run';
+      } else {
+        this.fleeFrom(animal, target);
+        return;
+      }
     }
     if (now < animal.reactAt) return;
-    const distance = Math.hypot(target.x - animal.state.x, target.y - animal.state.y);
-    if (distance <= ANIMAL_BITE_RANGE && now >= animal.nextAttackAt && Math.random() <= profile.aggression) {
+    if (animal.mode === 'attack') return;
+    const motion = this.trackTarget(animal, target, now);
+    const dx = target.x - animal.state.x, dy = target.y - animal.state.y;
+    const distance = Math.hypot(dx, dy);
+    const inRange = distance <= ANIMAL_BITE_RANGE + 4;
+    // ── bite
+    if (inRange && now >= animal.nextAttackAt && Math.random() <= profile.aggression) {
       animal.mode = 'attack';
       animal.state.anim = 'attack';
+      this.face(animal, dx, dy);
       animal.nextAttackAt = now + profile.attackCooldownMs;
-      const hitDelay = (ANIMAL_ATTACK_HIT_FRAMES[0] / 10) * 1000;
+      const hitDelay = (ANIMAL_ATTACK_HIT_FRAMES[0] / ANIMAL_ANIMATION_FPS.attack) * 1000;
       this.schedule(`animal:${animal.state.id}`, hitDelay, () => void this.bite(animal));
       this.schedule(`animal:${animal.state.id}`, ANIMAL_ATTACK_DURATION_MS, () => {
         if (!animal.state.dead && animal.mode === 'attack') animal.mode = 'chase';
       });
-    } else if (animal.mode !== 'attack') {
+      return;
+    }
+    // ── dodge: leap sideways when the player starts a swing nearby
+    if (animal.mode === 'dodge') {
+      if (now < animal.dodgeUntil) return;
       animal.mode = 'chase';
-      const swing = this.host.lastSwing(animal.targetSessionId);
-      if (swing && now - swing.at < 250 && Math.random() < profile.dodgeChance) {
-        const dx = target.x - animal.state.x, dy = target.y - animal.state.y;
-        const len = Math.max(1, Math.hypot(dx, dy)), side = Math.random() < .5 ? -1 : 1;
-        animal.targetX = animal.state.x + (-dy / len) * randomBetween(40, 80) * side;
-        animal.targetY = animal.state.y + (dx / len) * randomBetween(40, 80) * side;
-      } else {
-        if (Math.random() < profile.flankChance) {
-          const angle = Math.atan2(target.y - animal.state.y, target.x - animal.state.x) + (Math.random() < .5 ? -.7 : .7);
-          animal.targetX = target.x - Math.cos(angle) * ANIMAL_BITE_RANGE;
-          animal.targetY = target.y - Math.sin(angle) * ANIMAL_BITE_RANGE;
-        } else {
-          animal.targetX = target.x;
-          animal.targetY = target.y;
-        }
+    }
+    const swing = this.host.lastSwing(animal.targetSessionId);
+    if (swing && now - swing.at < 250 && distance < 130 && now >= animal.nextDodgeAt && Math.random() < profile.dodgeChance) {
+      const len = Math.max(1, distance), side = Math.random() < 0.5 ? -1 : 1, jump = randomBetween(50, 90);
+      const tx = animal.state.x + (-dy / len) * jump * side, ty = animal.state.y + (dx / len) * jump * side;
+      if (this.geometry.segmentWalkable(animal.state.x, animal.state.y, tx, ty, (px, py) => this.geometry.isWalkableForAnimal(px, py))) {
+        animal.mode = 'dodge';
+        animal.targetX = tx; animal.targetY = ty;
+        animal.dodgeUntil = now + 400;
+        animal.nextDodgeAt = now + 1200;
+        return;
       }
     }
+    // ── chase: run when the target moves or is far, stalk (walk) a standing target that is close — with hysteresis
+    animal.mode = 'chase';
+    const targetMoving = motion.speed > TARGET_MOVING_SPEED;
+    if (targetMoving || distance > profile.runDistance) animal.chaseGait = 'run';
+    else if (distance < profile.runDistance * 0.6) animal.chaseGait = 'walk';
+    if (now >= animal.flankUntil) {
+      animal.flankSide = Math.random() < profile.flankChance ? (Math.random() < 0.5 ? -1 : 1) : 0;
+      animal.flankUntil = now + randomBetween(1200, 2200);
+    }
+    const standoff = ANIMAL_BITE_RANGE * STANDOFF_FACTOR;
+    if (inRange) {
+      // waiting for the cooldown / aggression roll: hold ground facing the player, or circle when flanking
+      this.face(animal, dx, dy);
+      if (animal.flankSide) {
+        const angle = Math.atan2(-dy, -dx) + 0.45 * animal.flankSide;
+        animal.targetX = target.x + Math.cos(angle) * standoff;
+        animal.targetY = target.y + Math.sin(angle) * standoff;
+      } else {
+        animal.targetX = animal.state.x; animal.targetY = animal.state.y;
+      }
+      return;
+    }
+    // lead a moving target a little and stop at bite distance instead of on top of the player
+    const lead = targetMoving ? 0.3 : 0;
+    const px = target.x + motion.vx * lead, py = target.y + motion.vy * lead;
+    let angle = Math.atan2(animal.state.y - py, animal.state.x - px);
+    if (animal.flankSide && distance > 90) angle += 0.6 * animal.flankSide;
+    animal.targetX = px + Math.cos(angle) * standoff;
+    animal.targetY = py + Math.sin(angle) * standoff;
   }
 
   private regen(animal: RuntimeAnimal, dtMs: number, now: number): void {
@@ -349,13 +484,26 @@ export class HuntingManager {
     animal.state.hp = Math.min(animal.state.maxHp, animal.state.hp + animal.state.maxHp * dtMs / (animal.variant.hpRegenSeconds * 1000));
   }
 
-  private moveAnimal(animal: RuntimeAnimal, dt: number, now: number): void {
+  private gaitFor(animal: RuntimeAnimal): Gait {
+    switch (animal.mode) {
+      case 'wander': case 'return': return 'walk';
+      case 'retreat': case 'dodge': return 'run';
+      default: return animal.chaseGait;
+    }
+  }
+
+  private stopRunning(animal: RuntimeAnimal, anim: 'idle' | 'attack' = 'idle'): void {
+    animal.runElapsedMs = -1;
+    if (anim === 'idle') animal.state.anim = 'idle';
+  }
+
+  private moveAnimal(animal: RuntimeAnimal, dtMs: number, now: number): void {
     if (animal.mode === 'rooted' || animal.mode === 'alert' || animal.mode === 'attack') {
-      if (animal.mode !== 'attack') animal.state.anim = 'idle';
+      this.stopRunning(animal, animal.mode === 'attack' ? 'attack' : 'idle');
       return;
     }
     if (animal.mode === 'wander' && (now < animal.pauseUntil || Math.hypot(animal.targetX - animal.state.x, animal.targetY - animal.state.y) < 12)) {
-      animal.state.anim = 'idle';
+      this.stopRunning(animal);
       if (now >= animal.pauseUntil) {
         const angle = Math.random() * Math.PI * 2, distance = randomBetween(150, 600);
         const x = animal.state.x + Math.cos(angle) * distance, y = animal.state.y + Math.sin(angle) * distance;
@@ -372,12 +520,28 @@ export class HuntingManager {
       animal.state.x = animal.treeAnchorX ?? animal.state.x;
       animal.state.y = animal.treeAnchorY ?? animal.state.y;
       animal.mode = 'rooted';
-      animal.state.anim = 'idle';
+      this.stopRunning(animal);
       return;
     }
-    if (len < 1) return;
-    const speed = runSpeedFor(animal.variant) * (animal.mode === 'wander' ? ANIMAL_WANDER_SPEED_FACTOR : 1);
-    const step = Math.min(len, speed * dt), nx = animal.state.x + dx / len * step, ny = animal.state.y + dy / len * step;
+    if (len < 1) {
+      this.stopRunning(animal);
+      return;
+    }
+    const gait = this.gaitFor(animal);
+    const runSpeed = runSpeedFor(animal.variant);
+    let step: number;
+    if (gait === 'run') {
+      // leap bursts: slow while gathering, fast while airborne — average speed stays runSpeed (HuntingMotion)
+      if (animal.runElapsedMs < 0) animal.runElapsedMs = 0;
+      step = runDistanceBetween(animal.runElapsedMs, animal.runElapsedMs + dtMs, animal.state.stride, runSpeed);
+      animal.runElapsedMs += dtMs;
+    } else {
+      animal.runElapsedMs = -1;
+      const factor = animal.mode === 'wander' || animal.mode === 'return' ? ANIMAL_WANDER_SPEED_FACTOR : ANIMAL_APPROACH_SPEED_FACTOR;
+      step = runSpeed * factor * (dtMs / 1000);
+    }
+    step = Math.min(len, step);
+    const nx = animal.state.x + dx / len * step, ny = animal.state.y + dy / len * step;
     const walkable = (x: number, y: number) => this.geometry.isWalkableForAnimal(x, y);
     if (this.geometry.segmentWalkable(animal.state.x, animal.state.y, nx, ny, walkable, 8)) {
       animal.state.x = nx; animal.state.y = ny;
@@ -391,9 +555,11 @@ export class HuntingManager {
         animal.targetX = animal.state.x;
         animal.targetY = animal.state.y;
       }
+      this.stopRunning(animal);
+      return;
     }
-    animal.state.dir = ANIMAL_DIRECTIONS.indexOf(animalDirectionFromVector(dx, dy));
-    animal.state.anim = animal.mode === 'wander' ? 'walk' : 'run';
+    this.face(animal, dx, dy);
+    animal.state.anim = gait;
   }
 
   private async bite(animal: RuntimeAnimal): Promise<void> {
@@ -508,10 +674,10 @@ export class HuntingManager {
     if (!player || animal.state.dead) return false;
     const damage = await this.damageFor(player, shoot);
     if (this.host.state.players.get(sessionId) !== player || animal.state.dead || damage === null || damage <= 0) return false;
-    animal.targetSessionId = sessionId;
     animal.lastAttackerSessionId = sessionId;
-    animal.mode = 'alert';
-    animal.reactAt = Date.now() + HUNTING_LEVEL_PROFILES[animal.variant.level].reactionMs;
+    if (animal.targetSessionId !== sessionId || animal.mode === 'wander' || animal.mode === 'rooted' || animal.mode === 'return') {
+      this.acquireTarget(animal, sessionId, player, Date.now(), this.profileFor(animal));
+    }
     animal.state.hp = Math.max(0, animal.state.hp - Math.round(damage));
     this.host.broadcast(HUNT_MSG.animalHit, { animalId: animal.state.id, damage, hp: animal.state.hp, bySessionId: sessionId });
     if (animal.state.hp <= 0) await this.killAnimal(animal, sessionId);

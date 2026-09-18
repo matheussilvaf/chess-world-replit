@@ -128,6 +128,17 @@ export function AnimalRigPanel({ animal }: { animal: HuntingManifestAnimal }) {
     next[kind].rectangles.push({ ...rect, id: `${kind}-${Date.now().toString(36)}` });
     setTool('select');
   });
+  const copyPrevious = (kind: BoxKind) => {
+    const source = getRigFrameConfig(rig, animation, direction, localFrame - 1);
+    editFrame((next) => {
+      next[kind].enabled = source[kind].enabled;
+      next[kind].rectangles = source[kind].rectangles.map((rect, index) => ({
+        ...rect,
+        id: `${kind}-${Date.now().toString(36)}-${index}`,
+      }));
+    });
+    setSelection(null);
+  };
   const save = async () => {
     const validation = validateRigConfig(rig);
     if (!validation.ok) {
@@ -211,12 +222,20 @@ export function AnimalRigPanel({ animal }: { animal: HuntingManifestAnimal }) {
               </label>
             ))}
           </div>
-          {selection && frame[selection.kind].rectangles[selection.index] && (
-            <button type="button" className={`${button} border-rose-800 text-rose-300`} onClick={() => editFrame((next) => {
-              next[selection.kind].rectangles.splice(selection.index, 1);
-              setSelection(null);
-            })}>Excluir caixa selecionada</button>
-          )}
+          <div className="flex flex-wrap gap-2">
+            {selection && frame[selection.kind].rectangles[selection.index] && (
+              <button type="button" className={`${button} border-rose-800 text-rose-300`} onClick={() => editFrame((next) => {
+                next[selection.kind].rectangles.splice(selection.index, 1);
+                setSelection(null);
+              })}>Excluir caixa selecionada</button>
+            )}
+            <button type="button" className={button} disabled={localFrame === 0}
+              title="Substitui a hurtbox deste frame pela hurtbox do frame anterior"
+              onClick={() => copyPrevious('hurtbox')}>Copiar hurtbox do frame anterior</button>
+            <button type="button" className={button} disabled={localFrame === 0 || animation !== 'attack'}
+              title="Substitui a hitbox deste frame pela hitbox do frame anterior da animação de ataque"
+              onClick={() => copyPrevious('hitbox')}>Copiar hitbox do frame anterior</button>
+          </div>
           <label className="block">Raio de colisão
             <input type="number" min={1} max={512} className="ml-2 w-20 rounded bg-slate-800 px-2 py-1"
               value={rig.collisionBody.radius} onChange={(event) => updateRig((next) => { next.collisionBody.radius = Number(event.target.value); })} />
