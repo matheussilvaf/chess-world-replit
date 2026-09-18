@@ -272,7 +272,8 @@ export const ANIMAL_BITE_RANGE = 44;
 // ───────────────────────── NPC ─────────────────────────
 
 export const NPC_BARBARIAN_ID = 'barbarian';
-export const NPC_FRAME_SIZE = 32;
+/** Barbarian sheets are 64×64 px per frame (2× pixel art: idle 256×256, walk 384×256). */
+export const NPC_FRAME_SIZE = 64;
 /** Barbarian sheets: rows S, N, W, E (different from animals!). idle 4 cols, walk 6 cols. */
 export const NPC_DIRECTION_ROWS = { south: 0, north: 1, west: 2, east: 3 } as const;
 export type NpcDirection = keyof typeof NPC_DIRECTION_ROWS;
