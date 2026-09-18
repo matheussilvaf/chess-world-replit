@@ -5,7 +5,6 @@ import { AnimalState } from '../schemas/AnimalState.js';
 import { NpcState } from '../schemas/NpcState.js';
 import {
   ANIMAL_ANIMATION_FPS,
-  ANIMAL_APPROACH_SPEED_FACTOR,
   ANIMAL_ATTACK_DURATION_MS,
   ANIMAL_ATTACK_HIT_FRAMES,
   ANIMAL_BITE_RANGE,
@@ -15,7 +14,6 @@ import {
   ANIMAL_HUNT_AGGRO_RADIUS,
   ANIMAL_SHOT_MUZZLE_PX,
   ANIMAL_SHOT_RADIUS,
-  ANIMAL_WANDER_SPEED_FACTOR,
   DEFAULT_CONTRACT_INITIAL_PERCENT,
   DEFAULT_CONTRACT_REFILL_BATCH,
   HUNT_MSG,
@@ -31,6 +29,7 @@ import {
   rigIdForAnimal,
   rollSpawnCount,
   runSpeedFor,
+  walkSpeedFor,
   spawnSignature,
   type AnimalVariantConfig,
   type HuntingConfig,
@@ -94,6 +93,12 @@ interface RuntimeAnimal {
 }
 /** Below this player speed (px/s) the target counts as standing still (animal may stalk instead of running). */
 const TARGET_MOVING_SPEED = 25;
+/**
+ * Share of the combat-break radius (combatBreakDistance × persistence) an animal may put between itself and
+ * its target BY ITSELF (retreat, dodge). The fight only breaks when the player walks away — an animal never
+ * flees far enough to break its own fight and heal.
+ */
+const SELF_DISTANCE_LEASH = 0.75;
 /** Live animal projectile — a straight ground-level line, simulated per tick until it hits a player or runs out of range. */
 interface Shot {
   id: string;
@@ -373,16 +378,45 @@ export class HuntingManager {
     this.face(animal, target.x - animal.state.x, target.y - animal.state.y);
   }
 
-  /** Picks a walkable point away from the player (straight away first, then angled). */
-  private fleeFrom(animal: RuntimeAnimal, target: PlayerState): void {
+  /** Farthest the animal may get from its target on its own — inside the combat-break radius, with margin. */
+  private leashFor(animal: RuntimeAnimal, profile: HuntingLevelProfile): number {
+    return animal.variant.combatBreakDistance * profile.persistence * SELF_DISTANCE_LEASH;
+  }
+
+  /** Pulls a destination back onto the leash circle around the target when it lies outside it. */
+  private leashed(target: PlayerState, leash: number, x: number, y: number): { x: number; y: number } {
+    const dx = x - target.x, dy = y - target.y;
+    const distance = Math.hypot(dx, dy);
+    if (distance <= leash) return { x, y };
+    return { x: target.x + dx / distance * leash, y: target.y + dy / distance * leash };
+  }
+
+  /**
+   * Picks a walkable point away from the player (straight away first, then angled) — never past the leash:
+   * at the leash the animal circles the player at that distance instead of getting farther.
+   */
+  private fleeFrom(animal: RuntimeAnimal, target: PlayerState, profile: HuntingLevelProfile): void {
+    const leash = this.leashFor(animal, profile);
     const away = Math.atan2(animal.state.y - target.y, animal.state.x - target.x);
+    const fromTarget = Math.hypot(animal.state.x - target.x, animal.state.y - target.y);
     const walkable = (px: number, py: number) => this.geometry.isWalkableForAnimal(px, py);
-    for (const turn of [0, 0.6, -0.6, 1.2, -1.2, Math.PI]) {
-      const tx = animal.state.x + Math.cos(away + turn) * 160, ty = animal.state.y + Math.sin(away + turn) * 160;
-      if (this.geometry.segmentWalkable(animal.state.x, animal.state.y, tx, ty, walkable)) {
-        animal.targetX = tx; animal.targetY = ty;
-        return;
+    const tryPoint = (x: number, y: number): boolean => {
+      const point = this.leashed(target, leash, x, y);
+      if (Math.hypot(point.x - animal.state.x, point.y - animal.state.y) < 12) return false;
+      if (!this.geometry.segmentWalkable(animal.state.x, animal.state.y, point.x, point.y, walkable)) return false;
+      animal.targetX = point.x; animal.targetY = point.y;
+      return true;
+    };
+    if (fromTarget < leash - 12) {
+      for (const turn of [0, 0.6, -0.6, 1.2, -1.2, Math.PI]) {
+        if (tryPoint(animal.state.x + Math.cos(away + turn) * 160, animal.state.y + Math.sin(away + turn) * 160)) return;
       }
+    }
+    // on the leash: keep the distance and circle (stable side while it lasts), or hold ground if walled in
+    if (!animal.flankSide) animal.flankSide = Math.random() < 0.5 ? -1 : 1;
+    for (const turn of [0.5 * animal.flankSide, -0.5 * animal.flankSide]) {
+      const radius = Math.min(leash, Math.max(fromTarget, leash * 0.6));
+      if (tryPoint(target.x + Math.cos(away + turn) * radius, target.y + Math.sin(away + turn) * radius)) return;
     }
     animal.targetX = animal.state.x; animal.targetY = animal.state.y;
   }
@@ -433,7 +467,7 @@ export class HuntingManager {
         animal.retreatCooldownUntil = now + 6000;
         animal.chaseGait = 'run';
       } else {
-        this.fleeFrom(animal, target);
+        this.fleeFrom(animal, target, profile);
         return;
       }
     }
@@ -478,7 +512,8 @@ export class HuntingManager {
     const swing = this.host.lastSwing(animal.targetSessionId);
     if (swing && now - swing.at < 250 && distance < 130 && now >= animal.nextDodgeAt && Math.random() < profile.dodgeChance) {
       const len = Math.max(1, distance), side = Math.random() < 0.5 ? -1 : 1, jump = randomBetween(50, 90);
-      const tx = animal.state.x + (-dy / len) * jump * side, ty = animal.state.y + (dx / len) * jump * side;
+      // sideways, and never past the leash (a dodge at the edge of the fight must not break it)
+      const { x: tx, y: ty } = this.leashed(target, this.leashFor(animal, profile), animal.state.x + (-dy / len) * jump * side, animal.state.y + (dx / len) * jump * side);
       if (this.geometry.segmentWalkable(animal.state.x, animal.state.y, tx, ty, (px, py) => this.geometry.isWalkableForAnimal(px, py))) {
         animal.mode = 'dodge';
         animal.targetX = tx; animal.targetY = ty;
@@ -588,20 +623,22 @@ export class HuntingManager {
       // interpolates from that snapshot's position towards the following one
       animal.state.frame = runFrameAt(animal.runElapsedMs, leap);
     } else {
+      // walking (wander / return / stalking a standing target): the animal's own walk speed for its level
       animal.runElapsedMs = -1;
-      const factor = animal.mode === 'wander' || animal.mode === 'return' ? ANIMAL_WANDER_SPEED_FACTOR : ANIMAL_APPROACH_SPEED_FACTOR;
-      step = runSpeed * factor * (dtMs / 1000);
+      step = walkSpeedFor(animal.variant) * (dtMs / 1000);
     }
     step = Math.min(len, step);
     const nx = animal.state.x + dx / len * step, ny = animal.state.y + dy / len * step;
     const walkable = (x: number, y: number) => this.geometry.isWalkableForAnimal(x, y);
-    if (this.geometry.segmentWalkable(animal.state.x, animal.state.y, nx, ny, walkable, 8)) {
-      animal.state.x = nx; animal.state.y = ny;
-    } else if (this.geometry.segmentWalkable(animal.state.x, animal.state.y, nx, animal.state.y, walkable, 8)) {
-      animal.state.x = nx;
-    } else if (this.geometry.segmentWalkable(animal.state.x, animal.state.y, animal.state.x, ny, walkable, 8)) {
-      animal.state.y = ny;
-    } else {
+    // Combat invariant: an animal never ends a tick farther from its target than max(where it already is, leash),
+    // so a fight breaks only when the PLAYER walks away — retreat, dodge, flanking and the wall slides below
+    // all obey it (whoever planned the destination).
+    const target = animal.targetSessionId ? this.host.state.players.get(animal.targetSessionId) : undefined;
+    const farthest = target ? Math.max(Math.hypot(animal.state.x - target.x, animal.state.y - target.y), this.leashFor(animal, this.profileFor(animal))) : Infinity;
+    const allowed = (x: number, y: number): boolean =>
+      (!target || Math.hypot(x - target.x, y - target.y) <= farthest) && this.geometry.segmentWalkable(animal.state.x, animal.state.y, x, y, walkable, 8);
+    const move = ([[nx, ny], [nx, animal.state.y], [animal.state.x, ny]] as const).find(([x, y]) => allowed(x, y));
+    if (!move) {
       animal.pauseUntil = 0;
       if (animal.mode !== 'return') {
         animal.targetX = animal.state.x;
@@ -610,6 +647,7 @@ export class HuntingManager {
       this.stopRunning(animal);
       return;
     }
+    animal.state.x = move[0]; animal.state.y = move[1];
     this.face(animal, dx, dy);
     animal.state.anim = gait;
   }

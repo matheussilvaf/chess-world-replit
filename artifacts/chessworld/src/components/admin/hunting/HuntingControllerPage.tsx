@@ -5,6 +5,7 @@ import {
   DEFAULT_CONTRACT_INITIAL_PERCENT,
   DEFAULT_CONTRACT_REFILL_BATCH,
   DEFAULT_SPEED_BY_LEVEL,
+  DEFAULT_WALK_SPEED_BY_LEVEL,
   HP_REGEN_LABELS,
   HP_REGEN_OPTIONS,
   HUNTING_LEVEL_PROFILES,
@@ -109,13 +110,30 @@ function VariantEditor({ variantId, variant, manifest, category, update }: {
       </Field>
     </div>
     <div className="mt-3">
-      <p className="mb-1 text-[10px] uppercase tracking-wide text-slate-500">Velocidade por nível</p>
-      <div className="flex flex-wrap gap-2">{HUNTING_LEVELS.map((level) => <label key={level} className={`rounded border p-1.5 ${variant.level === level ? 'border-cyan-500 bg-cyan-950/30' : 'border-slate-800'}`}>
-        <span className="mr-1 text-[10px] text-slate-400">{HUNTING_LEVEL_LABELS[level]}</span>
-        <NumberField value={variant.speedByLevel[level] ?? DEFAULT_SPEED_BY_LEVEL[level]} range={HUNTING_LIMITS.speed} className="w-16" onChange={(value) => update((next) => { next.speedByLevel[level] = value; })} />
-      </label>)}
-      </div>
-      <p className="mt-1 text-[10px] text-slate-500">velocidade média da corrida (px/s) do nível marcado. A corrida é uma sequência de saltos (agachado → impulso → voo): o deslocamento e a duração de cada salto valem para todos os animais e são definidos na <Link to="/dev/caca" className="text-cyan-300 underline">bancada do salto</Link> — animais mais rápidos saltam com mais frequência, não mais longe. A caminhada roda a 8 fps</p>
+      <p className="mb-1 text-[10px] uppercase tracking-wide text-slate-500">Velocidade por nível (px/s)</p>
+      <table className="text-xs">
+        <thead><tr>
+          <th className="pr-2 text-left font-normal text-slate-500"></th>
+          {HUNTING_LEVELS.map((level) => <th key={level} className={`px-1 pb-1 text-center text-[10px] font-medium ${variant.level === level ? 'text-cyan-300' : 'text-slate-400'}`}>{HUNTING_LEVEL_LABELS[level]}{variant.level === level ? ' ●' : ''}</th>)}
+        </tr></thead>
+        <tbody>
+          <tr>
+            <td className="pr-2 text-[11px] text-slate-300">Correndo</td>
+            {HUNTING_LEVELS.map((level) => <td key={level} className={`p-0.5 ${variant.level === level ? 'rounded bg-cyan-950/30' : ''}`}>
+              <NumberField value={variant.speedByLevel[level] ?? DEFAULT_SPEED_BY_LEVEL[level]} range={HUNTING_LIMITS.speed} className="w-16" onChange={(value) => update((next) => { next.speedByLevel[level] = value; })} />
+            </td>)}
+          </tr>
+          <tr>
+            <td className="pr-2 text-[11px] text-slate-300">Andando</td>
+            {HUNTING_LEVELS.map((level) => <td key={level} className={`p-0.5 ${variant.level === level ? 'rounded bg-cyan-950/30' : ''}`}>
+              <NumberField value={variant.walkSpeedByLevel?.[level] ?? DEFAULT_WALK_SPEED_BY_LEVEL[level]} range={HUNTING_LIMITS.speed} className="w-16" onChange={(value) => update((next) => { if (!next.walkSpeedByLevel) next.walkSpeedByLevel = { ...DEFAULT_WALK_SPEED_BY_LEVEL }; next.walkSpeedByLevel[level] = value; })} />
+            </td>)}
+          </tr>
+        </tbody>
+      </table>
+      {(variant.walkSpeedByLevel?.[variant.level] ?? DEFAULT_WALK_SPEED_BY_LEVEL[variant.level]) >= (variant.speedByLevel[variant.level] ?? DEFAULT_SPEED_BY_LEVEL[variant.level])
+        && <p className="mt-1 text-[10px] text-amber-300">No nível marcado este animal anda tão rápido quanto corre (ou mais).</p>}
+      <p className="mt-1 text-[10px] text-slate-500">vale a coluna do nível marcado (●). <b>Correndo</b>: perseguição, fuga e esquiva — velocidade média da corrida, que é uma sequência de saltos (agachado → impulso → voo); o deslocamento e a duração de cada salto valem para todos os animais e são definidos na <Link to="/dev/caca" className="text-cyan-300 underline">bancada do salto</Link> — animais mais rápidos saltam com mais frequência, não mais longe. <b>Andando</b>: passeio, volta ao ponto e aproximação de um alvo parado dentro da distância de corrida (aba Comportamento). A caminhada roda a 8 fps</p>
     </div>
     {category === 'residents' && <div className="mt-3 grid gap-3 sm:grid-cols-3">
       <Field label="Tipo de reação"><div className="flex">{RESIDENT_REACTIONS.map((reaction) => <button type="button" key={reaction} onClick={() => update((next) => { next.reaction = reaction; })}

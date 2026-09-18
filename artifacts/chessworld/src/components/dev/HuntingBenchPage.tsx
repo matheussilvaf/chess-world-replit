@@ -6,9 +6,9 @@ import { RigApiError } from '../admin/rig-editor/rigApi';
 import {
   ANIMAL_ANIMATION_COLUMNS,
   ANIMAL_ANIMATION_FPS,
-  ANIMAL_APPROACH_SPEED_FACTOR,
   ANIMAL_DIRECTIONS,
   DEFAULT_SPEED_BY_LEVEL,
+  DEFAULT_WALK_SPEED_BY_LEVEL,
   HUNTING_LEVELS,
   HUNTING_LEVEL_LABELS,
   animalDirectionFromVector,
@@ -107,6 +107,7 @@ export function HuntingBenchPage() {
   const [level, setLevel] = useState<HuntingLevel>('moderate');
   const [image, setImage] = useState<HTMLImageElement | null>(null);
   const [speed, setSpeed] = useState(DEFAULT_SPEED_BY_LEVEL.moderate);
+  const [walkSpeed, setWalkSpeed] = useState(DEFAULT_WALK_SPEED_BY_LEVEL.moderate);
   const [runDistance, setRunDistance] = useState(140);
   const [draft, setDraft] = useState<HuntingMotionConfig>({ ...DEFAULT_MOTION });
   const [saved, setSaved] = useState<HuntingMotionConfig>({ ...DEFAULT_MOTION });
@@ -114,8 +115,8 @@ export function HuntingBenchPage() {
   const [resetKey, setResetKey] = useState(0);
   const [readout, setReadout] = useState<Readout>({ anim: 'run', frame: 0, instant: 0, average: 0 });
   const motion = useMemo(() => parseMotionConfig(draft), [draft]);
-  const controlsRef = useRef({ speed, runDistance, motion });
-  controlsRef.current = { speed, runDistance, motion };
+  const controlsRef = useRef({ speed, walkSpeed, runDistance, motion });
+  controlsRef.current = { speed, walkSpeed, runDistance, motion };
 
   useEffect(() => {
     huntingApi.manifest().then((result) => {
@@ -135,6 +136,7 @@ export function HuntingBenchPage() {
     animal.variants.map((variant) => ({ ...variant, animal: animal.animal, category: animal.category }))) ?? [], [manifest]);
   const variant = variants.find((item) => item.variantId === variantId);
   const levelSpeed = useCallback((id: string, lvl: HuntingLevel) => config?.variants[id]?.speedByLevel?.[lvl] ?? DEFAULT_SPEED_BY_LEVEL[lvl], [config]);
+  const levelWalkSpeed = useCallback((id: string, lvl: HuntingLevel) => config?.variants[id]?.walkSpeedByLevel?.[lvl] ?? DEFAULT_WALK_SPEED_BY_LEVEL[lvl], [config]);
   const configuredLevel = variantId ? config?.variants[variantId]?.level : undefined;
 
   useEffect(() => {
@@ -150,7 +152,8 @@ export function HuntingBenchPage() {
     if (!variantId) return;
     if (configuredLevel) setLevel(configuredLevel);
     setSpeed(levelSpeed(variantId, configuredLevel ?? 'moderate'));
-  }, [variantId, configuredLevel, levelSpeed]);
+    setWalkSpeed(levelWalkSpeed(variantId, configuredLevel ?? 'moderate'));
+  }, [variantId, configuredLevel, levelSpeed, levelWalkSpeed]);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -215,7 +218,7 @@ export function HuntingBenchPage() {
           server.runElapsed = to;
           server.frame = runFrameAt(server.runElapsed, leap);
         } else {
-          step = Math.min(distance, controls.speed * ANIMAL_APPROACH_SPEED_FACTOR * dtMs / 1000);
+          step = Math.min(distance, controls.walkSpeed * dtMs / 1000);
           server.x += ux * step; server.y += uy * step;
           takeOff = null;
         }
@@ -382,19 +385,22 @@ export function HuntingBenchPage() {
           </p>}
         </section>
 
-        <section className="grid gap-3 rounded-xl border border-slate-700 bg-slate-900 p-4 md:grid-cols-6">
+        <section className="grid gap-3 rounded-xl border border-slate-700 bg-slate-900 p-4 md:grid-cols-7">
           <label className="text-xs text-slate-400 md:col-span-2">Animal (só visualização)
             <select className={inputClass} value={variantId} onChange={(e) => setVariantId(e.target.value)}>
               {variants.map((item) => <option key={item.variantId} value={item.variantId}>{item.animal} · {item.file}</option>)}
             </select>
           </label>
           <label className="text-xs text-slate-400">Nível (velocidade do admin)
-            <select className={inputClass} value={level} onChange={(e) => { const lvl = e.target.value as HuntingLevel; setLevel(lvl); setSpeed(levelSpeed(variantId, lvl)); }}>
-              {HUNTING_LEVELS.map((lvl) => <option key={lvl} value={lvl}>{HUNTING_LEVEL_LABELS[lvl]} · {levelSpeed(variantId, lvl)} px/s{configuredLevel === lvl ? ' (atual)' : ''}</option>)}
+            <select className={inputClass} value={level} onChange={(e) => { const lvl = e.target.value as HuntingLevel; setLevel(lvl); setSpeed(levelSpeed(variantId, lvl)); setWalkSpeed(levelWalkSpeed(variantId, lvl)); }}>
+              {HUNTING_LEVELS.map((lvl) => <option key={lvl} value={lvl}>{HUNTING_LEVEL_LABELS[lvl]} · corre {levelSpeed(variantId, lvl)} · anda {levelWalkSpeed(variantId, lvl)} px/s{configuredLevel === lvl ? ' (atual)' : ''}</option>)}
             </select>
           </label>
-          <label className="text-xs text-slate-400">Velocidade média (px/s)
+          <label className="text-xs text-slate-400">Correndo (px/s, média)
             <input className={inputClass} type="number" min="1" value={speed} onChange={numberValue(setSpeed)} />
+          </label>
+          <label className="text-xs text-slate-400">Andando (px/s)
+            <input className={inputClass} type="number" min="1" value={walkSpeed} onChange={numberValue(setWalkSpeed)} />
           </label>
           <label className="text-xs text-slate-400">Corre a partir de (px)
             <input className={inputClass} type="number" min="0" value={runDistance} onChange={numberValue(setRunDistance)} />

@@ -3,6 +3,7 @@ import {
   DEFAULT_CONTRACT_INITIAL_PERCENT,
   DEFAULT_CONTRACT_REFILL_BATCH,
   DEFAULT_SPEED_BY_LEVEL,
+  DEFAULT_WALK_SPEED_BY_LEVEL,
   HUNTING_LEVEL_PROFILES,
   HUNTING_LIMITS,
   configuredAnimalCount,
@@ -13,6 +14,8 @@ import {
   parseVariantId,
   rigIdForAnimal,
   rollSpawnCount,
+  runSpeedFor,
+  walkSpeedFor,
 } from './HuntingShapes.js';
 import { DEFAULT_MOTION } from './HuntingMotion.js';
 import { HuntingMapGeometry } from './HuntingMapGeometry.js';
@@ -47,6 +50,16 @@ describe('HuntingShapes', () => {
     expect(wolf.level).toBe('hard');
     expect(wolf.speedByLevel.hard).toBe(10);
     expect(wolf.speedByLevel.easy).toBe(DEFAULT_SPEED_BY_LEVEL.easy);
+    // walking is its own speed per level (legacy configs get the defaults, not a share of the run speed)
+    expect(wolf.walkSpeedByLevel).toEqual(DEFAULT_WALK_SPEED_BY_LEVEL);
+    expect(walkSpeedFor(wolf)).toBe(DEFAULT_WALK_SPEED_BY_LEVEL.hard);
+    expect(runSpeedFor(wolf)).toBe(10);
+    const strider = parseVariantConfig({ level: 'easy', walkSpeedByLevel: { easy: 33, hard: 9999 } });
+    expect(strider.walkSpeedByLevel.easy).toBe(33);
+    expect(strider.walkSpeedByLevel.hard).toBe(HUNTING_LIMITS.speed.max);
+    expect(strider.walkSpeedByLevel.medium).toBe(DEFAULT_WALK_SPEED_BY_LEVEL.medium);
+    expect(walkSpeedFor(strider)).toBe(33);
+    for (const lvl of Object.keys(DEFAULT_WALK_SPEED_BY_LEVEL) as (keyof typeof DEFAULT_WALK_SPEED_BY_LEVEL)[]) expect(DEFAULT_WALK_SPEED_BY_LEVEL[lvl]).toBeLessThan(DEFAULT_SPEED_BY_LEVEL[lvl]);
     expect(wolf.hpRegenSeconds).toBe(10);
     expect(cfg.variants['bogus']).toBeUndefined();
     expect(cfg.contracts).toHaveLength(1);

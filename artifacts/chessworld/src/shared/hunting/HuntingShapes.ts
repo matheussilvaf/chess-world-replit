@@ -112,12 +112,10 @@ export type HuntingLevelProfiles = Record<HuntingLevel, HuntingLevelProfile>;
 export function defaultLevelProfiles(): HuntingLevelProfiles {
   return { easy: { ...HUNTING_LEVEL_PROFILES.easy }, medium: { ...HUNTING_LEVEL_PROFILES.medium }, moderate: { ...HUNTING_LEVEL_PROFILES.moderate }, hard: { ...HUNTING_LEVEL_PROFILES.hard } };
 }
-/** Suggested run speed (px/s) per level; wandering uses ANIMAL_WANDER_SPEED_FACTOR of it. */
+/** Default RUN speed (px/s) per level — chasing, fleeing, dodging. Editable per animal (`speedByLevel`). */
 export const DEFAULT_SPEED_BY_LEVEL: Record<HuntingLevel, number> = { easy: 70, medium: 95, moderate: 120, hard: 150 };
-/** Wandering (walk) speed = run speed × this. */
-export const ANIMAL_WANDER_SPEED_FACTOR = 0.55;
-/** Stalking a standing target inside `runDistance` (walk) = run speed × this. */
-export const ANIMAL_APPROACH_SPEED_FACTOR = 0.7;
+/** Default WALK speed (px/s) per level — wandering, returning to the anchor, stalking a standing target. Editable per animal (`walkSpeedByLevel`). */
+export const DEFAULT_WALK_SPEED_BY_LEVEL: Record<HuntingLevel, number> = { easy: 40, medium: 50, moderate: 60, hard: 75 };
 /** Hunt animals (contract targets) notice players inside this radius (px). */
 export const ANIMAL_HUNT_AGGRO_RADIUS = 260;
 /** Contract animals alive at acceptance: this share of the quota (%). */
@@ -148,8 +146,10 @@ export interface AnimalVariantConfig {
   /** Hunting-skill XP granted per kill (when xpEnabled). */
   xp: number;
   level: HuntingLevel;
-  /** Run speed px/s per level (editable suggestions). */
+  /** RUN speed (px/s) per level — the animal's `level` picks the one in use. Average speed of the leap run. */
   speedByLevel: Record<HuntingLevel, number>;
+  /** WALK speed (px/s) per level — wandering, returning, stalking a standing target inside `runDistance`. */
+  walkSpeedByLevel: Record<HuntingLevel, number>;
   spawnMode: SpawnMode;
   /** Ambient population (spawnMode 'fixed'). Anchors are only spawn points: counts above the anchor total reuse random anchors. */
   spawnCount: number;
@@ -224,7 +224,8 @@ export const HUNTING_LIMITS = {
 export function defaultVariantConfig(name = 'Animal'): AnimalVariantConfig {
   return {
     name, hp: 60, damage: 8, xpEnabled: true, xp: 15, level: 'medium',
-    speedByLevel: { ...DEFAULT_SPEED_BY_LEVEL }, spawnMode: 'fixed', spawnCount: 0, spawnMin: 1, spawnMax: 4,
+    speedByLevel: { ...DEFAULT_SPEED_BY_LEVEL }, walkSpeedByLevel: { ...DEFAULT_WALK_SPEED_BY_LEVEL },
+    spawnMode: 'fixed', spawnCount: 0, spawnMin: 1, spawnMax: 4,
     combatBreakDistance: 420, hpRegenSeconds: 10, canShoot: false,
     reaction: 'attacked', radius: 160, respawnCooldownSeconds: 60,
   };
@@ -375,8 +376,13 @@ export function parseVariantConfig(raw: unknown, fallbackName = 'Animal'): Anima
   const d = defaultVariantConfig(fallbackName);
   if (!isRec(raw)) return d;
   const speeds = isRec(raw.speedByLevel) ? raw.speedByLevel : {};
+  const walkSpeeds = isRec(raw.walkSpeedByLevel) ? raw.walkSpeedByLevel : {};
   const speedByLevel = {} as Record<HuntingLevel, number>;
-  for (const lvl of HUNTING_LEVELS) speedByLevel[lvl] = num(speeds[lvl], DEFAULT_SPEED_BY_LEVEL[lvl], HUNTING_LIMITS.speed.min, HUNTING_LIMITS.speed.max);
+  const walkSpeedByLevel = {} as Record<HuntingLevel, number>;
+  for (const lvl of HUNTING_LEVELS) {
+    speedByLevel[lvl] = num(speeds[lvl], DEFAULT_SPEED_BY_LEVEL[lvl], HUNTING_LIMITS.speed.min, HUNTING_LIMITS.speed.max);
+    walkSpeedByLevel[lvl] = num(walkSpeeds[lvl], DEFAULT_WALK_SPEED_BY_LEVEL[lvl], HUNTING_LIMITS.speed.min, HUNTING_LIMITS.speed.max);
+  }
   const regenRaw = typeof raw.hpRegenSeconds === 'number' ? raw.hpRegenSeconds : Number(raw.hpRegenSeconds);
   const spawnCount = num(raw.spawnCount, d.spawnCount, HUNTING_LIMITS.spawnCount.min, HUNTING_LIMITS.spawnCount.max);
   // configs saved before spawnMin/spawnMax existed used 0..spawnCount for 'random': keep that maximum (0 → default range)
@@ -392,6 +398,7 @@ export function parseVariantConfig(raw: unknown, fallbackName = 'Animal'): Anima
     xp: num(raw.xp, d.xp, HUNTING_LIMITS.xp.min, HUNTING_LIMITS.xp.max),
     level: oneOf(raw.level, HUNTING_LEVELS, d.level),
     speedByLevel,
+    walkSpeedByLevel,
     spawnMode: oneOf(raw.spawnMode, ['fixed', 'random'] as const, d.spawnMode),
     spawnCount, spawnMin, spawnMax,
     combatBreakDistance: num(raw.combatBreakDistance, d.combatBreakDistance, HUNTING_LIMITS.combatBreak.min, HUNTING_LIMITS.combatBreak.max),
@@ -507,7 +514,10 @@ export function configuredAnimalCount(variants: Record<string, AnimalVariantConf
   }
   return total;
 }
+/** Run speed (px/s) of the animal's configured level: chase, flee, dodge. */
 export function runSpeedFor(v: AnimalVariantConfig): number { return v.speedByLevel[v.level] ?? DEFAULT_SPEED_BY_LEVEL[v.level]; }
+/** Walk speed (px/s) of the animal's configured level: wander, return, stalk. */
+export function walkSpeedFor(v: AnimalVariantConfig): number { return v.walkSpeedByLevel?.[v.level] ?? DEFAULT_WALK_SPEED_BY_LEVEL[v.level]; }
 export function levelProfileFor(config: Pick<HuntingConfig, 'levelProfiles'>, v: AnimalVariantConfig): HuntingLevelProfile {
   return config.levelProfiles?.[v.level] ?? HUNTING_LEVEL_PROFILES[v.level];
 }
