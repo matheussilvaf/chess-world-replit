@@ -14,6 +14,8 @@ import {
   ANIMAL_DIRECTIONS,
   ANIMAL_HUNT_AGGRO_RADIUS,
   ANIMAL_WANDER_SPEED_FACTOR,
+  DEFAULT_CONTRACT_INITIAL_PERCENT,
+  DEFAULT_CONTRACT_REFILL_BATCH,
   HUNT_MSG,
   MONSTER_TREE_ANIMAL_KEY,
   NPC_BARBARIAN_ID,
@@ -21,6 +23,7 @@ import {
   NPC_TALK_HOLD_MS,
   NPC_WALK_SPEED,
   animalDirectionFromVector,
+  contractSpawnBatch,
   levelProfileFor,
   parseVariantId,
   rigIdForAnimal,
@@ -33,7 +36,7 @@ import {
   type HuntingLevelProfile,
   type PlayerHuntingRecord,
 } from '../shared/hunting/HuntingShapes.js';
-import { effectiveRunStride, runDistanceBetween } from '../shared/hunting/HuntingMotion.js';
+import { runDistanceBetween, runStrideFor } from '../shared/hunting/HuntingMotion.js';
 import { CRAFTING_WORLD_MAP, type MapAnchor } from '../shared/hunting/craftingWorldMapData.js';
 import { getCraftingWorldGeometry } from '../shared/hunting/HuntingMapGeometry.js';
 import { rectanglesIntersect, type LocalRectangle } from '../shared/combat/CharacterCombatShapes.js';
@@ -47,7 +50,7 @@ import { targetHurtboxUnion } from '../combat/combatResolver.js';
 import { progressService } from '../progress/progressService.js';
 import { addCrowns } from '../bigchess/bigChessRepository.js';
 import { getHuntingConfigCached } from './huntingConfigRepository.js';
-import { getPlayerHunting, updateIfActiveMatches, upsertPlayerHunting } from './playerHuntingRepository.js';
+import { getPlayerHunting, updateIfActiveMatches } from './playerHuntingRepository.js';
 
 type AiMode = 'rooted' | 'return' | 'wander' | 'alert' | 'chase' | 'attack' | 'retreat' | 'dodge';
 type Gait = 'walk' | 'run';
@@ -104,6 +107,8 @@ export interface HuntingHost {
 
 const MAX_ANIMALS = 200;
 const FAR_AI_DISTANCE = 1400;
+/** Contract animals (re)spawn at anchors at least this far (px) from their owner when possible. */
+const CONTRACT_SPAWN_MIN_DISTANCE = 900;
 const ARROW_WINDOW_MS = 3000;
 const randomBetween = (a: number, b: number): number => a + Math.random() * (b - a);
 
@@ -176,6 +181,8 @@ export class HuntingManager {
     }
     this.reconcileAmbient();
     this.spawnNpc();
+    // contracts stranded by a disable/enable cycle or a failed spawn (full room, no free anchor) heal here
+    for (const owner of this.records.keys()) this.topUpContract(owner, 'batch');
   }
 
   private reconcileAmbient(): void {
@@ -192,7 +199,7 @@ export class HuntingManager {
         animal.state.maxHp = next.hp;
         animal.state.hp = Math.min(animal.state.hp, next.hp);
         animal.state.level = next.level;
-        const stride = effectiveRunStride(next.runStridePx, runSpeedFor(next));
+        const stride = runStrideFor(runSpeedFor(next), next.runFps);
         if (stride !== animal.state.stride) {
           // the client restarts its distance-driven cycle when the stride changes — restart the burst phase too
           animal.state.stride = stride;
@@ -221,8 +228,13 @@ export class HuntingManager {
     return count;
   }
 
-  private anchorPoint(anchors: readonly MapAnchor[], npc = false, usedName?: Set<string>): { x: number; y: number; name: string } | null {
-    const candidates = usedName ? anchors.filter((a) => !usedName.has(a.name)) : [...anchors];
+  private anchorPoint(anchors: readonly MapAnchor[], npc = false, usedName?: Set<string>, awayFrom?: { x: number; y: number }): { x: number; y: number; name: string } | null {
+    let candidates = usedName ? anchors.filter((a) => !usedName.has(a.name)) : [...anchors];
+    if (awayFrom) {
+      // contract refills appear "somewhere else": prefer anchors out of the owner's sight
+      const far = candidates.filter((a) => Math.hypot(a.x - awayFrom.x, a.y - awayFrom.y) >= CONTRACT_SPAWN_MIN_DISTANCE);
+      if (far.length) candidates = far;
+    }
     for (let i = 0; i < 30 && candidates.length; i++) {
       const anchor = candidates[Math.floor(Math.random() * candidates.length)];
       const x = anchor.x + randomBetween(-40, 40), y = anchor.y + randomBetween(-40, 40);
@@ -231,7 +243,7 @@ export class HuntingManager {
     return null;
   }
 
-  private spawnAnimal(variantId: string, owner = '', ambient = false): RuntimeAnimal | null {
+  private spawnAnimal(variantId: string, owner = '', ambient = false, awayFrom?: { x: number; y: number }): RuntimeAnimal | null {
     if (this.runtime.size >= MAX_ANIMALS) return null;
     const variant = this.config.variants[variantId];
     const parsed = parseVariantId(variantId);
@@ -240,14 +252,14 @@ export class HuntingManager {
     const anchors = isTree ? CRAFTING_WORLD_MAP.monsterTreeAnchors
       : parsed.category === 'residents' ? CRAFTING_WORLD_MAP.residentAnchors : CRAFTING_WORLD_MAP.huntAnchors;
     const used = isTree ? new Set([...this.runtime.values()].map((a) => a.treeAnchor).filter((x): x is string => !!x)) : undefined;
-    const point = this.anchorPoint(anchors, false, used);
+    const point = this.anchorPoint(anchors, false, used, awayFrom);
     if (!point) return null;
     const id = `animal-${Date.now().toString(36)}-${++this.idCounter}`;
     const state = new AnimalState();
     Object.assign(state, {
       id, variantId, name: variant.name, x: point.x, y: point.y, dir: 0,
       anim: 'idle', hp: variant.hp, maxHp: variant.hp, level: variant.level,
-      dead: false, contractOwner: owner, stride: effectiveRunStride(variant.runStridePx, runSpeedFor(variant)),
+      dead: false, contractOwner: owner, stride: runStrideFor(runSpeedFor(variant), variant.runFps),
     });
     const rt: RuntimeAnimal = {
       state, variant, mode: isTree ? 'rooted' : 'wander', targetSessionId: '',
@@ -732,7 +744,7 @@ export class HuntingManager {
       return;
     }
     this.sendState(client, loaded.record);
-    if (active && active.region === this.host.region) this.ensureContractPopulation(player.id, active.variantId, active.quantity - active.killed);
+    this.topUpContract(player.id, 'batch');
   }
 
   onLeave(sessionId: string, userId: string): void {
@@ -787,7 +799,7 @@ export class HuntingManager {
     }
     this.records.set(player.id, next);
     this.tableMissing.set(player.id, saved.tableMissing);
-    this.ensureContractPopulation(player.id, contract.variantId, contract.quantity);
+    this.topUpContract(player.id, 'batch');
     this.sendState(client, next);
     this.result(client, requestId, true);
   }
@@ -870,40 +882,66 @@ export class HuntingManager {
       return;
     }
     if (killerId !== owner) {
-      const variantId = animal.state.variantId;
-      this.schedule(`contract:${owner}`, 5000, () => {
-        const active = this.records.get(owner)?.active;
-        if (!this.destroyed && this.config.general.enabled && this.config.variants[variantId] && this.runtime.size < MAX_ANIMALS &&
-          active?.variantId === variantId && active.region === this.host.region && active.deadline >= Date.now()) {
-          this.spawnAnimal(variantId, owner);
-        }
-      });
+      // stolen kill: the owner's quota is untouched, so the animal is replaced (back to the batch size) in 5 s
+      this.schedule(`contract:${owner}`, 5000, () => this.topUpContract(owner, 'replace'));
       return;
     }
     const previous = this.recordQueues.get(owner) ?? Promise.resolve();
     const queued = previous.then(() => this.applyContractKill(owner, animal.state.variantId));
     this.recordQueues.set(owner, queued);
     await queued.finally(() => {
-      if (this.recordQueues.get(owner) === queued) this.recordQueues.delete(owner);
+      if (this.recordQueues.get(owner) !== queued) return;
+      this.recordQueues.delete(owner);
+      // only once every queued kill is persisted (simultaneous kills would otherwise size the batch from stale progress)
+      this.topUpContract(owner, 'batch');
     });
   }
 
   private async applyContractKill(owner: string, variantId: string): Promise<void> {
-    const record = this.records.get(owner);
-    if (!record?.active || record.active.variantId !== variantId) return;
-    const next: PlayerHuntingRecord = { active: { ...record.active, killed: Math.min(record.active.quantity, record.active.killed + 1) }, locks: { ...record.locks } };
-    const saved = await upsertPlayerHunting(owner, next);
-    if (!saved.ok) return;
-    this.records.set(owner, next);
-    const sid = this.sessionForUser(owner), client = sid ? this.client(sid) : undefined;
-    const complete = next.active!.killed >= next.active!.quantity;
-    client?.send(HUNT_MSG.event, { type: complete ? 'completed' : 'progress', message: complete ? 'Contrato completo' : 'Progresso atualizado', killed: next.active!.killed, quantity: next.active!.quantity });
-    if (client) this.sendState(client, next);
+    const snapshot = this.records.get(owner)?.active;
+    if (!snapshot || snapshot.variantId !== variantId) return;
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const record = this.records.get(owner);
+      const active = record?.active;
+      // same activation only: a cancelled, claimed or re-accepted contract never receives this kill
+      if (!record || !active || active.contractId !== snapshot.contractId || active.acceptedAt !== snapshot.acceptedAt) return;
+      const next: PlayerHuntingRecord = { active: { ...active, killed: Math.min(active.quantity, active.killed + 1) }, locks: { ...record.locks } };
+      // CAS on activation + progress: a stale snapshot can neither lose a kill nor resurrect the contract
+      const saved = await updateIfActiveMatches(owner, active.contractId, next, { acceptedAt: active.acceptedAt, killed: active.killed });
+      if (!saved.ok) return;
+      if (!saved.matched) { await this.reloadPlayerRecord(owner); continue; }
+      this.records.set(owner, next);
+      const sid = this.sessionForUser(owner), client = sid ? this.client(sid) : undefined;
+      const complete = next.active!.killed >= next.active!.quantity;
+      client?.send(HUNT_MSG.event, { type: complete ? 'completed' : 'progress', message: complete ? 'Contrato completo' : 'Progresso atualizado', killed: next.active!.killed, quantity: next.active!.quantity });
+      if (client) this.sendState(client, next);
+      return;
+    }
   }
 
-  private ensureContractPopulation(owner: string, variantId: string, count: number): void {
-    const existing = [...this.runtime.values()].filter((a) => !a.state.dead && a.state.contractOwner === owner).length;
-    for (let i = existing; i < count; i++) this.spawnAnimal(variantId, owner);
+  /**
+   * Spawns contract animals for a CONNECTED owner, at anchors away from them. The batch size comes
+   * from contractSpawnBatch (initial share of the quota, then `refillBatch` at a time, capped by what
+   * is left to kill). Mode 'batch' (accept, join, config reload, after the owner's kills are persisted)
+   * spawns only when none is alive — the next batch appears once every spawned animal is dead. Mode
+   * 'replace' (an animal stolen by another player) fills the batch back up to its size.
+   */
+  private topUpContract(owner: string, mode: 'batch' | 'replace'): void {
+    const active = this.records.get(owner)?.active;
+    if (this.destroyed || !this.config.general.enabled || !active || active.region !== this.host.region || active.deadline < Date.now()) return;
+    if (!this.config.variants[active.variantId]) return;
+    // a kill still being persisted tops up itself once it lands (sizing from stale progress would overshoot the quota)
+    if (this.recordQueues.has(owner)) return;
+    const sid = this.sessionForUser(owner), player = sid ? this.host.state.players.get(sid) : undefined;
+    if (!player) return; // the owner's animals leave the room with them (onLeave)
+    const alive = [...this.runtime.values()].filter((a) => !a.state.dead && a.state.contractOwner === owner).length;
+    if (mode === 'batch' && alive > 0) return;
+    const contract = this.config.contracts.find((c) => c.id === active.contractId);
+    const batch = contractSpawnBatch(
+      { initialPercent: contract?.initialPercent ?? DEFAULT_CONTRACT_INITIAL_PERCENT, refillBatch: contract?.refillBatch ?? DEFAULT_CONTRACT_REFILL_BATCH },
+      active,
+    );
+    for (let i = alive; i < batch; i++) if (!this.spawnAnimal(active.variantId, owner, false, { x: player.x, y: player.y })) break;
   }
 
   private async reloadPlayerRecord(userId: string): Promise<PlayerHuntingRecord> {

@@ -61,31 +61,6 @@ export async function getPlayerHunting(userId: string): Promise<{ record: Player
   return { record, tableMissing: false, error: null };
 }
 
-export async function upsertPlayerHunting(userId: string, record: PlayerHuntingRecord): Promise<{ ok: boolean; tableMissing: boolean; error: string | null }> {
-  fallback.set(userId, { active: record.active ? { ...record.active } : null, locks: { ...record.locks } });
-  if (!UUID_RE.test(userId)) {
-    warnMemoryMode();
-    return { ok: true, tableMissing: true, error: null };
-  }
-  const client = getServiceClient();
-  if (!client) {
-    warnMemoryMode();
-    return { ok: true, tableMissing: true, error: null };
-  }
-  const { error } = await client.from('player_hunting').upsert(
-    { user_id: userId, active: record.active, locks: record.locks, updated_at: new Date().toISOString() },
-    { onConflict: 'user_id' },
-  );
-  if (error) {
-    if (isTableMissing(error.code)) {
-      warnMemoryMode();
-      return { ok: true, tableMissing: true, error: null };
-    }
-    return { ok: false, tableMissing: false, error: error.message };
-  }
-  return { ok: true, tableMissing: false, error: null };
-}
-
 export interface PlayerHuntingCasResult {
   ok: boolean;
   matched: boolean;
@@ -93,24 +68,34 @@ export interface PlayerHuntingCasResult {
   error: string | null;
 }
 
-/** Compare-and-set on the active contract identity. */
+/** Extra CAS conditions on the active contract: the activation (`acceptedAt`) and the progress (`killed`) the writer read. */
+export interface ActiveContractExpectation { acceptedAt: number; killed: number }
+
+/**
+ * Compare-and-set on the active contract identity (and, when `expected` is given, on the exact
+ * activation + progress — used by kills so a stale snapshot can never overwrite newer progress or a
+ * re-accepted contract).
+ */
 export async function updateIfActiveMatches(
   userId: string,
   expectedContractId: string | null,
   record: PlayerHuntingRecord,
+  expected?: ActiveContractExpectation,
 ): Promise<PlayerHuntingCasResult> {
   const current = fallback.get(userId) ?? empty();
   const currentId = current.active?.contractId ?? null;
+  const memoryMatches = currentId === expectedContractId &&
+    (!expected || (current.active?.acceptedAt === expected.acceptedAt && current.active?.killed === expected.killed));
   if (!UUID_RE.test(userId)) {
     warnMemoryMode();
-    if (currentId !== expectedContractId) return { ok: true, matched: false, tableMissing: true, error: null };
+    if (!memoryMatches) return { ok: true, matched: false, tableMissing: true, error: null };
     fallback.set(userId, { active: record.active ? { ...record.active } : null, locks: { ...record.locks } });
     return { ok: true, matched: true, tableMissing: true, error: null };
   }
   const client = getServiceClient();
   if (!client) {
     warnMemoryMode();
-    if (currentId !== expectedContractId) return { ok: true, matched: false, tableMissing: true, error: null };
+    if (!memoryMatches) return { ok: true, matched: false, tableMissing: true, error: null };
     fallback.set(userId, { active: record.active ? { ...record.active } : null, locks: { ...record.locks } });
     return { ok: true, matched: true, tableMissing: true, error: null };
   }
@@ -121,7 +106,7 @@ export async function updateIfActiveMatches(
   if (inserted.error && inserted.error.code !== '23505') {
     if (isTableMissing(inserted.error.code)) {
       warnMemoryMode();
-      if (currentId !== expectedContractId) return { ok: true, matched: false, tableMissing: true, error: null };
+      if (!memoryMatches) return { ok: true, matched: false, tableMissing: true, error: null };
       fallback.set(userId, { active: record.active ? { ...record.active } : null, locks: { ...record.locks } });
       return { ok: true, matched: true, tableMissing: true, error: null };
     }
@@ -134,11 +119,14 @@ export async function updateIfActiveMatches(
   query = expectedContractId === null
     ? query.is('active', null)
     : query.eq('active->>contractId', expectedContractId);
+  if (expected && expectedContractId !== null) {
+    query = query.eq('active->>acceptedAt', String(expected.acceptedAt)).eq('active->>killed', String(expected.killed));
+  }
   const { data, error } = await query.select('user_id');
   if (error) {
     if (isTableMissing(error.code)) {
       warnMemoryMode();
-      if (currentId !== expectedContractId) return { ok: true, matched: false, tableMissing: true, error: null };
+      if (!memoryMatches) return { ok: true, matched: false, tableMissing: true, error: null };
       fallback.set(userId, { active: record.active ? { ...record.active } : null, locks: { ...record.locks } });
       return { ok: true, matched: true, tableMissing: true, error: null };
     }

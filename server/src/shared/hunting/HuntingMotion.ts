@@ -2,40 +2,53 @@
  * Locomotion model of the animals — shared by the server (moves the animal), the game client
  * (picks the run frame) and the `/dev/caca` bench.
  *
- * The run animation of every sheet is a LEAP: frame 0 gathers the legs, frame 1 is airborne
- * (stretched) and frame 2 lands. Played 0-1-2-1 (yoyo) one cycle contains two leaps.
+ * The run animation of every sheet is a LEAP. Checked frame by frame on the wolf, bear, boar and
+ * fox sheets: local frame 0 is AIRBORNE (body stretched), frame 1 is the GATHER (crouched, legs
+ * under the body — landing / pushing off) and frame 2 is airborne again in a slightly different
+ * pose. Played 0-1-2-1 (yoyo) one cycle contains two leaps: fly → gather → fly → gather.
+ *
  * Moving at a constant speed under that animation looks like sliding, so the server moves the
- * animal in bursts: each slot of the cycle has its own speed multiplier (average exactly 1) and
- * the client chooses the frame from the DISTANCE travelled, which keeps picture and motion in
- * sync regardless of latency or interpolation delay.
+ * animal in bursts: the airborne slots carry most of the ground (the "extra push forward" of the
+ * leap) and the gather slots almost stop. The average over a cycle is exactly the configured
+ * speed. The client chooses the frame from the DISTANCE travelled, which keeps picture and motion
+ * in sync regardless of latency or interpolation delay.
+ *
+ * The run animation plays at a fixed frame-rate per variant (`runFps`, default 10 — faster than
+ * the walk, like the reference captures); the stride (px per leap) follows from the speed.
  */
 
 /** Local frames (0..2) of a full run cycle, in playback order. */
 export const RUN_FRAME_SEQUENCE: readonly number[] = [0, 1, 2, 1];
-/** Speed multiplier of each slot of RUN_FRAME_SEQUENCE (gather, fly, land, fly). Average = 1. */
-export const RUN_SLOT_SPEED: readonly number[] = [0.3, 1.5, 0.7, 1.5];
+/** Speed multiplier of each slot of RUN_FRAME_SEQUENCE (fly, gather, fly, gather). Average = 1. */
+export const RUN_SLOT_SPEED: readonly number[] = [1.6, 0.4, 1.6, 0.4];
 /** Cumulative share of the cycle distance covered at the end of each slot. */
 export const RUN_SLOT_DISTANCE_END: readonly number[] = (() => {
   const total = RUN_SLOT_SPEED.reduce((sum, m) => sum + m, 0);
   let acc = 0;
   return RUN_SLOT_SPEED.map((m) => (acc += m / total));
 })();
-/** Frame-rate window of the run animation; the stride is clamped so the fps stays inside it. */
+/** Frame-rate window of the run animation (frames = slots per second). */
 export const RUN_MIN_FPS = 4;
 export const RUN_MAX_FPS = 16;
+/** Default run frame-rate — faster than the walk (8 fps) so the leap reads as a leap. */
+export const DEFAULT_RUN_FPS = 10;
 /** Slots per cycle (= leaps × 2). */
 export const RUN_CYCLE_SLOTS = RUN_FRAME_SEQUENCE.length;
-/** Leaps per cycle (the yoyo shows the airborne frame twice). */
+/** Leaps per cycle (the yoyo shows a gather between two airborne frames, twice). */
 export const RUN_LEAPS_PER_CYCLE = 2;
 
-/** Stride actually used for `speed` px/s: the configured one, clamped so 2 × speed / stride ∈ [RUN_MIN_FPS, RUN_MAX_FPS]. */
-export function effectiveRunStride(stridePx: number, speed: number): number {
-  const slotsPerLeap = RUN_CYCLE_SLOTS / RUN_LEAPS_PER_CYCLE;
-  const safeSpeed = Math.max(1, speed);
-  const min = (slotsPerLeap * safeSpeed) / RUN_MAX_FPS;
-  const max = (slotsPerLeap * safeSpeed) / RUN_MIN_FPS;
-  const stride = Number.isFinite(stridePx) && stridePx > 0 ? stridePx : min;
-  return Math.min(max, Math.max(min, stride));
+/** Frame-rate actually used: `fps` clamped to the readable window (NaN/0 → default). */
+export function effectiveRunFps(fps: number): number {
+  const value = Number.isFinite(fps) && fps > 0 ? fps : DEFAULT_RUN_FPS;
+  return Math.min(RUN_MAX_FPS, Math.max(RUN_MIN_FPS, value));
+}
+/**
+ * Px covered by one leap when running at `speed` px/s with the animation at `fps`:
+ * a cycle lasts RUN_CYCLE_SLOTS / fps seconds and holds RUN_LEAPS_PER_CYCLE leaps.
+ */
+export function runStrideFor(speed: number, fps: number): number {
+  const cycleSeconds = RUN_CYCLE_SLOTS / effectiveRunFps(fps);
+  return (Math.max(1, speed) * cycleSeconds) / RUN_LEAPS_PER_CYCLE;
 }
 /** Px covered by one full cycle (two leaps). */
 export function runCycleDistance(stridePx: number): number { return stridePx * RUN_LEAPS_PER_CYCLE; }

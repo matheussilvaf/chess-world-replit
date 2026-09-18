@@ -2,4 +2,4 @@
 - [gitPush provider](gitpush-provider.md) — sempre usar `gitPush({ provider: "github" })`, sem o parâmetro vai pro backup interno.
 - [Same-file edit batching](edit-batching.md) — many Edit calls to one file in one batch can silently drop some; batch small, sed for repeats, grep/tsc-verify after.
 - [pnpm per-package installs](pnpm-installs.md) — instalar dependência de um app: `pnpm --filter @workspace/<pkg> add`; a ferramenta padrão falha com ERR_PNPM_ADDING_TO_ROOT.
-- [Hunting system](hunting-system.md) — animais/contratos/NPC: rig = RigConfig v2, geometria do TMJ gerada, HUNT_MSG congelado, spawn random 1× por sala, corrida em saltos = contrato server↔client.
+- [Hunting system](hunting-system.md) — animais/contratos/NPC: rig v2, geometria TMJ gerada, HUNT_MSG congelado, corrida em saltos (frames 0/2 = no ar, knob runFps), lotes de contrato, bússola HUD.

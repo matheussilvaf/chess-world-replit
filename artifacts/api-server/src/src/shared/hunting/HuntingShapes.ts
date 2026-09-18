@@ -12,6 +12,8 @@
  *   (S, W, E, N). Columns: idle 0-2, walk 3-5, run 6-8, attack 9-11; every animation loops 1-2-3-2.
  */
 
+import { DEFAULT_RUN_FPS, RUN_MAX_FPS, RUN_MIN_FPS, runStrideFor } from './HuntingMotion.js';
+
 export const HUNTING_CONFIG_SCHEMA_VERSION = 1 as const;
 
 export const HUNTING_CATEGORIES = ['hunts', 'residents'] as const;
@@ -106,8 +108,12 @@ export const ANIMAL_WANDER_SPEED_FACTOR = 0.55;
 export const ANIMAL_APPROACH_SPEED_FACTOR = 0.7;
 /** Hunt animals (contract targets) notice players inside this radius (px). */
 export const ANIMAL_HUNT_AGGRO_RADIUS = 260;
-/** Default run stride (px covered by one leap) — see HuntingMotion. */
-export const DEFAULT_RUN_STRIDE_PX = 40;
+/** Fallback stride (px per leap) used by the client until the server value arrives — see HuntingMotion. */
+export const DEFAULT_RUN_STRIDE_PX = runStrideFor(DEFAULT_SPEED_BY_LEVEL.moderate, DEFAULT_RUN_FPS);
+/** Contract animals alive at acceptance: this share of the quota (%). */
+export const DEFAULT_CONTRACT_INITIAL_PERCENT = 20;
+/** Contract animals spawned together once the previous ones are dead. */
+export const DEFAULT_CONTRACT_REFILL_BATCH = 2;
 
 export const HP_REGEN_OPTIONS = [0, 5, 10, 20, 30, 60] as const;
 export type HpRegenSeconds = (typeof HP_REGEN_OPTIONS)[number];
@@ -140,8 +146,8 @@ export interface AnimalVariantConfig {
   /** Random population range (spawnMode 'random'), rolled once per room. */
   spawnMin: number;
   spawnMax: number;
-  /** Px covered by one running leap (drives run animation speed and the burst movement). */
-  runStridePx: number;
+  /** Frame-rate of the run animation (leaps per second × 2); the stride follows from the speed — see HuntingMotion. */
+  runFps: number;
   /** Distance (px) between animal and its target that ends the fight. */
   combatBreakDistance: number;
   hpRegenSeconds: HpRegenSeconds;
@@ -162,6 +168,10 @@ export interface HuntingContractConfig {
   crownsReward: number;
   /** Hours until the contract is offered again after completion, expiry or the player's death. */
   cooldownHours: number;
+  /** Share (%) of the quota alive right after the contract is accepted (at least 1 animal). */
+  initialPercent: number;
+  /** Animals spawned together (at random other spots) once every spawned one is dead, until the quota is reached. */
+  refillBatch: number;
   /** Visible in game. */
   enabled: boolean;
 }
@@ -189,9 +199,10 @@ export interface HuntingConfig {
 
 export const HUNTING_LIMITS = {
   hp: { min: 1, max: 100000 }, damage: { min: 0, max: 10000 }, xp: { min: 0, max: 1000000 },
-  speed: { min: 10, max: 600 }, spawnCount: { min: 0, max: 200 }, stride: { min: 8, max: 200 }, combatBreak: { min: 50, max: 4000 },
+  speed: { min: 10, max: 600 }, spawnCount: { min: 0, max: 200 }, runFps: { min: RUN_MIN_FPS, max: RUN_MAX_FPS }, combatBreak: { min: 50, max: 4000 },
   radius: { min: 16, max: 2000 }, respawn: { min: 0, max: 86400 }, quantity: { min: 1, max: 200 },
   timeLimit: { min: 1, max: 1440 }, crowns: { min: 0, max: 1000000 }, cooldownHours: { min: 0, max: 720 },
+  initialPercent: { min: 1, max: 100 }, refillBatch: { min: 1, max: 200 },
   contracts: 200, nameLength: 40,
 } as const;
 
@@ -199,7 +210,7 @@ export function defaultVariantConfig(name = 'Animal'): AnimalVariantConfig {
   return {
     name, hp: 60, damage: 8, xpEnabled: true, xp: 15, level: 'medium',
     speedByLevel: { ...DEFAULT_SPEED_BY_LEVEL }, spawnMode: 'fixed', spawnCount: 0, spawnMin: 1, spawnMax: 4,
-    runStridePx: DEFAULT_RUN_STRIDE_PX, combatBreakDistance: 420, hpRegenSeconds: 10,
+    runFps: DEFAULT_RUN_FPS, combatBreakDistance: 420, hpRegenSeconds: 10,
     reaction: 'attacked', radius: 160, respawnCooldownSeconds: 60,
   };
 }
@@ -352,7 +363,7 @@ export function parseVariantConfig(raw: unknown, fallbackName = 'Animal'): Anima
     speedByLevel,
     spawnMode: oneOf(raw.spawnMode, ['fixed', 'random'] as const, d.spawnMode),
     spawnCount, spawnMin, spawnMax,
-    runStridePx: num(raw.runStridePx, d.runStridePx, HUNTING_LIMITS.stride.min, HUNTING_LIMITS.stride.max),
+    runFps: num(raw.runFps, d.runFps, HUNTING_LIMITS.runFps.min, HUNTING_LIMITS.runFps.max),
     combatBreakDistance: num(raw.combatBreakDistance, d.combatBreakDistance, HUNTING_LIMITS.combatBreak.min, HUNTING_LIMITS.combatBreak.max),
     hpRegenSeconds: (HP_REGEN_OPTIONS as readonly number[]).includes(regenRaw) ? (regenRaw as HpRegenSeconds) : d.hpRegenSeconds,
     reaction: oneOf(raw.reaction, RESIDENT_REACTIONS, d.reaction),
@@ -371,8 +382,25 @@ export function parseContractConfig(raw: unknown): HuntingContractConfig | null 
     xpReward: num(raw.xpReward, 100, HUNTING_LIMITS.xp.min, HUNTING_LIMITS.xp.max),
     crownsReward: num(raw.crownsReward, 10, HUNTING_LIMITS.crowns.min, HUNTING_LIMITS.crowns.max),
     cooldownHours: num(raw.cooldownHours, 24, HUNTING_LIMITS.cooldownHours.min, HUNTING_LIMITS.cooldownHours.max, false),
+    initialPercent: num(raw.initialPercent, DEFAULT_CONTRACT_INITIAL_PERCENT, HUNTING_LIMITS.initialPercent.min, HUNTING_LIMITS.initialPercent.max),
+    refillBatch: num(raw.refillBatch, DEFAULT_CONTRACT_REFILL_BATCH, HUNTING_LIMITS.refillBatch.min, HUNTING_LIMITS.refillBatch.max),
     enabled: bool(raw.enabled, true),
   };
+}
+
+/**
+ * How many contract animals to spawn when none of the owner's is alive: the initial share of the
+ * quota while nothing was killed yet, then `refillBatch` at a time — never more than what is left
+ * to kill (`quantity - killed`). Killed animals leave the world for good; the next batch appears
+ * elsewhere only after the previous one is dead.
+ */
+export function contractSpawnBatch(
+  contract: Pick<HuntingContractConfig, 'initialPercent' | 'refillBatch'>,
+  progress: { quantity: number; killed: number },
+): number {
+  const remaining = Math.max(0, Math.floor(progress.quantity) - Math.max(0, Math.floor(progress.killed)));
+  const initial = Math.max(1, Math.round((progress.quantity * contract.initialPercent) / 100));
+  return Math.min(remaining, progress.killed > 0 ? Math.max(1, Math.floor(contract.refillBatch)) : initial);
 }
 
 export function parseLevelProfile(raw: unknown, level: HuntingLevel): HuntingLevelProfile {

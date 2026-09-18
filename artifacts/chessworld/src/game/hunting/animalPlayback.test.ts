@@ -9,13 +9,16 @@ describe('AnimalPlayback', () => {
     expect(playback.update(1120, 0, 0)).toMatchObject({ anim: 'attack', dir: 2, changed: true });
   });
 
+  // stride 40 → ciclo de 80 px: no ar (quadro 0) 0-32, agachado (1) 32-40, no ar (2) 40-72, agachado (1) 72-80
   it('escolhe quadros 0, 1, 2, 1 pela distância', () => {
     const playback = new AnimalPlayback(0);
     playback.push('run', 0, 40, 0);
     expect(playback.update(0, 0, 0).frame).toBe(0);
-    expect(playback.update(1, 7, 0).frame).toBe(1);
-    expect(playback.update(2, 37, 0).frame).toBe(2);
-    expect(playback.update(3, 51, 0).frame).toBe(1);
+    expect(playback.update(1, 20, 0).frame).toBe(0);
+    expect(playback.update(2, 35, 0).frame).toBe(1);
+    expect(playback.update(3, 50, 0).frame).toBe(2);
+    expect(playback.update(4, 75, 0).frame).toBe(1);
+    expect(playback.update(5, 85, 0).frame).toBe(0);
   });
 
   it('reinicia o acumulador ao voltar a correr', () => {
@@ -33,10 +36,11 @@ describe('AnimalPlayback', () => {
     const playback = new AnimalPlayback(0);
     playback.push('run', 0, 40, 0);
     playback.update(0, 0, 0);
-    expect(playback.update(1, 37, 0).frame).toBe(2);
+    expect(playback.update(1, 50, 0).frame).toBe(2);
+    // stride 20 → ciclo de 40 px: agachado entre 16 e 20
     playback.push('run', 0, 20, 2);
-    expect(playback.update(2, 39, 0).frame).toBe(0);
-    expect(playback.update(3, 44, 0).frame).toBe(1);
+    expect(playback.update(2, 52, 0).frame).toBe(0);
+    expect(playback.update(3, 68, 0).frame).toBe(1);
   });
 
   it('ignora saltos de teleporte', () => {
@@ -45,6 +49,6 @@ describe('AnimalPlayback', () => {
     playback.update(0, 0, 0);
     playback.update(1, 5, 0);
     expect(playback.update(2, 500, 0).frame).toBe(0);
-    expect(playback.update(3, 507, 0).frame).toBe(1);
+    expect(playback.update(3, 530, 0).frame).toBe(1);
   });
 });

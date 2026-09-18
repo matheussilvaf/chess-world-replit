@@ -5,7 +5,8 @@ import {
   RUN_MAX_FPS,
   RUN_MIN_FPS,
   RUN_SLOT_SPEED,
-  effectiveRunStride,
+  DEFAULT_RUN_FPS,
+  effectiveRunFps,
   runCycleDistance,
   runCycleMs,
   runDistanceBetween,
@@ -13,6 +14,7 @@ import {
   runFrameForDistance,
   runSlotForDistance,
   runSpeedMultiplierAt,
+  runStrideFor,
 } from './HuntingMotion';
 
 const TICK_MS = 50; // server simulation tick
@@ -40,8 +42,8 @@ describe('HuntingMotion — leap run cycle', () => {
   });
 
   it('covers exactly speed × time over whole cycles, whatever the tick size', () => {
-    for (const [stride, speed] of [[40, 120], [40, 70], [60, 150], [20, 95]] as const) {
-      const eff = effectiveRunStride(stride, speed);
+    for (const [fps, speed] of [[10, 120], [4, 70], [16, 150], [7, 95]] as const) {
+      const eff = runStrideFor(speed, fps);
       const cycle = runCycleMs(eff, speed);
       const cycles = 5;
       const total = simulate(eff, speed, cycle * cycles).at(-1)!.distance;
@@ -53,24 +55,26 @@ describe('HuntingMotion — leap run cycle', () => {
     }
   });
 
-  it('moves in bursts: the airborne slot covers far more ground than the gather slot (UX of the leap)', () => {
-    const stride = 40, speed = 120;
+  it('moves in bursts: the airborne slots (frames 0 and 2) cover far more ground than the gather slots (frame 1)', () => {
+    const speed = 120, stride = runStrideFor(speed, 10);
     const slotMs = runCycleMs(stride, speed) / RUN_CYCLE_SLOTS;
-    const gather = runDistanceBetween(0, slotMs, stride, speed);
-    const fly = runDistanceBetween(slotMs, 2 * slotMs, stride, speed);
-    const land = runDistanceBetween(2 * slotMs, 3 * slotMs, stride, speed);
+    const fly = runDistanceBetween(0, slotMs, stride, speed);            // frame 0 — stretched, in the air
+    const gather = runDistanceBetween(slotMs, 2 * slotMs, stride, speed); // frame 1 — crouched, pushing off
+    const fly2 = runDistanceBetween(2 * slotMs, 3 * slotMs, stride, speed); // frame 2 — in the air again
+    const gather2 = runDistanceBetween(3 * slotMs, 4 * slotMs, stride, speed);
     expect(fly / gather).toBeGreaterThanOrEqual(4);
-    expect(fly).toBeGreaterThan(land);
-    expect(land).toBeGreaterThan(gather);
+    expect(fly2).toBeCloseTo(fly, 9);
+    expect(gather2).toBeCloseTo(gather, 9);
     // the fast slot is at least 1.4× the average speed, the slow one below half of it
-    expect(runSpeedMultiplierAt(slotMs * 1.5, stride, speed)).toBeGreaterThanOrEqual(1.4);
-    expect(runSpeedMultiplierAt(slotMs * 0.5, stride, speed)).toBeLessThanOrEqual(0.5);
+    expect(runSpeedMultiplierAt(slotMs * 0.5, stride, speed)).toBeGreaterThanOrEqual(1.4);
+    expect(runSpeedMultiplierAt(slotMs * 1.5, stride, speed)).toBeLessThanOrEqual(0.5);
+    expect(runSpeedMultiplierAt(slotMs * 2.5, stride, speed)).toBeGreaterThanOrEqual(1.4);
     // never stops completely (the animal keeps gliding a little while gathering)
     for (const { step } of simulate(stride, speed, 3000)) expect(step).toBeGreaterThan(0);
   });
 
-  it('distance-driven frames follow the 0-1-2-1 yoyo and the airborne frame owns the fast ground', () => {
-    const stride = 40;
+  it('distance-driven frames follow the 0-1-2-1 yoyo and the airborne frames own the fast ground', () => {
+    const stride = runStrideFor(120, 10);
     const cycle = runCycleDistance(stride);
     const frames: number[] = [];
     for (let d = 0; d < cycle * 2; d += 0.5) {
@@ -79,12 +83,12 @@ describe('HuntingMotion — leap run cycle', () => {
     }
     expect(frames).toEqual([0, 1, 2, 1, 0, 1, 2, 1]);
     let airborne = 0;
-    for (let d = 0; d < cycle; d += 0.25) if (runFrameForDistance(d, stride) === 1) airborne += 0.25;
-    expect(airborne / cycle).toBeCloseTo(0.75, 1);
+    for (let d = 0; d < cycle; d += 0.25) if (runFrameForDistance(d, stride) !== 1) airborne += 0.25;
+    expect(airborne / cycle).toBeCloseTo(0.8, 1);
   });
 
   it('server (time-based bursts) and client (distance-based frames) agree on the slot', () => {
-    const stride = 40, speed = 120;
+    const speed = 120, stride = runStrideFor(speed, 10);
     const slotMs = runCycleMs(stride, speed) / RUN_CYCLE_SLOTS;
     for (const { t, distance } of simulate(stride, speed, 4000)) {
       const inSlot = (t % slotMs) / slotMs;
@@ -94,17 +98,22 @@ describe('HuntingMotion — leap run cycle', () => {
     }
   });
 
-  it('keeps the run frame-rate inside the readable window by clamping the stride', () => {
+  it('the animation rate is the configured fps (clamped to the readable window) whatever the speed', () => {
     for (const speed of [10, 70, 95, 120, 150, 600]) {
-      for (const stride of [8, 40, 200]) {
-        const eff = effectiveRunStride(stride, speed);
-        const fps = runFps(eff, speed);
+      for (const configured of [1, 4, 10, 16, 40, NaN]) {
+        const stride = runStrideFor(speed, configured);
+        const fps = runFps(stride, speed);
+        expect(fps).toBeCloseTo(effectiveRunFps(configured), 9);
         expect(fps).toBeGreaterThanOrEqual(RUN_MIN_FPS - 1e-9);
         expect(fps).toBeLessThanOrEqual(RUN_MAX_FPS + 1e-9);
       }
     }
-    expect(effectiveRunStride(40, 120)).toBe(40);
-    expect(effectiveRunStride(40, 70)).toBeCloseTo(35, 6); // 2×70/35 = 4 fps floor
-    expect(effectiveRunStride(NaN, 100)).toBeGreaterThan(0);
+    // 10 fps = 5 leaps per second: a 120 px/s animal covers 24 px per leap, a 150 px/s one 30 px
+    expect(runStrideFor(120, 10)).toBeCloseTo(24, 9);
+    expect(runStrideFor(150, DEFAULT_RUN_FPS)).toBeCloseTo(30, 9);
+    expect(effectiveRunFps(NaN)).toBe(DEFAULT_RUN_FPS);
+    expect(effectiveRunFps(0)).toBe(DEFAULT_RUN_FPS);
+    // the run is faster than the walk animation (8 fps) by default
+    expect(DEFAULT_RUN_FPS).toBeGreaterThan(8);
   });
 });

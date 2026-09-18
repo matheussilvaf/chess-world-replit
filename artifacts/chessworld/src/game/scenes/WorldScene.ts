@@ -75,6 +75,8 @@ import {
 } from '../../shared/craft/PlaceableStations';
 import type { PlacedStationView } from '../../stores/placedStationsStore';
 import { AnimalLayer, type AnimalView } from '../hunting/AnimalLayer';
+import { huntCompassBus } from '../hunting/huntCompassBus';
+import { computeCompassArrows, type CompassTarget } from '../hunting/huntCompassMath';
 import { NpcLayer, type NpcView } from '../hunting/NpcLayer';
 
 interface ChessArenaZone {
@@ -348,6 +350,10 @@ export class WorldScene extends Phaser.Scene {
   private canvasRectFrame = -999;
   /** Nº de tags emitidas no último frame (evita re-emitir lista vazia). */
   private lastTagCount = 0;
+  /** Compass arrows emitted last frame (0 → the empty list was already sent, skip the work). */
+  private lastCompassCount = 0;
+  /** Per contract animal: was it inside the view last frame (hysteresis so arrows don't flicker at the edge). */
+  private compassInView = new Map<string, boolean>();
   /** Debug desligado: gfx já está limpo? (evita clear() por frame à toa) */
   private debugGfxCleared = false;
   /** Última pose da câmera — overlays só republicam quando ela muda. */
@@ -820,6 +826,45 @@ export class WorldScene extends Phaser.Scene {
       this.lastTagCount = tags.length;
       playerTagBus.emit(tags);
     }
+  }
+
+  /**
+   * HUD compass of the hunting contract: one arrow per living contract animal that is OUT of view,
+   * clamped to the edge of the screen in the animal's direction (same projection as the name tags:
+   * camera scroll, zoom, rotation and CSS scale of the canvas). Visible animals emit nothing.
+   */
+  private emitHuntCompass(): void {
+    const targets = this.animalLayer?.contractTargets() ?? [];
+    if (targets.length === 0) {
+      if (this.lastCompassCount !== 0 || this.compassInView.size) {
+        this.lastCompassCount = 0;
+        this.compassInView.clear();
+        huntCompassBus.emit([]);
+      }
+      return;
+    }
+    const cam = this.cameras.main;
+    this.refreshCanvasRectCache();
+    const scaleX = this.canvasRectScaleX, scaleY = this.canvasRectScaleY;
+    const width = cam.width * scaleX, height = cam.height * scaleY;
+    const cx = cam.scrollX + cam.width * 0.5, cy = cam.scrollY + cam.height * 0.5;
+    const cos = Math.cos(-this.currentCameraRotation), sin = Math.sin(-this.currentCameraRotation);
+    const zoom = cam.zoom;
+    const projectX = (dx: number, dy: number) => (dx * cos - dy * sin) * zoom * scaleX + width * 0.5;
+    const projectY = (dx: number, dy: number) => (dx * sin + dy * cos) * zoom * scaleY + height * 0.5;
+    const px = this.player.x, py = this.player.y;
+    const projected: CompassTarget[] = targets.map((target) => ({
+      id: target.id, name: target.name,
+      sx: projectX(target.x - cx, target.y - cy), sy: projectY(target.x - cx, target.y - cy),
+      distancePx: Math.hypot(target.x - px, target.y - py),
+    }));
+    const entries = computeCompassArrows(
+      { width, height, originX: projectX(px - cx, py - cy), originY: projectY(px - cx, py - cy) },
+      projected, this.compassInView,
+    );
+    if (entries.length === 0 && this.lastCompassCount === 0) return;
+    this.lastCompassCount = entries.length;
+    huntCompassBus.emit(entries);
   }
 
   /** Atualiza o cache do rect do canvas (~2x/s) — getBoundingClientRect força layout. */
@@ -1587,6 +1632,11 @@ export class WorldScene extends Phaser.Scene {
       });
       this.animalLayer?.tick(delta);
       this.npcLayer?.tick(delta);
+      this.emitHuntCompass();
+    } else if (this.lastCompassCount !== 0) {
+      this.lastCompassCount = 0;
+      this.compassInView.clear();
+      huntCompassBus.emit([]);
     }
 
     // Big Chess Board: golpe local (só ARMA principal) contra as casas com peça

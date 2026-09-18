@@ -2,6 +2,8 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { ArrowLeft, Loader2, Plus, Save, Target, Trash2 } from 'lucide-react';
 import {
+  DEFAULT_CONTRACT_INITIAL_PERCENT,
+  DEFAULT_CONTRACT_REFILL_BATCH,
   DEFAULT_SPEED_BY_LEVEL,
   HP_REGEN_LABELS,
   HP_REGEN_OPTIONS,
@@ -14,6 +16,7 @@ import {
   RESIDENT_REACTIONS,
   RESIDENT_REACTION_LABELS,
   configuredAnimalCount,
+  contractSpawnBatch,
   defaultHuntingConfig,
   defaultLevelProfiles,
   defaultVariantConfig,
@@ -108,11 +111,11 @@ function VariantEditor({ variantId, variant, manifest, category, update }: {
         <NumberField value={variant.speedByLevel[level] ?? DEFAULT_SPEED_BY_LEVEL[level]} range={HUNTING_LIMITS.speed} className="w-16" onChange={(value) => update((next) => { next.speedByLevel[level] = value; })} />
       </label>)}
         <label className="rounded border border-slate-800 p-1.5">
-          <span className="mr-1 text-[10px] text-slate-400">Passada da corrida</span>
-          <NumberField value={variant.runStridePx} range={HUNTING_LIMITS.stride} className="w-16" suffix="px" onChange={(value) => update((next) => { next.runStridePx = value; })} />
+          <span className="mr-1 text-[10px] text-slate-400">Ritmo da corrida</span>
+          <NumberField value={variant.runFps} range={HUNTING_LIMITS.runFps} className="w-16" suffix="fps" onChange={(value) => update((next) => { next.runFps = value; })} />
         </label>
       </div>
-      <p className="mt-1 text-[10px] text-slate-500">px que o animal avança por salto na corrida — define o ritmo da animação</p>
+      <p className="mt-1 text-[10px] text-slate-500">quadros por segundo da animação de corrida (2 quadros por salto); a distância de cada salto vem da velocidade — a caminhada roda a 8 fps</p>
     </div>
     {category === 'residents' && <div className="mt-3 grid gap-3 sm:grid-cols-3">
       <Field label="Tipo de reação"><div className="flex">{RESIDENT_REACTIONS.map((reaction) => <button type="button" key={reaction} onClick={() => update((next) => { next.reaction = reaction; })}
@@ -140,7 +143,10 @@ function Contracts({ config, manifest, update }: { config: HuntingConfig; manife
     const first = variants[0];
     if (!first) return;
     const slug = first.name.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 45) || 'contrato';
-    next.contracts.push({ id: `${slug}-${Math.random().toString(36).slice(2, 8)}`, variantId: first.variantId, quantity: 1, timeLimitMinutes: 30, xpReward: 100, crownsReward: 10, cooldownHours: 24, enabled: true });
+    next.contracts.push({
+      id: `${slug}-${Math.random().toString(36).slice(2, 8)}`, variantId: first.variantId, quantity: 1, timeLimitMinutes: 30, xpReward: 100, crownsReward: 10, cooldownHours: 24,
+      initialPercent: DEFAULT_CONTRACT_INITIAL_PERCENT, refillBatch: DEFAULT_CONTRACT_REFILL_BATCH, enabled: true,
+    });
   });
   const edit = (index: number, apply: (contract: HuntingContractConfig) => void) => update((next) => apply(next.contracts[index]));
   return <div className="space-y-3">
@@ -159,8 +165,13 @@ function Contracts({ config, manifest, update }: { config: HuntingConfig; manife
         <Field label="XP (skill Caça)"><NumberField value={contract.xpReward} range={HUNTING_LIMITS.xp} onChange={(value) => edit(index, (next) => { next.xpReward = value; })} /></Field>
         <Field label="Crowns"><NumberField value={contract.crownsReward} range={HUNTING_LIMITS.crowns} onChange={(value) => edit(index, (next) => { next.crownsReward = value; })} /></Field>
         <Field label="Disponível novamente após"><NumberField value={contract.cooldownHours} range={HUNTING_LIMITS.cooldownHours} step={0.5} suffix="horas" onChange={(value) => edit(index, (next) => { next.cooldownHours = value; })} /></Field>
+        <Field label="Nascem ao aceitar"><NumberField value={contract.initialPercent} range={HUNTING_LIMITS.initialPercent} suffix="%" onChange={(value) => edit(index, (next) => { next.initialPercent = value; })} /></Field>
+        <Field label="Reposição (de N em N)"><NumberField value={contract.refillBatch} range={HUNTING_LIMITS.refillBatch} onChange={(value) => edit(index, (next) => { next.refillBatch = value; })} /></Field>
         <Field label="Visibilidade"><Toggle checked={contract.enabled} label="Aparece no jogo" onChange={(value) => edit(index, (next) => { next.enabled = value; })} /></Field>
       </div>
+      <p className="mt-2 text-[10px] text-slate-500">
+        Ao aceitar nascem {contractSpawnBatch(contract, { quantity: contract.quantity, killed: 0 })} de {contract.quantity}; quando todos os vivos morrem, nascem mais {Math.min(contract.refillBatch, Math.max(0, contract.quantity - 1))} em outros pontos do mapa, até fechar a cota. Animais abatidos somem do jogo.
+      </p>
     </div>)}
   </div>;
 }

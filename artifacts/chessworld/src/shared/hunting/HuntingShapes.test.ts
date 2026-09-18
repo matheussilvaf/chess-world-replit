@@ -1,9 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import {
+  DEFAULT_CONTRACT_INITIAL_PERCENT,
+  DEFAULT_CONTRACT_REFILL_BATCH,
   DEFAULT_RUN_STRIDE_PX,
   DEFAULT_SPEED_BY_LEVEL,
   HUNTING_LEVEL_PROFILES,
+  HUNTING_LIMITS,
   configuredAnimalCount,
+  contractSpawnBatch,
   defaultVariantConfig,
   parseHuntingConfig,
   parseVariantConfig,
@@ -11,6 +15,7 @@ import {
   rigIdForAnimal,
   rollSpawnCount,
 } from './HuntingShapes.js';
+import { DEFAULT_RUN_FPS } from './HuntingMotion.js';
 import { HuntingMapGeometry } from './HuntingMapGeometry.js';
 import { CRAFTING_WORLD_MAP } from './craftingWorldMapData.js';
 
@@ -46,7 +51,10 @@ describe('HuntingShapes', () => {
     expect(wolf.hpRegenSeconds).toBe(10);
     expect(cfg.variants['bogus']).toBeUndefined();
     expect(cfg.contracts).toHaveLength(1);
-    expect(cfg.contracts[0]).toMatchObject({ id: 'c-1', quantity: 1, cooldownHours: 1.5, enabled: true });
+    expect(cfg.contracts[0]).toMatchObject({
+      id: 'c-1', quantity: 1, cooldownHours: 1.5, enabled: true,
+      initialPercent: DEFAULT_CONTRACT_INITIAL_PERCENT, refillBatch: DEFAULT_CONTRACT_REFILL_BATCH,
+    });
     expect(cfg.levelProfiles).toEqual(HUNTING_LEVEL_PROFILES);
 
     const clamped = parseHuntingConfig({ levelProfiles: { easy: { aggression: 5 } } });
@@ -67,11 +75,15 @@ describe('HuntingShapes', () => {
     expect(rollSpawnCount(v['hunts/bear/a'], () => 0.999)).toBe(3);
   });
 
-  it('normalizes random spawn bounds and the running stride', () => {
-    const variant = parseVariantConfig({ spawnMin: 12, spawnMax: 3 });
+  it('normalizes random spawn bounds and the run frame-rate (legacy stride configs fall back to the default fps)', () => {
+    const variant = parseVariantConfig({ spawnMin: 12, spawnMax: 3, runStridePx: 40 });
     expect(variant.spawnMin).toBe(3);
     expect(variant.spawnMax).toBe(12);
-    expect(variant.runStridePx).toBe(DEFAULT_RUN_STRIDE_PX);
+    expect(variant.runFps).toBe(DEFAULT_RUN_FPS);
+    expect(parseVariantConfig({ runFps: 12 }).runFps).toBe(12);
+    expect(parseVariantConfig({ runFps: 99 }).runFps).toBe(HUNTING_LIMITS.runFps.max);
+    expect(parseVariantConfig({ runFps: 1 }).runFps).toBe(HUNTING_LIMITS.runFps.min);
+    expect(DEFAULT_RUN_STRIDE_PX).toBeCloseTo(24, 9);
     // saved before the range existed: 'random' meant 0..spawnCount — keep the maximum, never a 0..0 range
     const legacy = parseVariantConfig({ spawnMode: 'random', spawnCount: 7 });
     expect([legacy.spawnMin, legacy.spawnMax]).toEqual([1, 7]);
@@ -106,5 +118,24 @@ describe('HuntingMapGeometry', () => {
       const corner = { x: x + w, y: y + h };
       expect(geo.isBlocked(corner.x, corner.y)).toBe(false);
     }
+  });
+
+  it('contract batches: a share of the quota at acceptance, then N at a time, never past the quota', () => {
+    const contract = { initialPercent: 20, refillBatch: 2 };
+    expect(contractSpawnBatch(contract, { quantity: 10, killed: 0 })).toBe(2);
+    expect(contractSpawnBatch(contract, { quantity: 10, killed: 2 })).toBe(2);
+    expect(contractSpawnBatch(contract, { quantity: 10, killed: 9 })).toBe(1);
+    expect(contractSpawnBatch(contract, { quantity: 10, killed: 10 })).toBe(0);
+    // at least one animal at acceptance, even for tiny quotas / percentages
+    expect(contractSpawnBatch({ initialPercent: 1, refillBatch: 3 }, { quantity: 3, killed: 0 })).toBe(1);
+    expect(contractSpawnBatch({ initialPercent: 100, refillBatch: 3 }, { quantity: 3, killed: 0 })).toBe(3);
+    expect(contractSpawnBatch({ initialPercent: 50, refillBatch: 3 }, { quantity: 1, killed: 0 })).toBe(1);
+    // refill batches are capped by what is left to kill
+    expect(contractSpawnBatch({ initialPercent: 20, refillBatch: 3 }, { quantity: 5, killed: 1 })).toBe(3);
+    expect(contractSpawnBatch({ initialPercent: 20, refillBatch: 3 }, { quantity: 5, killed: 3 })).toBe(2);
+    // parser clamps the new fields
+    const parsed = parseHuntingConfig({ contracts: [{ id: 'c', variantId: 'hunts/wolf/forest_wolf_gray', initialPercent: 0, refillBatch: 0 }] });
+    expect(parsed.contracts[0].initialPercent).toBe(HUNTING_LIMITS.initialPercent.min);
+    expect(parsed.contracts[0].refillBatch).toBe(HUNTING_LIMITS.refillBatch.min);
   });
 });

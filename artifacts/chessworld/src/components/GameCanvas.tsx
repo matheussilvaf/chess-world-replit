@@ -60,6 +60,7 @@ import type { NpcView } from '../game/hunting/NpcLayer';
 import { useHuntingStore } from '../stores/huntingStore';
 import { HuntingContractsModal } from './hunting/HuntingContractsModal';
 import { ActiveContractChip } from './hunting/ActiveContractChip';
+import { HuntCompass } from './hunting/HuntCompass';
 
 export function GameCanvas() {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -1461,6 +1462,8 @@ export function GameCanvas() {
       />
       {/* HTML player name-tag overlay — sits above canvas, no pointer events */}
       <PlayerNameTags />
+      {/* Setas na borda da tela apontando para os animais do contrato fora de vista */}
+      <HuntCompass />
       {/* Mobile: circular attack button (touch devices only) */}
       <AttackButton
         getScene={() => (gameRef.current ? getWorldScene(gameRef.current) : null)}

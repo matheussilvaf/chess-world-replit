@@ -135,6 +135,21 @@ export class AnimalLayer {
     }
   }
 
+  /**
+   * Living animals of the LOCAL player's contract with their current (interpolated) world position —
+   * the targets of the HUD compass. Dying animals (already faded) are left out.
+   */
+  contractTargets(): { id: string; name: string; x: number; y: number }[] {
+    const me = this.localUserId();
+    if (!me) return [];
+    const out: { id: string; name: string; x: number; y: number }[] = [];
+    for (const entry of this.entries.values()) {
+      if (entry.dying || entry.view.dead || entry.view.contractOwner !== me) continue;
+      out.push({ id: entry.view.id, name: entry.view.name, x: entry.container.x, y: entry.container.y });
+    }
+    return out;
+  }
+
   private refresh(entry: Entry): void {
     const { view, sprite, playbackState } = entry;
     entry.label.setText(view.name).setColor(view.contractOwner && view.contractOwner === this.localUserId() ? '#facc15' : '#ffffff');

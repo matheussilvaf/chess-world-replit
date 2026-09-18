@@ -14,10 +14,13 @@ import {
   type HuntingManifestVariant,
 } from '../../shared/hunting/HuntingShapes';
 import {
-  effectiveRunStride,
+  DEFAULT_RUN_FPS,
+  RUN_MAX_FPS,
+  RUN_MIN_FPS,
+  effectiveRunFps,
   runDistanceBetween,
-  runFps,
   runSlotForDistance,
+  runStrideFor,
 } from '../../shared/hunting/HuntingMotion';
 import { INTERPOLATION_DELAY_MS } from '../../game/network/interpolation';
 
@@ -42,13 +45,13 @@ export function HuntingBenchPage() {
   const [variantId, setVariantId] = useState('');
   const [image, setImage] = useState<HTMLImageElement | null>(null);
   const [speed, setSpeed] = useState(120);
-  const [stride, setStride] = useState(40);
+  const [fps, setFps] = useState(DEFAULT_RUN_FPS);
   const [runDistance, setRunDistance] = useState(140);
   const [legacy, setLegacy] = useState(false);
   const [resetKey, setResetKey] = useState(0);
   const [readout, setReadout] = useState<Readout>({ anim: 'run', frame: 0, instant: 0, average: 0 });
-  const controlsRef = useRef({ speed, stride, runDistance, legacy });
-  controlsRef.current = { speed, stride, runDistance, legacy };
+  const controlsRef = useRef({ speed, fps, runDistance, legacy });
+  controlsRef.current = { speed, fps, runDistance, legacy };
 
   useEffect(() => {
     huntingApi.manifest().then((result) => {
@@ -89,7 +92,7 @@ export function HuntingBenchPage() {
     let lastFilm = 0;
     let latest = { anim: server.anim, dir: server.dir, frame: 0, x: server.x, y: server.y };
     const playback = new AnimalPlayback(INTERPOLATION_DELAY_MS);
-    playback.push(server.anim, server.dir, effectiveRunStride(controlsRef.current.stride, controlsRef.current.speed), lastServer);
+    playback.push(server.anim, server.dir, runStrideFor(controlsRef.current.speed, controlsRef.current.fps), lastServer);
 
     const serverTimer = window.setInterval(() => {
       const now = performance.now();
@@ -99,7 +102,7 @@ export function HuntingBenchPage() {
       const dy = server.targetY - server.y;
       const distance = Math.hypot(dx, dy);
       const config = controlsRef.current;
-      const eff = effectiveRunStride(config.stride, config.speed);
+      const eff = runStrideFor(config.speed, config.fps);
       let step = 0;
       if (distance < 4) {
         server.anim = 'idle';
@@ -210,7 +213,7 @@ export function HuntingBenchPage() {
     };
   }, [image, resetKey, variant]);
 
-  const effectiveStride = effectiveRunStride(stride, speed);
+  const effectiveStride = runStrideFor(speed, fps);
   return (
     <main className="min-h-screen bg-slate-950 px-5 py-6 text-slate-100">
       <div className="mx-auto max-w-6xl space-y-4">
@@ -228,8 +231,8 @@ export function HuntingBenchPage() {
           <label className="text-xs text-slate-400">Velocidade (px/s)
             <input className="mt-1 w-full rounded border border-slate-600 bg-slate-800 p-2 text-white" type="number" min="1" value={speed} onChange={numberValue(setSpeed)} />
           </label>
-          <label className="text-xs text-slate-400">Passada (px)
-            <input className="mt-1 w-full rounded border border-slate-600 bg-slate-800 p-2 text-white" type="number" min="1" value={stride} onChange={numberValue(setStride)} />
+          <label className="text-xs text-slate-400">Ritmo da corrida (fps)
+            <input className="mt-1 w-full rounded border border-slate-600 bg-slate-800 p-2 text-white" type="number" min={RUN_MIN_FPS} max={RUN_MAX_FPS} value={fps} onChange={numberValue(setFps)} />
           </label>
           <label className="text-xs text-slate-400">Corre a partir de (px)
             <input className="mt-1 w-full rounded border border-slate-600 bg-slate-800 p-2 text-white" type="number" min="0" value={runDistance} onChange={numberValue(setRunDistance)} />
@@ -238,7 +241,7 @@ export function HuntingBenchPage() {
             <label className="flex items-center gap-2 text-xs text-slate-300"><input type="checkbox" checked={legacy} onChange={(e) => setLegacy(e.target.checked)} /> movimento antigo (constante)</label>
             <button className="rounded bg-cyan-700 px-3 py-2 text-sm font-semibold hover:bg-cyan-600" onClick={() => setResetKey((key) => key + 1)}>Reiniciar</button>
           </div>
-          <p className="text-xs text-slate-400 md:col-span-6">Passada efetiva: <b className="text-white">{effectiveStride.toFixed(1)} px</b> · ciclo: <b className="text-white">{runFps(effectiveStride, speed).toFixed(1)} fps</b></p>
+          <p className="text-xs text-slate-400 md:col-span-6">Salto: <b className="text-white">{effectiveStride.toFixed(1)} px</b> a cada 2 quadros · animação a <b className="text-white">{effectiveRunFps(fps).toFixed(0)} fps</b> (caminhada: {ANIMAL_ANIMATION_FPS.walk} fps) · quadros 0 e 2 = no ar (rápido), 1 = agachado (lento)</p>
         </section>
         {error && <p className="rounded border border-red-800 bg-red-950 p-3 text-sm text-red-200">{error}</p>}
         <div className="overflow-hidden rounded-xl border border-slate-700 bg-slate-900">
@@ -249,7 +252,7 @@ export function HuntingBenchPage() {
           <p><span className="text-slate-500">Quadro</span><br /><b>{readout.frame}</b></p>
           <p><span className="text-slate-500">Velocidade instantânea</span><br /><b>{readout.instant.toFixed(1)} px/s</b></p>
           <p><span className="text-slate-500">Média (1 s)</span><br /><b>{readout.average.toFixed(1)} px/s</b></p>
-          <p><span className="text-slate-500">FPS da corrida</span><br /><b>{runFps(effectiveStride, speed).toFixed(1)}</b></p>
+          <p><span className="text-slate-500">FPS da corrida</span><br /><b>{effectiveRunFps(fps).toFixed(0)}</b></p>
         </section>
       </div>
     </main>
