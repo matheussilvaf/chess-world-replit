@@ -125,13 +125,14 @@ export function HuntingBenchPage() {
         server.anim = nextAnim;
         const baseSpeed = nextAnim === 'run' ? config.speed : config.speed * ANIMAL_APPROACH_SPEED_FACTOR;
         if (nextAnim === 'run') {
-          // the server picks the frame from the leap clock BEFORE advancing it, then moves by the phase distance
+          // like the real server: move by the phase distance, then publish the phase of the NEXT interval — the
+          // client shows a snapshot's pose while interpolating from that snapshot towards the following one
           phase = runPhaseAt(server.runElapsed, config.fps, leap);
+          step = config.legacy ? baseSpeed * dtMs / 1000 : runDistanceBetween(server.runElapsed, server.runElapsed + dtMs, config.speed, config.fps, leap);
+          server.runElapsed += dtMs;
           server.frame = config.legacy
             ? Math.floor(server.runElapsed / (1000 / effectiveRunFps(config.fps))) % 3
             : runFrameAt(server.runElapsed, config.fps, leap);
-          step = config.legacy ? baseSpeed * dtMs / 1000 : runDistanceBetween(server.runElapsed, server.runElapsed + dtMs, config.speed, config.fps, leap);
-          server.runElapsed += dtMs;
         } else {
           step = baseSpeed * dtMs / 1000;
         }

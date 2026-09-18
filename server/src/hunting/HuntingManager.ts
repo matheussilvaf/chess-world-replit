@@ -97,6 +97,7 @@ const TARGET_MOVING_SPEED = 25;
 /** Live animal projectile — a straight ground-level line, simulated per tick until it hits a player or runs out of range. */
 interface Shot {
   id: string;
+  animalId: string;
   animalName: string;
   damage: number;
   x: number;
@@ -199,6 +200,7 @@ export class HuntingManager {
     this.config = config;
     if (!config.general.enabled) {
       for (const id of [...this.runtime.keys()]) this.removeAnimal(id);
+      this.shots.clear(); // ticks stop while disabled — a frozen shot must not land when hunting is re-enabled
       this.host.state.npcs.delete(NPC_BARBARIAN_ID);
       return;
     }
@@ -296,6 +298,7 @@ export class HuntingManager {
   private removeAnimal(id: string): void {
     this.cancelTimers(`animal:${id}`);
     this.cancelTimers(`fade:${id}`);
+    for (const shot of this.shots.values()) if (shot.animalId === id) this.shots.delete(shot.id);
     this.runtime.delete(id);
     this.host.state.animals.delete(id);
   }
@@ -578,9 +581,11 @@ export class HuntingManager {
       // leap: (almost) still while gathered, the whole stride while airborne — average speed stays runSpeed;
       // the frame shown by the client is the phase of this same clock (HuntingMotion)
       if (animal.runElapsedMs < 0) animal.runElapsedMs = 0;
-      animal.state.frame = runFrameAt(animal.runElapsedMs, animal.variant.runFps);
       step = runDistanceBetween(animal.runElapsedMs, animal.runElapsedMs + dtMs, runSpeed, animal.variant.runFps);
       animal.runElapsedMs += dtMs;
+      // the snapshot carries the phase of the NEXT interval: the client shows a snapshot's pose while it
+      // interpolates from that snapshot's position towards the following one
+      animal.state.frame = runFrameAt(animal.runElapsedMs, animal.variant.runFps);
     } else {
       animal.runElapsedMs = -1;
       const factor = animal.mode === 'wander' || animal.mode === 'return' ? ANIMAL_WANDER_SPEED_FACTOR : ANIMAL_APPROACH_SPEED_FACTOR;
@@ -634,6 +639,7 @@ export class HuntingManager {
     if (animal.state.dead) return;
     const player = this.host.state.players.get(animal.targetSessionId);
     if (!player || player.currentBoardId || this.host.isDead(animal.targetSessionId)) return;
+    if (this.geometry.inSafeZone(player.x, player.y)) return;
     const aimX = player.x - animal.state.x, aimY = player.y - animal.state.y;
     const length = Math.hypot(aimX, aimY);
     if (length < 1) return;
@@ -648,7 +654,7 @@ export class HuntingManager {
     }
     if (range <= 0) return;
     const shot: Shot = {
-      id: `shot-${Date.now().toString(36)}-${++this.idCounter}`, animalName: animal.variant.name, damage: animal.variant.damage,
+      id: `shot-${Date.now().toString(36)}-${++this.idCounter}`, animalId: animal.state.id, animalName: animal.variant.name, damage: animal.variant.damage,
       x, y, dx, dy, speed: profile.shootSpeed, remaining: range,
     };
     this.shots.set(shot.id, shot);
@@ -684,7 +690,9 @@ export class HuntingManager {
       let found = null as { sessionId: string; x: number; y: number } | null;
       this.host.state.players.forEach((player, sessionId) => {
         if (found || player.currentBoardId || player.hp <= 0 || this.host.isDead(sessionId)) return;
-        // ground-level point against the player's standing hurtbox (feet at y, body above), grown by the shot radius
+        if (this.geometry.inSafeZone(player.x, player.y)) return; // the shot stops at the border; a body leaning over it is still safe
+        // ground-level point against the player's standing hurtbox (feet at y, body above), grown by the shot radius —
+        // the same fallback rectangle the bite uses (composed characters carry no per-character hurtbox config)
         const inX = Math.abs(px - player.x) <= 18 + ANIMAL_SHOT_RADIUS;
         const inY = py >= player.y - 48 - ANIMAL_SHOT_RADIUS && py <= player.y + ANIMAL_SHOT_RADIUS;
         if (inX && inY) found = { sessionId, x: px, y: py };
@@ -1108,6 +1116,7 @@ export class HuntingManager {
     this.timers.clear();
     this.pendingAmbient.clear();
     this.consumedShots.clear();
+    this.shots.clear();
     this.runtime.clear();
     this.host.state.animals.clear();
     this.host.state.npcs.clear();

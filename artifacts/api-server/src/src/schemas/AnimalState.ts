@@ -13,7 +13,7 @@ export class AnimalState extends Schema {
   level = 'easy';
   dead = false;
   contractOwner = '';
-  /** Local run frame (0..2) chosen by the server every tick while running — see shared/hunting/HuntingMotion. */
+  /** Local run frame (0..2) for the interval AFTER this snapshot (the client shows it while interpolating to the next one) — see shared/hunting/HuntingMotion. */
   frame = 0;
 }
 
