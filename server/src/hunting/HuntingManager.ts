@@ -40,7 +40,7 @@ import {
   type HuntShotPayload,
   type PlayerHuntingRecord,
 } from '../shared/hunting/HuntingShapes.js';
-import { runDistanceBetween, runFrameAt } from '../shared/hunting/HuntingMotion.js';
+import { runDistanceBetween, runFrameAt, runLeapFor } from '../shared/hunting/HuntingMotion.js';
 import { CRAFTING_WORLD_MAP, type MapAnchor } from '../shared/hunting/craftingWorldMapData.js';
 import { getCraftingWorldGeometry } from '../shared/hunting/HuntingMapGeometry.js';
 import { rectanglesIntersect, type LocalRectangle } from '../shared/combat/CharacterCombatShapes.js';
@@ -578,14 +578,15 @@ export class HuntingManager {
     const runSpeed = runSpeedFor(animal.variant);
     let step: number;
     if (gait === 'run') {
-      // leap: (almost) still while gathered, the whole stride while airborne — average speed stays runSpeed;
-      // the frame shown by the client is the phase of this same clock (HuntingMotion)
+      // leap: (almost) still while gathered, the configured leap (config.motion, set in /dev/caca) while
+      // airborne — average speed stays runSpeed; the frame shown by the client is the phase of this same clock
       if (animal.runElapsedMs < 0) animal.runElapsedMs = 0;
-      step = runDistanceBetween(animal.runElapsedMs, animal.runElapsedMs + dtMs, runSpeed, animal.variant.runFps);
+      const leap = runLeapFor(runSpeed, this.config.motion);
+      step = runDistanceBetween(animal.runElapsedMs, animal.runElapsedMs + dtMs, runSpeed, leap);
       animal.runElapsedMs += dtMs;
       // the snapshot carries the phase of the NEXT interval: the client shows a snapshot's pose while it
       // interpolates from that snapshot's position towards the following one
-      animal.state.frame = runFrameAt(animal.runElapsedMs, animal.variant.runFps);
+      animal.state.frame = runFrameAt(animal.runElapsedMs, leap);
     } else {
       animal.runElapsedMs = -1;
       const factor = animal.mode === 'wander' || animal.mode === 'return' ? ANIMAL_WANDER_SPEED_FACTOR : ANIMAL_APPROACH_SPEED_FACTOR;

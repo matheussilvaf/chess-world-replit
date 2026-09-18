@@ -84,13 +84,13 @@ const ControlsBenchPage = import.meta.env.DEV
       })),
     )
   : null;
-const HuntingBenchPage = import.meta.env.DEV
-  ? lazy(() =>
-      import('./components/dev/HuntingBenchPage.tsx').then((m) => ({
-        default: m.HuntingBenchPage,
-      })),
-    )
-  : null;
+// A bancada do salto (/dev/caca) existe também em produção: é onde o admin
+// define o salto da corrida dos animais (padrão do jogo); salvar exige admin.
+const HuntingBenchPage = lazy(() =>
+  import('./components/dev/HuntingBenchPage.tsx').then((m) => ({
+    default: m.HuntingBenchPage,
+  })),
+);
 
 function RouteFallback() {
   return (
@@ -121,7 +121,7 @@ createRoot(document.getElementById('root')!).render(
         <Route path="/swiss-test" element={<SwissTestPage />} />
         {InventoryBenchPage && <Route path="/dev/inventario" element={<InventoryBenchPage />} />}
         {ControlsBenchPage && <Route path="/dev/controles" element={<ControlsBenchPage />} />}
-        {HuntingBenchPage && <Route path="/dev/caca" element={<HuntingBenchPage />} />}
+        <Route path="/dev/caca" element={<HuntingBenchPage />} />
         <Route path="*" element={<App />} />
       </Routes>
     </Suspense>

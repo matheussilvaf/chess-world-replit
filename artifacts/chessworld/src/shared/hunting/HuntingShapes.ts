@@ -12,7 +12,7 @@
  *   (S, W, E, N). Columns: idle 0-2, walk 3-5, run 6-8, attack 9-11; every animation loops 1-2-3-2.
  */
 
-import { DEFAULT_RUN_FPS, RUN_MAX_FPS, RUN_MIN_FPS } from './HuntingMotion.js';
+import { DEFAULT_MOTION, parseMotionConfig, type HuntingMotionConfig } from './HuntingMotion.js';
 
 export const HUNTING_CONFIG_SCHEMA_VERSION = 1 as const;
 
@@ -156,8 +156,6 @@ export interface AnimalVariantConfig {
   /** Random population range (spawnMode 'random'), rolled once per room. */
   spawnMin: number;
   spawnMax: number;
-  /** Frame-rate of the run animation (leaps per second × 2); the stride follows from the speed — see HuntingMotion. */
-  runFps: number;
   /** Distance (px) between animal and its target that ends the fight. */
   combatBreakDistance: number;
   hpRegenSeconds: HpRegenSeconds;
@@ -210,11 +208,13 @@ export interface HuntingConfig {
   contracts: HuntingContractConfig[];
   /** Behaviour (AI) tuning per difficulty level — defaults in HUNTING_LEVEL_PROFILES. */
   levelProfiles: HuntingLevelProfiles;
+  /** The run leap (distance, duration, pause) shared by every animal — configured in /dev/caca, see HuntingMotion. */
+  motion: HuntingMotionConfig;
 }
 
 export const HUNTING_LIMITS = {
   hp: { min: 1, max: 100000 }, damage: { min: 0, max: 10000 }, xp: { min: 0, max: 1000000 },
-  speed: { min: 10, max: 600 }, spawnCount: { min: 0, max: 200 }, runFps: { min: RUN_MIN_FPS, max: RUN_MAX_FPS }, combatBreak: { min: 50, max: 4000 },
+  speed: { min: 10, max: 600 }, spawnCount: { min: 0, max: 200 }, combatBreak: { min: 50, max: 4000 },
   radius: { min: 16, max: 2000 }, respawn: { min: 0, max: 86400 }, quantity: { min: 1, max: 200 },
   timeLimit: { min: 1, max: 1440 }, crowns: { min: 0, max: 1000000 }, cooldownHours: { min: 0, max: 720 },
   initialPercent: { min: 1, max: 100 }, refillBatch: { min: 1, max: 200 },
@@ -225,7 +225,7 @@ export function defaultVariantConfig(name = 'Animal'): AnimalVariantConfig {
   return {
     name, hp: 60, damage: 8, xpEnabled: true, xp: 15, level: 'medium',
     speedByLevel: { ...DEFAULT_SPEED_BY_LEVEL }, spawnMode: 'fixed', spawnCount: 0, spawnMin: 1, spawnMax: 4,
-    runFps: DEFAULT_RUN_FPS, combatBreakDistance: 420, hpRegenSeconds: 10, canShoot: false,
+    combatBreakDistance: 420, hpRegenSeconds: 10, canShoot: false,
     reaction: 'attacked', radius: 160, respawnCooldownSeconds: 60,
   };
 }
@@ -236,6 +236,7 @@ export function defaultHuntingConfig(): HuntingConfig {
     variants: {},
     contracts: [],
     levelProfiles: defaultLevelProfiles(),
+    motion: { ...DEFAULT_MOTION },
   };
 }
 
@@ -393,7 +394,6 @@ export function parseVariantConfig(raw: unknown, fallbackName = 'Animal'): Anima
     speedByLevel,
     spawnMode: oneOf(raw.spawnMode, ['fixed', 'random'] as const, d.spawnMode),
     spawnCount, spawnMin, spawnMax,
-    runFps: num(raw.runFps, d.runFps, HUNTING_LIMITS.runFps.min, HUNTING_LIMITS.runFps.max),
     combatBreakDistance: num(raw.combatBreakDistance, d.combatBreakDistance, HUNTING_LIMITS.combatBreak.min, HUNTING_LIMITS.combatBreak.max),
     hpRegenSeconds: (HP_REGEN_OPTIONS as readonly number[]).includes(regenRaw) ? (regenRaw as HpRegenSeconds) : d.hpRegenSeconds,
     canShoot: bool(raw.canShoot, d.canShoot),
@@ -480,7 +480,7 @@ export function parseHuntingConfig(raw: unknown): HuntingConfig {
       contracts.push(parsed);
     }
   }
-  return { schemaVersion: HUNTING_CONFIG_SCHEMA_VERSION, general, variants, contracts, levelProfiles: parseLevelProfiles(raw.levelProfiles) };
+  return { schemaVersion: HUNTING_CONFIG_SCHEMA_VERSION, general, variants, contracts, levelProfiles: parseLevelProfiles(raw.levelProfiles), motion: parseMotionConfig(raw.motion) };
 }
 
 /** Effective ambient population of a variant: exact for 'fixed'; 'random' rolls spawnMin..spawnMax (inclusive). Roll ONCE per room. */

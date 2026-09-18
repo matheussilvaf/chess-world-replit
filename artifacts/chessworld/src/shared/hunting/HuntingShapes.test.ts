@@ -14,7 +14,7 @@ import {
   rigIdForAnimal,
   rollSpawnCount,
 } from './HuntingShapes.js';
-import { DEFAULT_RUN_FPS } from './HuntingMotion.js';
+import { DEFAULT_MOTION } from './HuntingMotion.js';
 import { HuntingMapGeometry } from './HuntingMapGeometry.js';
 import { CRAFTING_WORLD_MAP } from './craftingWorldMapData.js';
 
@@ -79,14 +79,14 @@ describe('HuntingShapes', () => {
     expect(rollSpawnCount(v['hunts/bear/a'], () => 0.999)).toBe(3);
   });
 
-  it('normalizes random spawn bounds and the run frame-rate (legacy stride configs fall back to the default fps)', () => {
-    const variant = parseVariantConfig({ spawnMin: 12, spawnMax: 3, runStridePx: 40 });
+  it('normalizes random spawn bounds; legacy per-variant run knobs (stride, fps) are dropped — the leap is global (motion)', () => {
+    const variant = parseVariantConfig({ spawnMin: 12, spawnMax: 3, runStridePx: 40, runFps: 12 });
     expect(variant.spawnMin).toBe(3);
     expect(variant.spawnMax).toBe(12);
-    expect(variant.runFps).toBe(DEFAULT_RUN_FPS);
-    expect(parseVariantConfig({ runFps: 12 }).runFps).toBe(12);
-    expect(parseVariantConfig({ runFps: 99 }).runFps).toBe(HUNTING_LIMITS.runFps.max);
-    expect(parseVariantConfig({ runFps: 1 }).runFps).toBe(HUNTING_LIMITS.runFps.min);
+    expect(variant).not.toHaveProperty('runFps');
+    expect(variant).not.toHaveProperty('runStridePx');
+    expect(parseHuntingConfig({}).motion).toEqual(DEFAULT_MOTION);
+    expect(parseHuntingConfig({ motion: { leapPx: 130, leapMs: 160 } }).motion).toMatchObject({ ...DEFAULT_MOTION, leapPx: 130, leapMs: 160 });
     // shooters are opt-in per variant; legacy configs (no flag) never shoot
     expect(parseVariantConfig({}).canShoot).toBe(false);
     expect(parseVariantConfig({ canShoot: true }).canShoot).toBe(true);

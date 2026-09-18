@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { ArrowLeft, Loader2, Plus, Save, Target, Trash2 } from 'lucide-react';
+import { ArrowLeft, Loader2, Move, Plus, Save, Target, Trash2 } from 'lucide-react';
 import {
   DEFAULT_CONTRACT_INITIAL_PERCENT,
   DEFAULT_CONTRACT_REFILL_BATCH,
@@ -114,12 +114,8 @@ function VariantEditor({ variantId, variant, manifest, category, update }: {
         <span className="mr-1 text-[10px] text-slate-400">{HUNTING_LEVEL_LABELS[level]}</span>
         <NumberField value={variant.speedByLevel[level] ?? DEFAULT_SPEED_BY_LEVEL[level]} range={HUNTING_LIMITS.speed} className="w-16" onChange={(value) => update((next) => { next.speedByLevel[level] = value; })} />
       </label>)}
-        <label className="rounded border border-slate-800 p-1.5">
-          <span className="mr-1 text-[10px] text-slate-400">Ritmo da corrida</span>
-          <NumberField value={variant.runFps} range={HUNTING_LIMITS.runFps} className="w-16" suffix="fps" onChange={(value) => update((next) => { next.runFps = value; })} />
-        </label>
       </div>
-      <p className="mt-1 text-[10px] text-slate-500">ritmo da animação de corrida: cada salto dura 3,5 quadros (agachado, impulso, esticado) e o animal só se desloca nos quadros no ar — o comprimento do salto = velocidade × duração do salto (menos fps = saltos mais longos). A caminhada roda a 8 fps</p>
+      <p className="mt-1 text-[10px] text-slate-500">velocidade média da corrida (px/s) do nível marcado. A corrida é uma sequência de saltos (agachado → impulso → voo): o deslocamento e a duração de cada salto valem para todos os animais e são definidos na <Link to="/dev/caca" className="text-cyan-300 underline">bancada do salto</Link> — animais mais rápidos saltam com mais frequência, não mais longe. A caminhada roda a 8 fps</p>
     </div>
     {category === 'residents' && <div className="mt-3 grid gap-3 sm:grid-cols-3">
       <Field label="Tipo de reação"><div className="flex">{RESIDENT_REACTIONS.map((reaction) => <button type="button" key={reaction} onClick={() => update((next) => { next.reaction = reaction; })}
@@ -269,6 +265,7 @@ export default function HuntingControllerPage() {
   const save = async () => {
     setBusy(true); setError(null); setSuccess(null);
     try {
+      // the leap (motion) is edited only in /dev/caca; the server keeps the stored one on a full save
       const response = await huntingApi.save(config);
       const next = parseHuntingConfig(response.config);
       setConfig(clone(next)); setSnapshot(JSON.stringify(next)); setPersisted(true); setTableMissing(false); setSuccess('Configuração salva.');
@@ -294,7 +291,10 @@ export default function HuntingControllerPage() {
         <div className="flex items-center gap-3"><Link to="/admin" className={button}><ArrowLeft className="h-4 w-4" /></Link><div>
           <h1 className="text-2xl font-bold text-white">Hunting Controller</h1><p className="text-xs text-slate-500">Animais, contratos e rigs do mundo de caça</p>
         </div></div>
-        <button type="button" disabled={busy || !dirty} onClick={() => void save()} className={`${button} border-emerald-700 bg-emerald-950 text-emerald-200`}><Save className="h-4 w-4" /> Salvar configuração</button>
+        <div className="flex flex-wrap items-center gap-2">
+          <Link to="/dev/caca" className={`${button} border-cyan-800 bg-cyan-950/60 text-cyan-200`} title="Configura o deslocamento e a duração do salto da corrida (padrão do jogo)"><Move className="h-4 w-4" /> Bancada do salto</Link>
+          <button type="button" disabled={busy || !dirty} onClick={() => void save()} className={`${button} border-emerald-700 bg-emerald-950 text-emerald-200`}><Save className="h-4 w-4" /> Salvar configuração</button>
+        </div>
       </header>
       <div className="mb-5 grid gap-2 md:grid-cols-3">{budgets.map((budget) => <div key={budget.text} className={`rounded-lg border p-3 text-xs ${budget.negative ? 'border-rose-600 bg-rose-950/40 text-rose-300' : 'border-slate-800 bg-slate-900 text-slate-300'}`}>{budget.text}{budget.detail && <p className="mt-1 text-slate-400">{budget.detail}</p>}</div>)}</div>
       {tableMissing && <div className="mb-4 rounded-lg border border-amber-500/40 bg-amber-500/10 p-3 text-xs text-amber-200"><p className="mb-2 font-semibold">Tabelas ausentes. Execute os SQLs no Supabase.</p>{tableSql && <SqlBox sql={tableSql} />}{playerTableSql && <SqlBox className="mt-2" sql={playerTableSql} />}</div>}
