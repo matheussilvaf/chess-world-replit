@@ -2,7 +2,6 @@ import { describe, expect, it } from 'vitest';
 import {
   DEFAULT_CONTRACT_INITIAL_PERCENT,
   DEFAULT_CONTRACT_REFILL_BATCH,
-  DEFAULT_RUN_STRIDE_PX,
   DEFAULT_SPEED_BY_LEVEL,
   HUNTING_LEVEL_PROFILES,
   HUNTING_LIMITS,
@@ -59,6 +58,11 @@ describe('HuntingShapes', () => {
 
     const clamped = parseHuntingConfig({ levelProfiles: { easy: { aggression: 5 } } });
     expect(clamped.levelProfiles.easy.aggression).toBe(1);
+    // shot tuning lives in the level profile: legacy profiles (saved before it existed) get the level defaults
+    const legacyProfile = parseHuntingConfig({ levelProfiles: { hard: { aggression: 0.7 } } });
+    expect(legacyProfile.levelProfiles.hard.shootRange).toBe(HUNTING_LEVEL_PROFILES.hard.shootRange);
+    expect(legacyProfile.levelProfiles.hard.shootRange).toBeGreaterThan(HUNTING_LEVEL_PROFILES.easy.shootRange);
+    expect(parseHuntingConfig({ levelProfiles: { easy: { shootRange: 5000 } } }).levelProfiles.easy.shootRange).toBe(1200);
   });
 
   it('configured population counts fixed totals and random maxima, and ignores the monster tree', () => {
@@ -83,7 +87,10 @@ describe('HuntingShapes', () => {
     expect(parseVariantConfig({ runFps: 12 }).runFps).toBe(12);
     expect(parseVariantConfig({ runFps: 99 }).runFps).toBe(HUNTING_LIMITS.runFps.max);
     expect(parseVariantConfig({ runFps: 1 }).runFps).toBe(HUNTING_LIMITS.runFps.min);
-    expect(DEFAULT_RUN_STRIDE_PX).toBeCloseTo(24, 9);
+    // shooters are opt-in per variant; legacy configs (no flag) never shoot
+    expect(parseVariantConfig({}).canShoot).toBe(false);
+    expect(parseVariantConfig({ canShoot: true }).canShoot).toBe(true);
+    expect(parseVariantConfig({ canShoot: 'yes' }).canShoot).toBe(false);
     // saved before the range existed: 'random' meant 0..spawnCount — keep the maximum, never a 0..0 range
     const legacy = parseVariantConfig({ spawnMode: 'random', spawnCount: 7 });
     expect([legacy.spawnMin, legacy.spawnMax]).toEqual([1, 7]);

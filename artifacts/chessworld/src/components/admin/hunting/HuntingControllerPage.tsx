@@ -103,6 +103,10 @@ function VariantEditor({ variantId, variant, manifest, category, update }: {
       <Field label="Regeneração de HP"><select className={`${inputClass} w-full`} value={variant.hpRegenSeconds} onChange={(event) => update((next) => { next.hpRegenSeconds = Number(event.target.value) as HpRegenSeconds; })}>
         {HP_REGEN_OPTIONS.map((seconds) => <option key={seconds} value={seconds}>{HP_REGEN_LABELS[seconds]}</option>)}
       </select></Field>
+      <Field label="Ataque à distância">
+        <Toggle checked={variant.canShoot} label="também atira" onChange={(value) => update((next) => { next.canShoot = value; })} />
+        <p className="mt-1 text-[10px] text-slate-500">mantém a mordida (hitbox) e, quando o alvo está fora do alcance dela, dispara um projétil com o mesmo dano; alcance, velocidade e cadência vêm do nível (aba Comportamento)</p>
+      </Field>
     </div>
     <div className="mt-3">
       <p className="mb-1 text-[10px] uppercase tracking-wide text-slate-500">Velocidade por nível</p>
@@ -115,7 +119,7 @@ function VariantEditor({ variantId, variant, manifest, category, update }: {
           <NumberField value={variant.runFps} range={HUNTING_LIMITS.runFps} className="w-16" suffix="fps" onChange={(value) => update((next) => { next.runFps = value; })} />
         </label>
       </div>
-      <p className="mt-1 text-[10px] text-slate-500">quadros por segundo da animação de corrida (2 quadros por salto); a distância de cada salto vem da velocidade — a caminhada roda a 8 fps</p>
+      <p className="mt-1 text-[10px] text-slate-500">ritmo da animação de corrida: cada salto dura 3,5 quadros (agachado, impulso, esticado) e o animal só se desloca nos quadros no ar — o comprimento do salto = velocidade × duração do salto (menos fps = saltos mais longos). A caminhada roda a 8 fps</p>
     </div>
     {category === 'residents' && <div className="mt-3 grid gap-3 sm:grid-cols-3">
       <Field label="Tipo de reação"><div className="flex">{RESIDENT_REACTIONS.map((reaction) => <button type="button" key={reaction} onClick={() => update((next) => { next.reaction = reaction; })}
@@ -164,7 +168,7 @@ function Contracts({ config, manifest, update }: { config: HuntingConfig; manife
         <Field label="Tempo limite"><NumberField value={contract.timeLimitMinutes} range={HUNTING_LIMITS.timeLimit} suffix="min" onChange={(value) => edit(index, (next) => { next.timeLimitMinutes = value; })} /></Field>
         <Field label="XP (skill Caça)"><NumberField value={contract.xpReward} range={HUNTING_LIMITS.xp} onChange={(value) => edit(index, (next) => { next.xpReward = value; })} /></Field>
         <Field label="Crowns"><NumberField value={contract.crownsReward} range={HUNTING_LIMITS.crowns} onChange={(value) => edit(index, (next) => { next.crownsReward = value; })} /></Field>
-        <Field label="Disponível novamente após"><NumberField value={contract.cooldownHours} range={HUNTING_LIMITS.cooldownHours} step={0.5} suffix="horas" onChange={(value) => edit(index, (next) => { next.cooldownHours = value; })} /></Field>
+        <Field label="Reabre após concluir"><NumberField value={contract.cooldownHours} range={HUNTING_LIMITS.cooldownHours} step={0.5} suffix="horas" onChange={(value) => edit(index, (next) => { next.cooldownHours = value; })} /><p className="mt-1 text-[10px] text-slate-500">conta a partir do resgate da recompensa; falhar (prazo, abandono ou morte) não bloqueia — o jogador aceita de novo</p></Field>
         <Field label="Nascem ao aceitar"><NumberField value={contract.initialPercent} range={HUNTING_LIMITS.initialPercent} suffix="%" onChange={(value) => edit(index, (next) => { next.initialPercent = value; })} /></Field>
         <Field label="Reposição (de N em N)"><NumberField value={contract.refillBatch} range={HUNTING_LIMITS.refillBatch} onChange={(value) => edit(index, (next) => { next.refillBatch = value; })} /></Field>
         <Field label="Visibilidade"><Toggle checked={contract.enabled} label="Aparece no jogo" onChange={(value) => edit(index, (next) => { next.enabled = value; })} /></Field>

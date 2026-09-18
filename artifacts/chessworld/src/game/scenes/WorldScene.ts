@@ -75,6 +75,8 @@ import {
 } from '../../shared/craft/PlaceableStations';
 import type { PlacedStationView } from '../../stores/placedStationsStore';
 import { AnimalLayer, type AnimalView } from '../hunting/AnimalLayer';
+import { AnimalShots } from '../hunting/AnimalShots';
+import type { HuntShotHitPayload, HuntShotPayload } from '../../shared/hunting/HuntingShapes';
 import { huntCompassBus } from '../hunting/huntCompassBus';
 import { computeCompassArrows, type CompassTarget } from '../hunting/huntCompassMath';
 import { NpcLayer, type NpcView } from '../hunting/NpcLayer';
@@ -238,6 +240,8 @@ export class WorldScene extends Phaser.Scene {
   /** Peças do Big Chess Board (desenho + acerto local); criado em create(). */
   private bigChessLayer: BigChessPieceLayer | null = null;
   private animalLayer: AnimalLayer | null = null;
+  /** Projéteis dos animais que atiram (replay da linha enviada pelo servidor). */
+  private animalShots: AnimalShots | null = null;
   private npcLayer: NpcLayer | null = null;
   /** Clique numa peça do tabuleiro (abre o card). */
   public onBigChessPieceClick: ((square: string) => void) | null = null;
@@ -633,6 +637,7 @@ export class WorldScene extends Phaser.Scene {
       () => this.localPlayerId || null,
       (animalId) => this.onHuntingArrowHit?.(animalId),
     );
+    this.animalShots = new AnimalShots(this, (y) => (this.craftingRuntime.active ? this.craftingRuntime.depthForY(y) : 80));
     this.npcLayer = new NpcLayer(
       this,
       (y) => (this.craftingRuntime.active ? this.craftingRuntime.depthForY(y) : 80),
@@ -651,6 +656,8 @@ export class WorldScene extends Phaser.Scene {
       this.bigChessLayer = null;
       this.animalLayer?.destroy();
       this.animalLayer = null;
+      this.animalShots?.destroy();
+      this.animalShots = null;
       this.npcLayer?.destroy();
       this.npcLayer = null;
     });
@@ -1631,6 +1638,7 @@ export class WorldScene extends Phaser.Scene {
         remote.container.setDepth(this.craftingRuntime.depthForY(remote.container.y));
       });
       this.animalLayer?.tick(delta);
+      this.animalShots?.tick();
       this.npcLayer?.tick(delta);
       this.emitHuntCompass();
     } else if (this.lastCompassCount !== 0) {
@@ -4770,6 +4778,14 @@ export class WorldScene extends Phaser.Scene {
 
   public flashAnimalHit(animalId: string, damage: number) {
     this.animalLayer?.flashHit(animalId, damage);
+  }
+
+  public spawnAnimalShot(payload: HuntShotPayload) {
+    this.animalShots?.spawn(payload);
+  }
+
+  public hitAnimalShot(payload: HuntShotHitPayload) {
+    this.animalShots?.hit(payload);
   }
 
   /** Fantasma do posicionamento de peça (null = remove). */

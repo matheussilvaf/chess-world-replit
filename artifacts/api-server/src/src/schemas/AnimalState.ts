@@ -13,12 +13,12 @@ export class AnimalState extends Schema {
   level = 'easy';
   dead = false;
   contractOwner = '';
-  /** Effective run stride (px per leap) — the client drives the run frames by distance travelled. */
-  stride = 40;
+  /** Local run frame (0..2) chosen by the server every tick while running — see shared/hunting/HuntingMotion. */
+  frame = 0;
 }
 
 defineTypes(AnimalState, {
   id: 'string', variantId: 'string', name: 'string', x: 'number', y: 'number',
   dir: 'number', anim: 'string', hp: 'number', maxHp: 'number',
-  level: 'string', dead: 'boolean', contractOwner: 'string', stride: 'number',
+  level: 'string', dead: 'boolean', contractOwner: 'string', frame: 'uint8',
 });

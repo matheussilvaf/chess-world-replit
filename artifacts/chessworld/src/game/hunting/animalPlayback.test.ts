@@ -4,51 +4,49 @@ import { AnimalPlayback } from './animalPlayback';
 describe('AnimalPlayback', () => {
   it('aplica pose somente depois do atraso', () => {
     const playback = new AnimalPlayback(120);
-    playback.push('attack', 2, 40, 1000);
-    expect(playback.update(1119, 0, 0)).toMatchObject({ anim: 'idle', dir: 0, changed: false });
-    expect(playback.update(1120, 0, 0)).toMatchObject({ anim: 'attack', dir: 2, changed: true });
+    playback.push('attack', 2, 0, 1000);
+    expect(playback.update(1119)).toMatchObject({ anim: 'idle', dir: 0, changed: false });
+    expect(playback.update(1120)).toMatchObject({ anim: 'attack', dir: 2, changed: true });
   });
 
-  // stride 40 → ciclo de 80 px: no ar (quadro 0) 0-32, agachado (1) 32-40, no ar (2) 40-72, agachado (1) 72-80
-  it('escolhe quadros 0, 1, 2, 1 pela distância', () => {
-    const playback = new AnimalPlayback(0);
-    playback.push('run', 0, 40, 0);
-    expect(playback.update(0, 0, 0).frame).toBe(0);
-    expect(playback.update(1, 20, 0).frame).toBe(0);
-    expect(playback.update(2, 35, 0).frame).toBe(1);
-    expect(playback.update(3, 50, 0).frame).toBe(2);
-    expect(playback.update(4, 75, 0).frame).toBe(1);
-    expect(playback.update(5, 85, 0).frame).toBe(0);
+  it('mostra o quadro de corrida escolhido pelo servidor, com o mesmo atraso da posição', () => {
+    const playback = new AnimalPlayback(100);
+    playback.push('run', 0, 1, 0);
+    playback.push('run', 0, 2, 150);
+    playback.push('run', 0, 0, 250);
+    expect(playback.update(99).frame).toBeNull(); // still idle
+    expect(playback.update(100).frame).toBe(1);
+    expect(playback.update(249).frame).toBe(1);
+    expect(playback.update(250).frame).toBe(2);
+    expect(playback.update(350).frame).toBe(0);
   });
 
-  it('reinicia o acumulador ao voltar a correr', () => {
+  it('só troca de quadro muda a pose sem marcar changed (a animação em loop não reinicia)', () => {
     const playback = new AnimalPlayback(0);
-    playback.push('run', 0, 40, 0);
-    playback.update(0, 0, 0);
-    playback.update(1, 50, 0);
-    playback.push('walk', 0, 40, 2);
-    playback.update(2, 55, 0);
-    playback.push('run', 0, 40, 3);
-    expect(playback.update(3, 60, 0).frame).toBe(0);
+    playback.push('run', 3, 1, 0);
+    expect(playback.update(0)).toMatchObject({ anim: 'run', dir: 3, frame: 1, changed: true });
+    playback.push('run', 3, 2, 1);
+    expect(playback.update(1)).toMatchObject({ frame: 2, changed: false });
+    playback.push('run', 1, 2, 2);
+    expect(playback.update(2)).toMatchObject({ dir: 1, frame: 2, changed: true });
   });
 
-  it('reinicia o ciclo quando a passada muda', () => {
+  it('fora da corrida o quadro é nulo (idle/walk/attack rodam pelo relógio do cliente)', () => {
     const playback = new AnimalPlayback(0);
-    playback.push('run', 0, 40, 0);
-    playback.update(0, 0, 0);
-    expect(playback.update(1, 50, 0).frame).toBe(2);
-    // stride 20 → ciclo de 40 px: agachado entre 16 e 20
-    playback.push('run', 0, 20, 2);
-    expect(playback.update(2, 52, 0).frame).toBe(0);
-    expect(playback.update(3, 68, 0).frame).toBe(1);
+    playback.push('walk', 0, 2, 0);
+    expect(playback.update(0).frame).toBeNull();
+    playback.push('run', 0, 2, 1);
+    expect(playback.update(1).frame).toBe(2);
+    playback.push('idle', 0, 2, 2);
+    expect(playback.update(2).frame).toBeNull();
   });
 
-  it('ignora saltos de teleporte', () => {
-    const playback = new AnimalPlayback(0);
-    playback.push('run', 0, 40, 0);
-    playback.update(0, 0, 0);
-    playback.update(1, 5, 0);
-    expect(playback.update(2, 500, 0).frame).toBe(0);
-    expect(playback.update(3, 530, 0).frame).toBe(1);
+  it('descarta poses repetidas e pula direto para a mais recente já vencida', () => {
+    const playback = new AnimalPlayback(50);
+    playback.push('run', 0, 1, 0);
+    playback.push('run', 0, 1, 10);
+    playback.push('run', 0, 2, 20);
+    playback.push('run', 0, 0, 30);
+    expect(playback.update(80)).toMatchObject({ frame: 0, changed: true });
   });
 });

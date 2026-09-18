@@ -12,7 +12,7 @@
  *   (S, W, E, N). Columns: idle 0-2, walk 3-5, run 6-8, attack 9-11; every animation loops 1-2-3-2.
  */
 
-import { DEFAULT_RUN_FPS, RUN_MAX_FPS, RUN_MIN_FPS, runStrideFor } from './HuntingMotion.js';
+import { DEFAULT_RUN_FPS, RUN_MAX_FPS, RUN_MIN_FPS } from './HuntingMotion.js';
 
 export const HUNTING_CONFIG_SCHEMA_VERSION = 1 as const;
 
@@ -75,6 +75,14 @@ export interface HuntingLevelProfile {
   persistence: number;
   /** Farther than this (px) from a standing target the animal RUNS; closer it stalks (walks). It always runs after a moving target. */
   runDistance: number;
+  /** Shooters (`canShoot` variants): farthest distance (px) a shot travels — the AI only shoots targets inside it. */
+  shootRange: number;
+  /** Shooters: projectile speed (px/s). */
+  shootSpeed: number;
+  /** Shooters: minimum time between two shots (ms). */
+  shootCooldownMs: number;
+  /** Shooters: chance to shoot when the target is beyond bite range and inside shootRange (0..1 per decision, decisions every 100 ms). */
+  shootChance: number;
 }
 export const LEVEL_PROFILE_FIELDS: readonly { key: keyof HuntingLevelProfile; label: string; hint: string; min: number; max: number; step: number; unit?: string }[] = [
   { key: 'aggression', label: 'Agressividade', hint: 'Chance de morder quando está ao alcance (avaliada 10× por segundo)', min: 0, max: 1, step: 0.05 },
@@ -88,13 +96,17 @@ export const LEVEL_PROFILE_FIELDS: readonly { key: keyof HuntingLevelProfile; la
   { key: 'retreatHealPerSecond', label: 'Cura durante a fuga', hint: 'Fração do HP máximo recuperada por segundo enquanto foge', min: 0, max: 0.5, step: 0.01, unit: '/s' },
   { key: 'persistence', label: 'Persistência', hint: 'Multiplica a distância de combat break durante a perseguição', min: 0.5, max: 3, step: 0.1, unit: '×' },
   { key: 'runDistance', label: 'Corre a partir de', hint: 'Mais longe que isso de um alvo parado ele corre; mais perto, anda. Alvo em movimento: sempre corre', min: 0, max: 1000, step: 10, unit: 'px' },
+  { key: 'shootRange', label: 'Alcance do tiro', hint: 'Só para animais que atiram: distância máxima que o projétil percorre (a IA só atira em alvos dentro dela)', min: 60, max: 1200, step: 10, unit: 'px' },
+  { key: 'shootSpeed', label: 'Velocidade do tiro', hint: 'Velocidade do projétil', min: 60, max: 900, step: 10, unit: 'px/s' },
+  { key: 'shootCooldownMs', label: 'Intervalo entre tiros', hint: 'Tempo mínimo entre dois tiros', min: 300, max: 15000, step: 50, unit: 'ms' },
+  { key: 'shootChance', label: 'Chance de atirar', hint: 'Chance de atirar quando o alvo está fora do alcance da mordida e dentro do alcance do tiro (avaliada 10× por segundo)', min: 0, max: 1, step: 0.05 },
 ];
 /** Defaults of each level — the admin can override every value (`HuntingConfig.levelProfiles`). */
 export const HUNTING_LEVEL_PROFILES: Record<HuntingLevel, HuntingLevelProfile> = {
-  easy:     { aggression: 0.5,  reactionMs: 800, attackCooldownMs: 1800, dodgeChance: 0.0,  flankChance: 0.0,  retreatHpRatio: 0.15, reengageHpRatio: 0.5,  retreatMaxMs: 5000, retreatHealPerSecond: 0.02, persistence: 1.0, runDistance: 160 },
-  medium:   { aggression: 0.75, reactionMs: 500, attackCooldownMs: 1400, dodgeChance: 0.15, flankChance: 0.15, retreatHpRatio: 0.2,  reengageHpRatio: 0.45, retreatMaxMs: 4000, retreatHealPerSecond: 0.02, persistence: 1.0, runDistance: 140 },
-  moderate: { aggression: 0.9,  reactionMs: 300, attackCooldownMs: 1000, dodgeChance: 0.3,  flankChance: 0.3,  retreatHpRatio: 0.25, reengageHpRatio: 0.4,  retreatMaxMs: 3500, retreatHealPerSecond: 0.03, persistence: 1.2, runDistance: 120 },
-  hard:     { aggression: 1.0,  reactionMs: 120, attackCooldownMs: 750,  dodgeChance: 0.5,  flankChance: 0.45, retreatHpRatio: 0.3,  reengageHpRatio: 0.4,  retreatMaxMs: 3000, retreatHealPerSecond: 0.04, persistence: 1.5, runDistance: 100 },
+  easy:     { aggression: 0.5,  reactionMs: 800, attackCooldownMs: 1800, dodgeChance: 0.0,  flankChance: 0.0,  retreatHpRatio: 0.15, reengageHpRatio: 0.5,  retreatMaxMs: 5000, retreatHealPerSecond: 0.02, persistence: 1.0, runDistance: 160, shootRange: 180, shootSpeed: 200, shootCooldownMs: 2400, shootChance: 0.5 },
+  medium:   { aggression: 0.75, reactionMs: 500, attackCooldownMs: 1400, dodgeChance: 0.15, flankChance: 0.15, retreatHpRatio: 0.2,  reengageHpRatio: 0.45, retreatMaxMs: 4000, retreatHealPerSecond: 0.02, persistence: 1.0, runDistance: 140, shootRange: 260, shootSpeed: 240, shootCooldownMs: 1900, shootChance: 0.65 },
+  moderate: { aggression: 0.9,  reactionMs: 300, attackCooldownMs: 1000, dodgeChance: 0.3,  flankChance: 0.3,  retreatHpRatio: 0.25, reengageHpRatio: 0.4,  retreatMaxMs: 3500, retreatHealPerSecond: 0.03, persistence: 1.2, runDistance: 120, shootRange: 340, shootSpeed: 280, shootCooldownMs: 1500, shootChance: 0.8 },
+  hard:     { aggression: 1.0,  reactionMs: 120, attackCooldownMs: 750,  dodgeChance: 0.5,  flankChance: 0.45, retreatHpRatio: 0.3,  reengageHpRatio: 0.4,  retreatMaxMs: 3000, retreatHealPerSecond: 0.04, persistence: 1.5, runDistance: 100, shootRange: 440, shootSpeed: 330, shootCooldownMs: 1100, shootChance: 0.95 },
 };
 export type HuntingLevelProfiles = Record<HuntingLevel, HuntingLevelProfile>;
 export function defaultLevelProfiles(): HuntingLevelProfiles {
@@ -108,8 +120,6 @@ export const ANIMAL_WANDER_SPEED_FACTOR = 0.55;
 export const ANIMAL_APPROACH_SPEED_FACTOR = 0.7;
 /** Hunt animals (contract targets) notice players inside this radius (px). */
 export const ANIMAL_HUNT_AGGRO_RADIUS = 260;
-/** Fallback stride (px per leap) used by the client until the server value arrives — see HuntingMotion. */
-export const DEFAULT_RUN_STRIDE_PX = runStrideFor(DEFAULT_SPEED_BY_LEVEL.moderate, DEFAULT_RUN_FPS);
 /** Contract animals alive at acceptance: this share of the quota (%). */
 export const DEFAULT_CONTRACT_INITIAL_PERCENT = 20;
 /** Contract animals spawned together once the previous ones are dead. */
@@ -151,6 +161,8 @@ export interface AnimalVariantConfig {
   /** Distance (px) between animal and its target that ends the fight. */
   combatBreakDistance: number;
   hpRegenSeconds: HpRegenSeconds;
+  /** Also shoots a projectile (same `damage` as the bite) when the target is out of bite range — range/speed/cadence come from the level profile. */
+  canShoot: boolean;
   // residents only (ignored for hunts):
   reaction: ResidentReaction;
   /** Aggro radius in px (reaction 'radius'). */
@@ -166,7 +178,10 @@ export interface HuntingContractConfig {
   timeLimitMinutes: number;
   xpReward: number;
   crownsReward: number;
-  /** Hours until the contract is offered again after completion, expiry or the player's death. */
+  /**
+   * Hours until the contract is offered again after it is COMPLETED (reward claimed). Failing it
+   * (deadline, abandon, death) never locks it: the player simply accepts it again at the NPC.
+   */
   cooldownHours: number;
   /** Share (%) of the quota alive right after the contract is accepted (at least 1 animal). */
   initialPercent: number;
@@ -210,7 +225,7 @@ export function defaultVariantConfig(name = 'Animal'): AnimalVariantConfig {
   return {
     name, hp: 60, damage: 8, xpEnabled: true, xp: 15, level: 'medium',
     speedByLevel: { ...DEFAULT_SPEED_BY_LEVEL }, spawnMode: 'fixed', spawnCount: 0, spawnMin: 1, spawnMax: 4,
-    runFps: DEFAULT_RUN_FPS, combatBreakDistance: 420, hpRegenSeconds: 10,
+    runFps: DEFAULT_RUN_FPS, combatBreakDistance: 420, hpRegenSeconds: 10, canShoot: false,
     reaction: 'attacked', radius: 160, respawnCooldownSeconds: 60,
   };
 }
@@ -260,12 +275,16 @@ export const ANIMAL_DEFAULT_HITBOX = { x: -32, y: -44, width: 64, height: 52 } a
 export const ANIMAL_DEFAULT_COLLISION_RADIUS = 12;
 /** Distance (px, center to center) at which an animal considers the player "in bite range". */
 export const ANIMAL_BITE_RANGE = 44;
+/** Shooters: a shot hits a player when its ground point passes within this radius (px) of the player's hurtbox. */
+export const ANIMAL_SHOT_RADIUS = 10;
+/** Shooters: the shot leaves the animal this far (px) ahead of its centre, so it never spawns inside its own sprite. */
+export const ANIMAL_SHOT_MUZZLE_PX = 14;
 
 /**
  * Room state schema (server/src/schemas, synced to the client):
  *  AnimalState { id, variantId, name, x, y, dir (index into ANIMAL_DIRECTIONS), anim (AnimalAnimation),
  *                hp, maxHp, level (HuntingLevel), dead (boolean), contractOwner (user id or ''),
- *                stride (effective run stride px — client drives the run frames by distance, see HuntingMotion) }
+ *                frame (local run frame 0..2 picked by the server each tick — see HuntingMotion) }
  *  NpcState    { id (NPC_BARBARIAN_ID), x, y, dir (index into NPC_DIRECTION_ORDER), isMoving }
  * WorldState gets `animals: MapSchema<AnimalState>` and `npcs: MapSchema<NpcState>` (craft:* rooms only).
  */
@@ -302,7 +321,17 @@ export const HUNT_MSG = {
   event: 'hunt_event',                 // HuntEventPayload
   animalHit: 'animal_hit',             // broadcast { animalId, damage, hp, bySessionId }
   requestResult: 'hunt_request_result',// { requestId, ok, error? }
+  shot: 'hunt_shot',                   // broadcast HuntShotPayload — an animal fired a projectile
+  shotHit: 'hunt_shot_hit',            // broadcast HuntShotHitPayload — the projectile hit a player (remove it early)
 } as const;
+
+/**
+ * Animal projectile. The server simulates it (ground-level straight line at `speed` px/s from
+ * (x, y) along the unit vector (dx, dy), at most `range` px — already cut at the first wall) and the
+ * client only replays the same line from the message, so no per-frame network traffic is needed.
+ */
+export interface HuntShotPayload { id: string; animalId: string; x: number; y: number; dx: number; dy: number; speed: number; range: number }
+export interface HuntShotHitPayload { id: string; x: number; y: number; targetSessionId: string }
 
 export type ContractAvailability = 'available' | 'active' | 'locked' | 'busy';
 export interface HuntContractView {
@@ -367,6 +396,7 @@ export function parseVariantConfig(raw: unknown, fallbackName = 'Animal'): Anima
     runFps: num(raw.runFps, d.runFps, HUNTING_LIMITS.runFps.min, HUNTING_LIMITS.runFps.max),
     combatBreakDistance: num(raw.combatBreakDistance, d.combatBreakDistance, HUNTING_LIMITS.combatBreak.min, HUNTING_LIMITS.combatBreak.max),
     hpRegenSeconds: (HP_REGEN_OPTIONS as readonly number[]).includes(regenRaw) ? (regenRaw as HpRegenSeconds) : d.hpRegenSeconds,
+    canShoot: bool(raw.canShoot, d.canShoot),
     reaction: oneOf(raw.reaction, RESIDENT_REACTIONS, d.reaction),
     radius: num(raw.radius, d.radius, HUNTING_LIMITS.radius.min, HUNTING_LIMITS.radius.max),
     respawnCooldownSeconds: num(raw.respawnCooldownSeconds, d.respawnCooldownSeconds, HUNTING_LIMITS.respawn.min, HUNTING_LIMITS.respawn.max),

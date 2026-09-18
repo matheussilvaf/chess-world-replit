@@ -54,7 +54,7 @@ import { totalSkillLevel } from '../shared/progress/EnergySkillsShapes';
 import { BigChessOverlays } from './game/bigchess/BigChessOverlays';
 import { bigChessPieceFor, parseBigChessSlots, type BigChessPieceView } from '../shared/bigchess/BigChessShapes';
 import { parseAllowedIds } from '../shared/craft/PlaceableStations';
-import { DEFAULT_RUN_STRIDE_PX, HUNT_MSG, type HuntContractsPayload, type HuntEventPayload, type HuntStatePayload } from '../shared/hunting/HuntingShapes';
+import { HUNT_MSG, type HuntContractsPayload, type HuntEventPayload, type HuntShotHitPayload, type HuntShotPayload, type HuntStatePayload } from '../shared/hunting/HuntingShapes';
 import type { AnimalView } from '../game/hunting/AnimalLayer';
 import type { NpcView } from '../game/hunting/NpcLayer';
 import { useHuntingStore } from '../stores/huntingStore';
@@ -935,7 +935,7 @@ export function GameCanvas() {
         y: Number(animal.y),
         dir: Number(animal.dir ?? 0),
         anim: animal.anim === 'walk' || animal.anim === 'run' || animal.anim === 'attack' ? animal.anim : 'idle',
-        stride: Number(animal.stride ?? DEFAULT_RUN_STRIDE_PX),
+        frame: Math.max(0, Math.min(2, Math.floor(Number(animal.frame ?? 0)) || 0)),
         hp: Number(animal.hp ?? 0),
         maxHp: Number(animal.maxHp ?? 1),
         level: animal.level === 'easy' || animal.level === 'moderate' || animal.level === 'hard' ? animal.level : 'medium',
@@ -1008,6 +1008,14 @@ export function GameCanvas() {
     const removeHuntRequest = room.onMessage(HUNT_MSG.requestResult, (data: { requestId?: string; ok?: boolean; error?: string }) => {
       if (typeof data?.requestId === 'string') useHuntingStore.getState().resolveRequest(data.requestId, data.ok === true, data.error);
     });
+    const isShot = (data: unknown): data is HuntShotPayload => {
+      const shot = data as Partial<HuntShotPayload> | null;
+      return !!shot && typeof shot.id === 'string' && [shot.x, shot.y, shot.dx, shot.dy, shot.speed, shot.range].every((n) => Number.isFinite(n));
+    };
+    const removeHuntShot = room.onMessage(HUNT_MSG.shot, (data: unknown) => { if (isShot(data)) scene.spawnAnimalShot(data); });
+    const removeHuntShotHit = room.onMessage(HUNT_MSG.shotHit, (data: Partial<HuntShotHitPayload> | null) => {
+      if (data && typeof data.id === 'string' && Number.isFinite(data.x) && Number.isFinite(data.y)) scene.hitAnimalShot(data as HuntShotHitPayload);
+    });
     const removeEquipError = room.onMessage('equip_error', (data: { message?: string }) => {
       usePlayerCharacterStore.getState().setEquipError(data.message ?? 'Não foi possível equipar.');
     });
@@ -1066,6 +1074,8 @@ export function GameCanvas() {
       if (typeof removeHuntEvent === 'function') removeHuntEvent();
       if (typeof removeAnimalHit === 'function') removeAnimalHit();
       if (typeof removeHuntRequest === 'function') removeHuntRequest();
+      if (typeof removeHuntShot === 'function') removeHuntShot();
+      if (typeof removeHuntShotHit === 'function') removeHuntShotHit();
       if (typeof removeWalletUpdate === 'function') removeWalletUpdate();
       if (typeof removeGambitsUpdate === 'function') removeGambitsUpdate();
       if (typeof removeRatingUpdate === 'function') removeRatingUpdate();

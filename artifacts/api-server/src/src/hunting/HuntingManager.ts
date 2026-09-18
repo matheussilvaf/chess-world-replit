@@ -13,6 +13,8 @@ import {
   ANIMAL_DEFAULT_HURTBOX,
   ANIMAL_DIRECTIONS,
   ANIMAL_HUNT_AGGRO_RADIUS,
+  ANIMAL_SHOT_MUZZLE_PX,
+  ANIMAL_SHOT_RADIUS,
   ANIMAL_WANDER_SPEED_FACTOR,
   DEFAULT_CONTRACT_INITIAL_PERCENT,
   DEFAULT_CONTRACT_REFILL_BATCH,
@@ -34,9 +36,11 @@ import {
   type HuntingConfig,
   type HuntingContractConfig,
   type HuntingLevelProfile,
+  type HuntShotHitPayload,
+  type HuntShotPayload,
   type PlayerHuntingRecord,
 } from '../shared/hunting/HuntingShapes.js';
-import { runDistanceBetween, runStrideFor } from '../shared/hunting/HuntingMotion.js';
+import { runDistanceBetween, runFrameAt } from '../shared/hunting/HuntingMotion.js';
 import { CRAFTING_WORLD_MAP, type MapAnchor } from '../shared/hunting/craftingWorldMapData.js';
 import { getCraftingWorldGeometry } from '../shared/hunting/HuntingMapGeometry.js';
 import { rectanglesIntersect, type LocalRectangle } from '../shared/combat/CharacterCombatShapes.js';
@@ -65,6 +69,8 @@ interface RuntimeAnimal {
   pauseUntil: number;
   reactAt: number;
   nextAttackAt: number;
+  /** Shooters: earliest time of the next projectile. */
+  nextShotAt: number;
   hitSwings: Set<string>;
   ambient: boolean;
   treeAnchor?: string;
@@ -88,6 +94,21 @@ interface RuntimeAnimal {
 }
 /** Below this player speed (px/s) the target counts as standing still (animal may stalk instead of running). */
 const TARGET_MOVING_SPEED = 25;
+/** Live animal projectile — a straight ground-level line, simulated per tick until it hits a player or runs out of range. */
+interface Shot {
+  id: string;
+  animalName: string;
+  damage: number;
+  x: number;
+  y: number;
+  dx: number;
+  dy: number;
+  speed: number;
+  /** Px still to travel (the range was already cut at the first wall when the shot was fired). */
+  remaining: number;
+}
+/** Shots cannot fly through walls, water, map borders or into the safe zone — same predicate the animals use to walk. */
+const SHOT_TRACE_STEP = 8;
 /** The animal stops this far from the player (px) instead of walking into it. */
 const STANDOFF_FACTOR = 0.75;
 
@@ -123,6 +144,8 @@ export class HuntingManager {
   private readonly intervals = new Set<{ clear?: () => void }>();
   private readonly timers = new Map<string, Set<{ clear?: () => void }>>();
   private readonly consumedShots = new Map<string, number>();
+  /** Live animal projectiles by id. */
+  private readonly shots = new Map<string, Shot>();
   private readonly pendingAmbient = new Map<string, number>();
   private readonly ambientDesired = new Map<string, number>();
   /** 'random' populations are rolled once per room and only re-rolled when the spawn settings change. */
@@ -199,12 +222,6 @@ export class HuntingManager {
         animal.state.maxHp = next.hp;
         animal.state.hp = Math.min(animal.state.hp, next.hp);
         animal.state.level = next.level;
-        const stride = runStrideFor(runSpeedFor(next), next.runFps);
-        if (stride !== animal.state.stride) {
-          // the client restarts its distance-driven cycle when the stride changes — restart the burst phase too
-          animal.state.stride = stride;
-          if (animal.runElapsedMs >= 0) animal.runElapsedMs = 0;
-        }
       }
     }
     for (const [variantId, count] of desired) {
@@ -259,13 +276,13 @@ export class HuntingManager {
     Object.assign(state, {
       id, variantId, name: variant.name, x: point.x, y: point.y, dir: 0,
       anim: 'idle', hp: variant.hp, maxHp: variant.hp, level: variant.level,
-      dead: false, contractOwner: owner, stride: runStrideFor(runSpeedFor(variant), variant.runFps),
+      dead: false, contractOwner: owner, frame: 0,
     });
     const rt: RuntimeAnimal = {
       state, variant, mode: isTree ? 'rooted' : 'wander', targetSessionId: '',
       lastAttackerSessionId: '', targetX: point.x, targetY: point.y,
       pauseUntil: Date.now() + randomBetween(1000, 4000), reactAt: 0,
-      nextAttackAt: 0, hitSwings: new Set(), ambient, treeAnchor: isTree ? point.name : undefined,
+      nextAttackAt: 0, nextShotAt: 0, hitSwings: new Set(), ambient, treeAnchor: isTree ? point.name : undefined,
       treeAnchorX: isTree ? point.x : undefined, treeAnchorY: isTree ? point.y : undefined,
       regenStartedAt: 0, regenStartHp: variant.hp,
       runElapsedMs: -1, chaseGait: 'run', targetTrack: null, retreatUntil: 0, retreatCooldownUntil: 0,
@@ -311,6 +328,7 @@ export class HuntingManager {
       if (decide) this.decide(animal, now);
       this.moveAnimal(animal, dtMs, now);
     }
+    this.moveShots(dtMs);
     this.moveNpc(dtMs / 1000, now);
   }
 
@@ -435,6 +453,20 @@ export class HuntingManager {
       });
       return;
     }
+    // ── shot (shooters only): target out of bite range but inside the level's shoot range — same attack
+    //    animation, the projectile leaves on the hit frame and flies a straight line towards the player
+    if (animal.variant.canShoot && animal.mode !== 'dodge' && !inRange && distance <= profile.shootRange && now >= animal.nextShotAt && Math.random() <= profile.shootChance) {
+      animal.mode = 'attack';
+      animal.state.anim = 'attack';
+      this.face(animal, dx, dy);
+      animal.nextShotAt = now + profile.shootCooldownMs;
+      const releaseDelay = (ANIMAL_ATTACK_HIT_FRAMES[0] / ANIMAL_ANIMATION_FPS.attack) * 1000;
+      this.schedule(`animal:${animal.state.id}`, releaseDelay, () => this.shoot(animal, profile));
+      this.schedule(`animal:${animal.state.id}`, ANIMAL_ATTACK_DURATION_MS, () => {
+        if (!animal.state.dead && animal.mode === 'attack') animal.mode = 'chase';
+      });
+      return;
+    }
     // ── dodge: leap sideways when the player starts a swing nearby
     if (animal.mode === 'dodge') {
       if (now < animal.dodgeUntil) return;
@@ -543,9 +575,11 @@ export class HuntingManager {
     const runSpeed = runSpeedFor(animal.variant);
     let step: number;
     if (gait === 'run') {
-      // leap bursts: slow while gathering, fast while airborne — average speed stays runSpeed (HuntingMotion)
+      // leap: (almost) still while gathered, the whole stride while airborne — average speed stays runSpeed;
+      // the frame shown by the client is the phase of this same clock (HuntingMotion)
       if (animal.runElapsedMs < 0) animal.runElapsedMs = 0;
-      step = runDistanceBetween(animal.runElapsedMs, animal.runElapsedMs + dtMs, animal.state.stride, runSpeed);
+      animal.state.frame = runFrameAt(animal.runElapsedMs, animal.variant.runFps);
+      step = runDistanceBetween(animal.runElapsedMs, animal.runElapsedMs + dtMs, runSpeed, animal.variant.runFps);
       animal.runElapsedMs += dtMs;
     } else {
       animal.runElapsedMs = -1;
@@ -593,6 +627,71 @@ export class HuntingManager {
     if (hitboxes.some((r) => playerHurt.some((p) => rectanglesIntersect(r, p))) || Math.hypot(player.x - animal.state.x, player.y - animal.state.y) <= ANIMAL_BITE_RANGE + 16) {
       this.host.damagePlayer(animal.targetSessionId, animal.variant.damage, animal.variant.name);
     }
+  }
+
+  /** Fires the projectile at the attack's hit frame: aims at the target's current position, range cut at the first wall. */
+  private shoot(animal: RuntimeAnimal, profile: HuntingLevelProfile): void {
+    if (animal.state.dead) return;
+    const player = this.host.state.players.get(animal.targetSessionId);
+    if (!player || player.currentBoardId || this.host.isDead(animal.targetSessionId)) return;
+    const aimX = player.x - animal.state.x, aimY = player.y - animal.state.y;
+    const length = Math.hypot(aimX, aimY);
+    if (length < 1) return;
+    const dx = aimX / length, dy = aimY / length;
+    const x = animal.state.x + dx * ANIMAL_SHOT_MUZZLE_PX, y = animal.state.y + dy * ANIMAL_SHOT_MUZZLE_PX;
+    // walk the line ahead of time so the client can replay the exact same segment without any collision code
+    let range = 0;
+    while (range < profile.shootRange) {
+      const next = Math.min(profile.shootRange, range + SHOT_TRACE_STEP);
+      if (!this.geometry.isWalkableForAnimal(x + dx * next, y + dy * next, 0)) break;
+      range = next;
+    }
+    if (range <= 0) return;
+    const shot: Shot = {
+      id: `shot-${Date.now().toString(36)}-${++this.idCounter}`, animalName: animal.variant.name, damage: animal.variant.damage,
+      x, y, dx, dy, speed: profile.shootSpeed, remaining: range,
+    };
+    this.shots.set(shot.id, shot);
+    const payload: HuntShotPayload = { id: shot.id, animalId: animal.state.id, x, y, dx, dy, speed: shot.speed, range };
+    this.host.broadcast(HUNT_MSG.shot, payload);
+  }
+
+  /** Advances every live shot; the first player whose hurtbox it crosses takes the animal's damage. */
+  private moveShots(dtMs: number): void {
+    if (!this.shots.size) return;
+    for (const shot of [...this.shots.values()]) {
+      const step = Math.min(shot.remaining, shot.speed * (dtMs / 1000));
+      const hit = this.shotHit(shot, step);
+      shot.x += shot.dx * step;
+      shot.y += shot.dy * step;
+      shot.remaining -= step;
+      if (hit) {
+        this.shots.delete(shot.id);
+        this.host.damagePlayer(hit.sessionId, shot.damage, shot.animalName);
+        const payload: HuntShotHitPayload = { id: shot.id, x: hit.x, y: hit.y, targetSessionId: hit.sessionId };
+        this.host.broadcast(HUNT_MSG.shotHit, payload);
+      } else if (shot.remaining <= 0.01) {
+        this.shots.delete(shot.id);
+      }
+    }
+  }
+
+  /** First player crossed by the shot along the next `step` px (sampled every few px, so fast shots cannot skip a body). */
+  private shotHit(shot: Shot, step: number): { sessionId: string; x: number; y: number } | null {
+    const samples = Math.max(1, Math.ceil(step / SHOT_TRACE_STEP));
+    for (let i = 1; i <= samples; i++) {
+      const px = shot.x + shot.dx * step * (i / samples), py = shot.y + shot.dy * step * (i / samples);
+      let found = null as { sessionId: string; x: number; y: number } | null;
+      this.host.state.players.forEach((player, sessionId) => {
+        if (found || player.currentBoardId || player.hp <= 0 || this.host.isDead(sessionId)) return;
+        // ground-level point against the player's standing hurtbox (feet at y, body above), grown by the shot radius
+        const inX = Math.abs(px - player.x) <= 18 + ANIMAL_SHOT_RADIUS;
+        const inY = py >= player.y - 48 - ANIMAL_SHOT_RADIUS && py <= player.y + ANIMAL_SHOT_RADIUS;
+        if (inX && inY) found = { sessionId, x: px, y: py };
+      });
+      if (found) return found;
+    }
+    return null;
   }
 
   onSwingFrame(sessionId: string, rects: LocalRectangle[], swingId: number): void {
@@ -846,11 +945,8 @@ export class HuntingManager {
   private async cancelContract(player: PlayerState, type: 'abandoned' | 'expired' | 'cancelled_death', requestId = '', client?: Client): Promise<void> {
     const record = this.records.get(player.id), active = record?.active;
     if (!record || !active) return client && this.result(client, requestId, false, 'Nenhum contrato ativo');
-    const contract = this.config.contracts.find((c) => c.id === active.contractId);
-    const next: PlayerHuntingRecord = {
-      active: null,
-      locks: { ...record.locks, [active.contractId]: Date.now() + (contract?.cooldownHours ?? 0) * 3600_000 },
-    };
+    // a failed/abandoned contract is NOT locked: the reopen cooldown only starts when the reward is claimed
+    const next: PlayerHuntingRecord = { active: null, locks: { ...record.locks } };
     const saved = await updateIfActiveMatches(player.id, active.contractId, next);
     if (!saved.ok) return client && this.result(client, requestId, false, saved.error ?? 'Falha ao salvar contrato');
     if (!saved.matched) {
@@ -860,7 +956,8 @@ export class HuntingManager {
     }
     this.records.set(player.id, next);
     for (const animal of [...this.runtime.values()]) if (animal.state.contractOwner === player.id) this.removeAnimal(animal.state.id);
-    client?.send(HUNT_MSG.event, { type, message: type === 'expired' ? 'Contrato expirado' : type === 'abandoned' ? 'Contrato abandonado' : 'Contrato cancelado pela morte' });
+    const reason = type === 'expired' ? 'Prazo do contrato esgotado' : type === 'abandoned' ? 'Contrato abandonado' : 'Contrato cancelado pela morte';
+    client?.send(HUNT_MSG.event, { type, message: `${reason} — fale com o bárbaro para aceitá-lo de novo` });
     if (client) { this.sendState(client, next); if (requestId) this.result(client, requestId, true); }
   }
 

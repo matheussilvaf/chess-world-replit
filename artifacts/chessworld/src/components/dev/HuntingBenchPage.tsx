@@ -15,11 +15,17 @@ import {
 } from '../../shared/hunting/HuntingShapes';
 import {
   DEFAULT_RUN_FPS,
+  RUN_GROUND_FRAMES,
+  RUN_GROUND_SPEED,
   RUN_MAX_FPS,
   RUN_MIN_FPS,
   effectiveRunFps,
   runDistanceBetween,
-  runSlotForDistance,
+  runFrameAt,
+  runLeapFrames,
+  runLeapMs,
+  runLeapProfile,
+  runPhaseAt,
   runStrideFor,
 } from '../../shared/hunting/HuntingMotion';
 import { INTERPOLATION_DELAY_MS } from '../../game/network/interpolation';
@@ -30,7 +36,9 @@ const WORLD_BOTTOM = 430;
 const FRAME_SEQUENCE = [0, 1, 2, 1];
 
 interface Snapshot { x: number; y: number; t: number }
-interface TrailDot { x: number; y: number; slot: number }
+interface TrailDot { x: number; y: number; phase: number }
+/** Trail colours per leap phase: gather (crouched) · take-off · flight; grey = walking/idle. */
+const PHASE_COLORS = ['#f59e0b', '#22d3ee', '#94a3b8'];
 interface FilmFrame { frame: number; column: number; row: number; x: number }
 interface Readout { anim: AnimalAnimation; frame: number; instant: number; average: number }
 
@@ -47,11 +55,13 @@ export function HuntingBenchPage() {
   const [speed, setSpeed] = useState(120);
   const [fps, setFps] = useState(DEFAULT_RUN_FPS);
   const [runDistance, setRunDistance] = useState(140);
+  const [groundFrames, setGroundFrames] = useState(RUN_GROUND_FRAMES);
+  const [groundSpeed, setGroundSpeed] = useState(RUN_GROUND_SPEED);
   const [legacy, setLegacy] = useState(false);
   const [resetKey, setResetKey] = useState(0);
   const [readout, setReadout] = useState<Readout>({ anim: 'run', frame: 0, instant: 0, average: 0 });
-  const controlsRef = useRef({ speed, fps, runDistance, legacy });
-  controlsRef.current = { speed, fps, runDistance, legacy };
+  const controlsRef = useRef({ speed, fps, runDistance, groundFrames, groundSpeed, legacy });
+  controlsRef.current = { speed, fps, runDistance, groundFrames, groundSpeed, legacy };
 
   useEffect(() => {
     huntingApi.manifest().then((result) => {
@@ -81,7 +91,7 @@ export function HuntingBenchPage() {
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
     ctx.imageSmoothingEnabled = false;
-    let server = { x: 120, y: 220, targetX: 620, targetY: 220, anim: 'run' as AnimalAnimation, dir: 2, runElapsed: 0, runTravel: 0, stride: 0 };
+    let server = { x: 120, y: 220, targetX: 620, targetY: 220, anim: 'run' as AnimalAnimation, dir: 2, runElapsed: 0, frame: 0 };
     let snapshots: Snapshot[] = [{ x: server.x, y: server.y, t: performance.now() }];
     let trail: TrailDot[] = [];
     let film: FilmFrame[] = [];
@@ -92,7 +102,7 @@ export function HuntingBenchPage() {
     let lastFilm = 0;
     let latest = { anim: server.anim, dir: server.dir, frame: 0, x: server.x, y: server.y };
     const playback = new AnimalPlayback(INTERPOLATION_DELAY_MS);
-    playback.push(server.anim, server.dir, runStrideFor(controlsRef.current.speed, controlsRef.current.fps), lastServer);
+    playback.push(server.anim, server.dir, server.frame, lastServer);
 
     const serverTimer = window.setInterval(() => {
       const now = performance.now();
@@ -102,39 +112,41 @@ export function HuntingBenchPage() {
       const dy = server.targetY - server.y;
       const distance = Math.hypot(dx, dy);
       const config = controlsRef.current;
-      const eff = runStrideFor(config.speed, config.fps);
+      const leap = runLeapProfile(config.groundFrames, config.groundSpeed);
       let step = 0;
+      let phase = -1;
       if (distance < 4) {
         server.anim = 'idle';
         server.runElapsed = 0;
       } else {
         const nextAnim: AnimalAnimation = distance > config.runDistance ? 'run' : 'walk';
-        // like the real server: the leap cycle restarts when the run starts or the stride changes
-        if (nextAnim === 'run' && (server.anim !== 'run' || server.stride !== eff)) { server.runElapsed = 0; server.runTravel = 0; }
-        server.stride = eff;
+        // like the real server: the leap clock restarts whenever the run starts
+        if (nextAnim === 'run' && server.anim !== 'run') server.runElapsed = 0;
         server.anim = nextAnim;
         const baseSpeed = nextAnim === 'run' ? config.speed : config.speed * ANIMAL_APPROACH_SPEED_FACTOR;
-        step = config.legacy
-          ? baseSpeed * dtMs / 1000
-          : nextAnim === 'run'
-            ? runDistanceBetween(server.runElapsed, server.runElapsed + dtMs, eff, config.speed)
-            : baseSpeed * dtMs / 1000;
+        if (nextAnim === 'run') {
+          // the server picks the frame from the leap clock BEFORE advancing it, then moves by the phase distance
+          phase = runPhaseAt(server.runElapsed, config.fps, leap);
+          server.frame = config.legacy
+            ? Math.floor(server.runElapsed / (1000 / effectiveRunFps(config.fps))) % 3
+            : runFrameAt(server.runElapsed, config.fps, leap);
+          step = config.legacy ? baseSpeed * dtMs / 1000 : runDistanceBetween(server.runElapsed, server.runElapsed + dtMs, config.speed, config.fps, leap);
+          server.runElapsed += dtMs;
+        } else {
+          step = baseSpeed * dtMs / 1000;
+        }
         step = Math.min(distance, step);
         server.x += dx / distance * step;
         server.y += dy / distance * step;
         server.dir = ANIMAL_DIRECTIONS.indexOf(animalDirectionFromVector(dx, dy));
-        if (nextAnim === 'run') {
-          server.runElapsed += dtMs;
-          server.runTravel += step;
-        }
       }
       instant = dtMs > 0 ? step * 1000 / dtMs : 0;
       totalDistance += step;
       speedSamples.push({ t: now, distance: totalDistance });
       speedSamples = speedSamples.filter((sample) => sample.t >= now - 1100);
-      trail.push({ x: server.x, y: server.y, slot: server.anim === 'run' ? runSlotForDistance(server.runTravel, eff) : -1 });
+      trail.push({ x: server.x, y: server.y, phase });
       if (trail.length > 180) trail.shift();
-      playback.push(server.anim, server.dir, eff, now);
+      playback.push(server.anim, server.dir, server.frame, now);
     }, 50);
 
     const snapshotTimer = window.setInterval(() => {
@@ -159,7 +171,7 @@ export function HuntingBenchPage() {
       const ratio = b.t > a.t ? Math.max(0, Math.min(1, (renderTime - a.t) / (b.t - a.t))) : 1;
       const x = a.x + (b.x - a.x) * ratio;
       const y = a.y + (b.y - a.y) * ratio;
-      const state = playback.update(now, x, y);
+      const state = playback.update(now);
       const localFrame = state.frame ?? FRAME_SEQUENCE[Math.floor(now / (1000 / ANIMAL_ANIMATION_FPS[state.anim])) % FRAME_SEQUENCE.length];
       const column = ANIMAL_ANIMATION_COLUMNS[state.anim][localFrame];
       const row = Math.max(0, state.dir);
@@ -176,7 +188,7 @@ export function HuntingBenchPage() {
       ctx.strokeStyle = '#334155';
       ctx.beginPath(); ctx.moveTo(0, WORLD_BOTTOM); ctx.lineTo(WIDTH, WORLD_BOTTOM); ctx.stroke();
       for (const dot of trail) {
-        ctx.fillStyle = dot.slot === 0 ? '#94a3b8' : dot.slot === 1 || dot.slot === 3 ? '#22d3ee' : dot.slot === 2 ? '#f59e0b' : '#64748b';
+        ctx.fillStyle = PHASE_COLORS[dot.phase] ?? '#64748b';
         ctx.beginPath(); ctx.arc(dot.x, dot.y, 2.5, 0, Math.PI * 2); ctx.fill();
       }
       ctx.strokeStyle = '#f43f5e'; ctx.lineWidth = 2;
@@ -213,7 +225,9 @@ export function HuntingBenchPage() {
     };
   }, [image, resetKey, variant]);
 
-  const effectiveStride = runStrideFor(speed, fps);
+  const leap = runLeapProfile(groundFrames, groundSpeed);
+  const effectiveStride = runStrideFor(speed, fps, leap);
+  const airSpeed = leap[1].speed;
   return (
     <main className="min-h-screen bg-slate-950 px-5 py-6 text-slate-100">
       <div className="mx-auto max-w-6xl space-y-4">
@@ -222,7 +236,7 @@ export function HuntingBenchPage() {
           <h1 className="text-2xl font-bold">Corrida em saltos</h1>
           <p className="text-sm text-slate-400">Clique na área para mudar o alvo. Os pontos mostram cada tique do servidor.</p>
         </header>
-        <section className="grid gap-3 rounded-xl border border-slate-700 bg-slate-900 p-4 md:grid-cols-6">
+        <section className="grid gap-3 rounded-xl border border-slate-700 bg-slate-900 p-4 md:grid-cols-8">
           <label className="text-xs text-slate-400 md:col-span-2">Animal
             <select className="mt-1 w-full rounded border border-slate-600 bg-slate-800 p-2 text-sm text-white" value={variantId} onChange={(e) => setVariantId(e.target.value)}>
               {variants.map((item) => <option key={item.variantId} value={item.variantId}>{item.animal} · {item.file}</option>)}
@@ -237,11 +251,17 @@ export function HuntingBenchPage() {
           <label className="text-xs text-slate-400">Corre a partir de (px)
             <input className="mt-1 w-full rounded border border-slate-600 bg-slate-800 p-2 text-white" type="number" min="0" value={runDistance} onChange={numberValue(setRunDistance)} />
           </label>
+          <label className="text-xs text-slate-400">Agachado (quadros)
+            <input className="mt-1 w-full rounded border border-slate-600 bg-slate-800 p-2 text-white" type="number" min="0.25" max="4" step="0.25" value={groundFrames} onChange={numberValue(setGroundFrames)} />
+          </label>
+          <label className="text-xs text-slate-400">Velocidade agachado (×)
+            <input className="mt-1 w-full rounded border border-slate-600 bg-slate-800 p-2 text-white" type="number" min="0" max="1" step="0.05" value={groundSpeed} onChange={numberValue(setGroundSpeed)} />
+          </label>
           <div className="flex flex-col justify-end gap-2">
-            <label className="flex items-center gap-2 text-xs text-slate-300"><input type="checkbox" checked={legacy} onChange={(e) => setLegacy(e.target.checked)} /> movimento antigo (constante)</label>
+            <label className="flex items-center gap-2 text-xs text-slate-300"><input type="checkbox" checked={legacy} onChange={(e) => setLegacy(e.target.checked)} /> movimento antigo (constante, quadros pelo relógio)</label>
             <button className="rounded bg-cyan-700 px-3 py-2 text-sm font-semibold hover:bg-cyan-600" onClick={() => setResetKey((key) => key + 1)}>Reiniciar</button>
           </div>
-          <p className="text-xs text-slate-400 md:col-span-6">Salto: <b className="text-white">{effectiveStride.toFixed(1)} px</b> a cada 2 quadros · animação a <b className="text-white">{effectiveRunFps(fps).toFixed(0)} fps</b> (caminhada: {ANIMAL_ANIMATION_FPS.walk} fps) · quadros 0 e 2 = no ar (rápido), 1 = agachado (lento)</p>
+          <p className="text-xs text-slate-400 md:col-span-8">Salto: <b className="text-white">{effectiveStride.toFixed(1)} px</b> a cada {runLeapFrames(leap).toFixed(2)} quadros ({runLeapMs(fps, leap).toFixed(0)} ms) · animação a <b className="text-white">{effectiveRunFps(fps).toFixed(0)} fps</b> (caminhada: {ANIMAL_ANIMATION_FPS.walk} fps) · <span style={{ color: PHASE_COLORS[0] }}>q1 agachado {groundSpeed.toFixed(2)}×</span> → <span style={{ color: PHASE_COLORS[1] }}>q2 impulso {airSpeed.toFixed(2)}×</span> → <span style={{ color: PHASE_COLORS[2] }}>q0 esticado {airSpeed.toFixed(2)}×</span> · o jogo usa {RUN_GROUND_FRAMES} quadros a {RUN_GROUND_SPEED}×</p>
         </section>
         {error && <p className="rounded border border-red-800 bg-red-950 p-3 text-sm text-red-200">{error}</p>}
         <div className="overflow-hidden rounded-xl border border-slate-700 bg-slate-900">

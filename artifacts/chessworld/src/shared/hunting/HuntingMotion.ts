@@ -1,98 +1,119 @@
 /**
- * Locomotion model of the animals — shared by the server (moves the animal), the game client
- * (picks the run frame) and the `/dev/caca` bench.
+ * Locomotion model of the animals — shared by the server (moves the animal AND picks the run
+ * frame), the game client (shows the server frame) and the `/dev/caca` bench.
  *
  * The run animation of every sheet is a LEAP. Checked frame by frame on the wolf, bear, boar and
- * fox sheets: local frame 0 is AIRBORNE (body stretched), frame 1 is the GATHER (crouched, legs
- * under the body — landing / pushing off) and frame 2 is airborne again in a slightly different
- * pose. Played 0-1-2-1 (yoyo) one cycle contains two leaps: fly → gather → fly → gather.
+ * fox sheets: local frame 1 is the GATHER (crouched, all legs under the body — landing and pushing
+ * off), frame 2 is the TAKE-OFF (back arched, tail up) and frame 0 is the FLIGHT (body fully
+ * stretched). One leap plays 1 → 2 → 0 and the animal moves like a cheetah: it stays (almost)
+ * still while gathered and covers the whole leap while airborne — the displacement happens on the
+ * stretched frames, never on the crouched one.
  *
- * Moving at a constant speed under that animation looks like sliding, so the server moves the
- * animal in bursts: the airborne slots carry most of the ground (the "extra push forward" of the
- * leap) and the gather slots almost stop. The average over a cycle is exactly the configured
- * speed. The client chooses the frame from the DISTANCE travelled, which keeps picture and motion
- * in sync regardless of latency or interpolation delay.
+ * The server owns both the motion and the picture: every tick it advances the leap clock, moves the
+ * animal by the distance of the current phase and writes the local frame into `AnimalState.frame`.
+ * The client only displays that frame (delayed like the interpolated position), so picture and
+ * motion cannot drift apart, whatever the latency or the interpolation buffer.
  *
- * The run animation plays at a fixed frame-rate per variant (`runFps`, default 10 — faster than
- * the walk, like the reference captures); the stride (px per leap) follows from the speed.
+ * Per-variant knob: `runFps` (admin) is the pace of the animation. The leap length follows from the
+ * configured speed: stride = speed × leap duration. Lower fps = longer leaps at the same speed.
  */
 
-/** Local frames (0..2) of a full run cycle, in playback order. */
-export const RUN_FRAME_SEQUENCE: readonly number[] = [0, 1, 2, 1];
-/** Speed multiplier of each slot of RUN_FRAME_SEQUENCE (fly, gather, fly, gather). Average = 1. */
-export const RUN_SLOT_SPEED: readonly number[] = [1.6, 0.4, 1.6, 0.4];
-/** Cumulative share of the cycle distance covered at the end of each slot. */
-export const RUN_SLOT_DISTANCE_END: readonly number[] = (() => {
-  const total = RUN_SLOT_SPEED.reduce((sum, m) => sum + m, 0);
-  let acc = 0;
-  return RUN_SLOT_SPEED.map((m) => (acc += m / total));
-})();
-/** Frame-rate window of the run animation (frames = slots per second). */
+/** One phase of the leap: which run frame is shown, for how long, and how fast the animal moves. */
+export interface RunPhase {
+  /** Local frame (0..2) of the run row. */
+  frame: number;
+  /** Duration in animation frames (1 = 1000 / runFps ms). */
+  frames: number;
+  /** Speed multiplier relative to the configured run speed. */
+  speed: number;
+}
+
+/** Ground multiplier while gathered — a near stop (not a freeze, so the sprite never looks stuck). */
+export const RUN_GROUND_SPEED = 0.15;
+/** Duration of the gather in animation frames — a little longer than each airborne frame so the pause reads. */
+export const RUN_GROUND_FRAMES = 1.5;
+/** Airborne frames per leap (take-off + flight). */
+export const RUN_AIR_FRAMES = 2;
+
+/** Builds the leap profile — exported so the bench can try other ground pauses/speeds; the game uses RUN_LEAP. */
+export function runLeapProfile(groundFrames = RUN_GROUND_FRAMES, groundSpeed = RUN_GROUND_SPEED): readonly RunPhase[] {
+  const ground = Math.max(0.25, groundFrames);
+  const slow = Math.min(1, Math.max(0, groundSpeed));
+  // average over the leap must be exactly 1× the configured speed
+  const air = (ground + RUN_AIR_FRAMES - slow * ground) / RUN_AIR_FRAMES;
+  return [
+    { frame: 1, frames: ground, speed: slow }, // gather (crouched)
+    { frame: 2, frames: 1, speed: air },       // take-off (arched)
+    { frame: 0, frames: 1, speed: air },       // flight (stretched)
+  ];
+}
+/** Leap used by the game (server and client). */
+export const RUN_LEAP: readonly RunPhase[] = runLeapProfile();
+
+/** Frame-rate window of the run animation. */
 export const RUN_MIN_FPS = 4;
 export const RUN_MAX_FPS = 16;
 /** Default run frame-rate — faster than the walk (8 fps) so the leap reads as a leap. */
 export const DEFAULT_RUN_FPS = 10;
-/** Slots per cycle (= leaps × 2). */
-export const RUN_CYCLE_SLOTS = RUN_FRAME_SEQUENCE.length;
-/** Leaps per cycle (the yoyo shows a gather between two airborne frames, twice). */
-export const RUN_LEAPS_PER_CYCLE = 2;
 
 /** Frame-rate actually used: `fps` clamped to the readable window (NaN/0 → default). */
 export function effectiveRunFps(fps: number): number {
   const value = Number.isFinite(fps) && fps > 0 ? fps : DEFAULT_RUN_FPS;
   return Math.min(RUN_MAX_FPS, Math.max(RUN_MIN_FPS, value));
 }
-/**
- * Px covered by one leap when running at `speed` px/s with the animation at `fps`:
- * a cycle lasts RUN_CYCLE_SLOTS / fps seconds and holds RUN_LEAPS_PER_CYCLE leaps.
- */
-export function runStrideFor(speed: number, fps: number): number {
-  const cycleSeconds = RUN_CYCLE_SLOTS / effectiveRunFps(fps);
-  return (Math.max(1, speed) * cycleSeconds) / RUN_LEAPS_PER_CYCLE;
+/** Duration (ms) of one animation frame at `fps`. */
+export function runFrameMs(fps: number): number { return 1000 / effectiveRunFps(fps); }
+/** Animation frames per leap (sum of the phase durations). */
+export function runLeapFrames(leap: readonly RunPhase[] = RUN_LEAP): number { return leap.reduce((sum, phase) => sum + phase.frames, 0); }
+/** Duration (ms) of one leap at `fps`. */
+export function runLeapMs(fps: number, leap: readonly RunPhase[] = RUN_LEAP): number { return runFrameMs(fps) * runLeapFrames(leap); }
+/** Px covered by one leap when running at `speed` px/s with the animation at `fps`. */
+export function runStrideFor(speed: number, fps: number, leap: readonly RunPhase[] = RUN_LEAP): number {
+  return (Math.max(1, speed) * runLeapMs(fps, leap)) / 1000;
 }
-/** Px covered by one full cycle (two leaps). */
-export function runCycleDistance(stridePx: number): number { return stridePx * RUN_LEAPS_PER_CYCLE; }
-/** Duration (ms) of one full cycle at `speed` px/s. */
-export function runCycleMs(stridePx: number, speed: number): number { return (runCycleDistance(stridePx) / Math.max(1, speed)) * 1000; }
-/** Frames per second of the run animation for this stride/speed. */
-export function runFps(stridePx: number, speed: number): number { return RUN_CYCLE_SLOTS / (runCycleMs(stridePx, speed) / 1000); }
 
+/** Index of the leap phase at `elapsedMs` since the run started. */
+export function runPhaseAt(elapsedMs: number, fps: number, leap: readonly RunPhase[] = RUN_LEAP): number {
+  const frameMs = runFrameMs(fps);
+  const leapMs = frameMs * runLeapFrames(leap);
+  let local = ((elapsedMs % leapMs) + leapMs) % leapMs;
+  for (let i = 0; i < leap.length - 1; i++) {
+    const duration = leap[i].frames * frameMs;
+    if (local < duration - 1e-9) return i;
+    local -= duration;
+  }
+  return leap.length - 1;
+}
+/** Local run frame (0..2) shown at `elapsedMs` since the run started. */
+export function runFrameAt(elapsedMs: number, fps: number, leap: readonly RunPhase[] = RUN_LEAP): number {
+  return leap[runPhaseAt(elapsedMs, fps, leap)].frame;
+}
 /** Speed multiplier at `elapsedMs` since the run started. */
-export function runSpeedMultiplierAt(elapsedMs: number, stridePx: number, speed: number): number {
-  const cycle = runCycleMs(stridePx, speed);
-  const slotMs = cycle / RUN_CYCLE_SLOTS;
-  const inCycle = ((elapsedMs % cycle) + cycle) % cycle;
-  return RUN_SLOT_SPEED[Math.min(RUN_CYCLE_SLOTS - 1, Math.floor(inCycle / slotMs))];
+export function runSpeedMultiplierAt(elapsedMs: number, fps: number, leap: readonly RunPhase[] = RUN_LEAP): number {
+  return leap[runPhaseAt(elapsedMs, fps, leap)].speed;
 }
 
 /**
  * Distance (px) covered between `fromMs` and `toMs` (ms since the run started) — exact piecewise
- * integration of the burst profile, so the average speed over any whole cycle equals `speed`.
+ * integration of the leap profile, so the average speed over any whole leap equals `speed`.
  */
-export function runDistanceBetween(fromMs: number, toMs: number, stridePx: number, speed: number): number {
+export function runDistanceBetween(fromMs: number, toMs: number, speed: number, fps: number, leap: readonly RunPhase[] = RUN_LEAP): number {
   if (!(toMs > fromMs)) return 0;
-  const cycle = runCycleMs(stridePx, speed);
-  const slotMs = cycle / RUN_CYCLE_SLOTS;
-  // integer slot counter (never derived from `t` again) — dividing back would loop on float boundaries
-  let slotIndex = Math.max(0, Math.floor(fromMs / slotMs + 1e-9));
-  let t = fromMs, distance = 0;
+  const frameMs = runFrameMs(fps);
+  const durations = leap.map((phase) => phase.frames * frameMs);
+  const leapMs = durations.reduce((sum, d) => sum + d, 0);
+  // locate the phase holding `fromMs` once, then advance phase by phase with an integer cursor
+  // (re-deriving the phase from float time at every step would loop on boundaries)
+  const leapIndex = Math.max(0, Math.floor(fromMs / leapMs + 1e-9));
+  let local = Math.max(0, fromMs - leapIndex * leapMs);
+  let phase = 0;
+  while (phase < leap.length - 1 && local >= durations[phase] - 1e-9) { local -= durations[phase]; phase++; }
+  let t = fromMs, phaseEnd = fromMs + Math.max(0, durations[phase] - local), distance = 0;
   while (t < toMs - 1e-9) {
-    const segmentEnd = Math.min((slotIndex + 1) * slotMs, toMs);
-    if (segmentEnd > t) distance += speed * RUN_SLOT_SPEED[slotIndex % RUN_CYCLE_SLOTS] * ((segmentEnd - t) / 1000);
+    const segmentEnd = Math.min(phaseEnd, toMs);
+    if (segmentEnd > t) distance += speed * leap[phase].speed * ((segmentEnd - t) / 1000);
     t = segmentEnd;
-    slotIndex++;
+    if (segmentEnd >= phaseEnd - 1e-9) { phase = (phase + 1) % leap.length; phaseEnd += durations[phase]; }
   }
   return distance;
-}
-
-/** Slot (0..3) of the cycle after `distance` px of running (distance-driven playback). */
-export function runSlotForDistance(distance: number, stridePx: number): number {
-  const cycle = runCycleDistance(stridePx);
-  const share = (((distance % cycle) + cycle) % cycle) / cycle;
-  for (let i = 0; i < RUN_CYCLE_SLOTS; i++) if (share < RUN_SLOT_DISTANCE_END[i]) return i;
-  return RUN_CYCLE_SLOTS - 1;
-}
-/** Local frame (0..2) shown after `distance` px of running. */
-export function runFrameForDistance(distance: number, stridePx: number): number {
-  return RUN_FRAME_SEQUENCE[runSlotForDistance(distance, stridePx)];
 }

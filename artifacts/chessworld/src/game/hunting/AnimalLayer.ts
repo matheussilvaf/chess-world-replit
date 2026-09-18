@@ -24,7 +24,8 @@ export interface AnimalView {
   y: number;
   dir: number;
   anim: AnimalAnimation;
-  stride: number;
+  /** Local run frame (0..2) picked by the server while running. */
+  frame: number;
   hp: number;
   maxHp: number;
   level: HuntingLevel;
@@ -66,7 +67,7 @@ export class AnimalLayer {
       if (entry) {
         entry.view = view;
         entry.interpolator.pushSnapshot(view.x, view.y);
-        entry.playback.push(view.anim, view.dir, view.stride, Date.now());
+        entry.playback.push(view.anim, view.dir, view.frame, Date.now());
         if (view.dead) this.fade(entry);
       } else {
         this.add(view);
@@ -85,7 +86,7 @@ export class AnimalLayer {
     const moved = entry.view.x !== view.x || entry.view.y !== view.y;
     entry.view = view;
     if (moved) entry.interpolator.pushSnapshot(view.x, view.y);
-    entry.playback.push(view.anim, view.dir, view.stride, Date.now());
+    entry.playback.push(view.anim, view.dir, view.frame, Date.now());
     if (view.dead) this.fade(entry);
   }
 
@@ -101,12 +102,12 @@ export class AnimalLayer {
     }).setOrigin(0.5, 1);
     container.add([bar, label]);
     const playback = new AnimalPlayback();
-    playback.push(view.anim, view.dir, view.stride, Date.now());
+    playback.push(view.anim, view.dir, view.frame, Date.now());
     const entry: Entry = {
       view, container, sprite: null, label, bar,
       interpolator: new RemotePlayerInterpolator(view.x, view.y),
       playback,
-      playbackState: playback.update(Date.now(), view.x, view.y),
+      playbackState: playback.update(Date.now()),
       rig: null,
       dying: false,
     };
@@ -128,7 +129,7 @@ export class AnimalLayer {
     const bounds = Phaser.Geom.Rectangle.Inflate(new Phaser.Geom.Rectangle(view.x, view.y, view.width, view.height), 200, 200);
     for (const entry of this.entries.values()) {
       const pos = entry.interpolator.getPosition(deltaMs);
-      entry.playbackState = entry.playback.update(Date.now(), pos.x, pos.y);
+      entry.playbackState = entry.playback.update(Date.now());
       entry.container.setPosition(pos.x, pos.y).setDepth(this.depthForY(pos.y));
       if (!bounds.contains(pos.x, pos.y) || entry.dying) continue;
       this.refresh(entry);
