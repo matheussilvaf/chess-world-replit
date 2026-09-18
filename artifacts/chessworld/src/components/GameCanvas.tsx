@@ -54,6 +54,12 @@ import { totalSkillLevel } from '../shared/progress/EnergySkillsShapes';
 import { BigChessOverlays } from './game/bigchess/BigChessOverlays';
 import { bigChessPieceFor, parseBigChessSlots, type BigChessPieceView } from '../shared/bigchess/BigChessShapes';
 import { parseAllowedIds } from '../shared/craft/PlaceableStations';
+import { HUNT_MSG, type HuntContractsPayload, type HuntEventPayload, type HuntStatePayload } from '../shared/hunting/HuntingShapes';
+import type { AnimalView } from '../game/hunting/AnimalLayer';
+import type { NpcView } from '../game/hunting/NpcLayer';
+import { useHuntingStore } from '../stores/huntingStore';
+import { HuntingContractsModal } from './hunting/HuntingContractsModal';
+import { ActiveContractChip } from './hunting/ActiveContractChip';
 
 export function GameCanvas() {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -77,6 +83,7 @@ export function GameCanvas() {
   const skillsOpen = useProgressStore((s) => s.skillsOpen);
   const recipeBookOpen = useRecipeBookStore((s) => s.open);
   const dropPlacementActive = useInventoryUiStore((s) => !!s.placement);
+  const huntingModalOpen = useHuntingStore((s) => s.modalOpen);
   const closeStationPanel = useCallback(() => {
     setStationId(null);
     setStationPlacedId(null);
@@ -654,6 +661,8 @@ export function GameCanvas() {
       useBigChessStore.getState().trackRequest(requestId, { kind: 'attack', square });
       room.send('bigchess_attack', { requestId, square });
     };
+    scene.onHuntingNpcTalk = () => room.send(HUNT_MSG.npcTalk, {});
+    scene.onHuntingArrowHit = (animalId) => room.send(HUNT_MSG.arrowHit, { requestId: crypto.randomUUID(), animalId });
     setStationCraftSender({
       send: (payload) => room.send('craft_item', payload),
       cancel: (requestId) => room.send('craft_cancel', { requestId }),
@@ -912,6 +921,91 @@ export function GameCanvas() {
         scene.syncBigChessPieces([]);
       };
     }
+    // Caça: coleções só existem nas salas craft; clientes antigos seguem sem impacto.
+    const animals = state.animals;
+    const npcs = state.npcs;
+    let detachHunting: (() => void) | undefined;
+    if (animals && typeof animals.onAdd === 'function') {
+      const toAnimal = (animal: any, id: string): AnimalView => ({
+        id,
+        variantId: String(animal.variantId),
+        name: String(animal.name ?? 'Animal'),
+        x: Number(animal.x),
+        y: Number(animal.y),
+        dir: Number(animal.dir ?? 0),
+        anim: animal.anim === 'walk' || animal.anim === 'run' || animal.anim === 'attack' ? animal.anim : 'idle',
+        hp: Number(animal.hp ?? 0),
+        maxHp: Number(animal.maxHp ?? 1),
+        level: animal.level === 'easy' || animal.level === 'moderate' || animal.level === 'hard' ? animal.level : 'medium',
+        dead: animal.dead === true,
+        contractOwner: String(animal.contractOwner ?? ''),
+      });
+      const animalViews = new Map<string, AnimalView>();
+      const animalOffs = new Map<string, () => void>();
+      animals.forEach((animal: any, id: string) => animalViews.set(id, toAnimal(animal, id)));
+      scene.syncAnimals([...animalViews.values()]);
+      const offAnimalAdd = animals.onAdd((animal: any, id: string) => {
+        const update = () => {
+          const view = toAnimal(animal, id);
+          animalViews.set(id, view);
+          scene.updateAnimal(view);
+        };
+        update();
+        animalOffs.get(id)?.();
+        const off = animal.onChange?.(update);
+        if (typeof off === 'function') animalOffs.set(id, off);
+      });
+      const offAnimalRemove = animals.onRemove((_: any, id: string) => {
+        animalOffs.get(id)?.();
+        animalOffs.delete(id);
+        animalViews.delete(id);
+        scene.removeAnimal(id);
+      });
+      const npcViews = new Map<string, NpcView>();
+      const npcOffs = new Map<string, () => void>();
+      if (npcs && typeof npcs.forEach === 'function') {
+        npcs.forEach((npc: any, id: string) => npcViews.set(id, {
+          id, x: Number(npc.x), y: Number(npc.y), dir: Number(npc.dir ?? 0), isMoving: npc.isMoving === true,
+        }));
+      }
+      scene.syncHuntingNpcs([...npcViews.values()]);
+      const offNpcAdd = npcs && typeof npcs.onAdd === 'function' ? npcs.onAdd((npc: any, id: string) => {
+        const update = () => {
+          const view = { id, x: Number(npc.x), y: Number(npc.y), dir: Number(npc.dir ?? 0), isMoving: npc.isMoving === true };
+          npcViews.set(id, view);
+          scene.updateHuntingNpc(view);
+        };
+        update();
+        npcOffs.get(id)?.();
+        const off = npc.onChange?.(update);
+        if (typeof off === 'function') npcOffs.set(id, off);
+      }) : undefined;
+      const offNpcRemove = npcs && typeof npcs.onRemove === 'function' ? npcs.onRemove((_: any, id: string) => {
+        npcOffs.get(id)?.();
+        npcOffs.delete(id);
+        npcViews.delete(id);
+        scene.removeHuntingNpc(id);
+      }) : undefined;
+      detachHunting = () => {
+        if (typeof offAnimalAdd === 'function') offAnimalAdd();
+        if (typeof offAnimalRemove === 'function') offAnimalRemove();
+        if (typeof offNpcAdd === 'function') offNpcAdd();
+        if (typeof offNpcRemove === 'function') offNpcRemove();
+        animalOffs.forEach((off) => off());
+        npcOffs.forEach((off) => off());
+        scene.syncAnimals([]);
+        scene.syncHuntingNpcs([]);
+      };
+    }
+    const removeHuntContracts = room.onMessage(HUNT_MSG.contracts, (data: HuntContractsPayload) => useHuntingStore.getState().applyContracts(data));
+    const removeHuntState = room.onMessage(HUNT_MSG.state, (data: HuntStatePayload) => useHuntingStore.getState().applyState(data));
+    const removeHuntEvent = room.onMessage(HUNT_MSG.event, (data: HuntEventPayload) => useHuntingStore.getState().applyEvent(data));
+    const removeAnimalHit = room.onMessage(HUNT_MSG.animalHit, (data: { animalId?: string; damage?: number }) => {
+      if (typeof data?.animalId === 'string') scene.flashAnimalHit(data.animalId, Number(data.damage ?? 0));
+    });
+    const removeHuntRequest = room.onMessage(HUNT_MSG.requestResult, (data: { requestId?: string; ok?: boolean; error?: string }) => {
+      if (typeof data?.requestId === 'string') useHuntingStore.getState().resolveRequest(data.requestId, data.ok === true, data.error);
+    });
     const removeEquipError = room.onMessage('equip_error', (data: { message?: string }) => {
       usePlayerCharacterStore.getState().setEquipError(data.message ?? 'Não foi possível equipar.');
     });
@@ -964,6 +1058,12 @@ export function GameCanvas() {
       detachDrops?.();
       detachPlaced?.();
       detachBigChess?.();
+      detachHunting?.();
+      if (typeof removeHuntContracts === 'function') removeHuntContracts();
+      if (typeof removeHuntState === 'function') removeHuntState();
+      if (typeof removeHuntEvent === 'function') removeHuntEvent();
+      if (typeof removeAnimalHit === 'function') removeAnimalHit();
+      if (typeof removeHuntRequest === 'function') removeHuntRequest();
       if (typeof removeWalletUpdate === 'function') removeWalletUpdate();
       if (typeof removeGambitsUpdate === 'function') removeGambitsUpdate();
       if (typeof removeRatingUpdate === 'function') removeRatingUpdate();
@@ -973,6 +1073,9 @@ export function GameCanvas() {
       scene.onPlacedStationClick = null;
       scene.onBigChessPieceClick = null;
       scene.onBigChessLocalHit = null;
+      scene.onHuntingNpcTalk = null;
+      scene.onHuntingArrowHit = null;
+      useHuntingStore.getState().reset();
       setInventoryBridge(null);
       clearStationCraftBridge();
       clearEatBridge();
@@ -1377,6 +1480,8 @@ export function GameCanvas() {
       )}
       <PlacedStationOverlays />
       <BigChessOverlays />
+      <ActiveContractChip />
+      {huntingModalOpen && <HuntingContractsModal />}
       <PerformanceHud />
     </div>
   );

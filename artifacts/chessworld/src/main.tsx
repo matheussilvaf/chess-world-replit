@@ -63,6 +63,9 @@ const BigChessAdminPage = lazy(() =>
     default: m.BigChessAdminPage,
   })),
 );
+const HuntingControllerPage = lazy(() =>
+  import('./components/admin/hunting/HuntingControllerPage.tsx'),
+);
 
 // Bancadas DEV (inventário: DnD/durabilidade; controles: configurações e
 // teclas) sem Phaser. Fora do DEV o `import.meta.env.DEV` é substituído
@@ -102,6 +105,7 @@ createRoot(document.getElementById('root')!).render(
         <Route path="/admin/assets-controller" element={<AssetsControllerPage />} />
         <Route path="/admin/skills-energy" element={<SkillsEnergyPage />} />
         <Route path="/admin/bigchess" element={<BigChessAdminPage />} />
+        <Route path="/admin/hunting" element={<HuntingControllerPage />} />
         <Route path="/admin/rating-gambits" element={<RatingGambitsPage />} />
         <Route path="/admin/chess-matches" element={<ChessMatchesPage />} />
         {/* Old editor URL — kept as a permanent redirect (spec §3) */}

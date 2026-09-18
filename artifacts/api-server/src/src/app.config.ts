@@ -49,6 +49,7 @@ import {
   publicRatingConfigHandler,
   ratingAdminRouter,
 } from "./rating/ratingRoutes.js";
+import { huntingAdminRouter, publicHuntingConfigHandler } from "./hunting/huntingRoutes.js";
 
 const config: ConfigOptions = {
   // Explicit liveness probing: without app-level pings a half-open socket
@@ -226,6 +227,8 @@ const config: ConfigOptions = {
     app.get("/api/bigchess-config", publicBigChessConfigHandler);
     app.use("/api/admin/bigchess-config", bigChessAdminRouter);
     app.use("/api/me/wallet", walletRouter);
+    app.get("/api/hunting-config", publicHuntingConfigHandler);
+    app.use("/api/admin/hunting-config", huntingAdminRouter);
 
     // Rating Glicko-2 + Gambits (spec: /admin/rating-gambits) e banco de
     // partidas (spec: /admin/chess-matches): config única, reset em massa,

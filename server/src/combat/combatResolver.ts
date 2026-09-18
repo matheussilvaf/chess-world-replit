@@ -31,6 +31,15 @@ import {
 } from '../shared/combat/CharacterCombatShapes.js';
 import { getCharacterConfig } from './characterConfigService.js';
 import { COMPOSED_SHEET } from '../shared/characters/PlayerCharacterShapes.js';
+import { parseWeaponRef } from '../shared/characters/PlayerCharacterShapes.js';
+import {
+  getActiveWeaponHitboxRects,
+  resolveWeaponProfileId,
+} from '../shared/combat/WeaponShapes.js';
+import { getWeaponFamiliesCached } from '../rigs/weaponFamilyRepository.js';
+import { getRigCached } from '../rigs/rigConfigRepository.js';
+import { getWeaponProfileCached } from '../rigs/weaponProfileRepository.js';
+import { DEFAULT_RIG_ID, type LocalRectangle as RigLocalRectangle, type RigDirection } from '../shared/combat/RigShapes.js';
 
 const FPS = 12;
 const ATTACK_MOVEMENTS = new Set(['attack', 'walk-attack', 'run-attack', 'shoot']);
@@ -54,6 +63,8 @@ export interface CombatHooks {
   onKill?: (attacker: PlayerState | null, target: PlayerState) => void;
   /** `target` reviveu (HP cheio). */
   onRevive?: (target: PlayerState) => void;
+  onPlayerDied?: (sessionId: string) => void;
+  onSwingFrame?: (attackerSessionId: string, worldRects: LocalRectangle[], swingId: number) => void;
 }
 
 /** Último golpe aceito de uma sessão (o Big Chess Board só conta acertos ancorados nele). */
@@ -103,6 +114,7 @@ export class CombatResolver {
       respawnMs: COMBAT_RESPAWN_MS,
     });
     this.hooks.onKill?.(attacker, target);
+    this.hooks.onPlayerDied?.(sessionId);
     this.room.clock.setTimeout(() => {
       // Stale-timer guard: only the timer of the CURRENT death revives.
       if (this.deadUntil.get(sessionId) !== reviveAt) return;
@@ -191,6 +203,35 @@ export class CombatResolver {
         movement,
         direction,
       });
+      const huntingActive = !!(this.room as Room<WorldState> & { hunting?: unknown }).hunting;
+      if (movement !== 'shoot' && huntingActive) {
+        const weapon = parseWeaponRef(attacker.equippedWeapon);
+        if (weapon?.category === 'crafttools') return;
+        const [families, rig] = await Promise.all([
+          getWeaponFamiliesCached(),
+          getRigCached(DEFAULT_RIG_ID),
+        ]);
+        const currentSwing = this.lastSwing.get(client.sessionId);
+        if (!currentSwing || currentSwing.at !== now || this.room.state.players.get(client.sessionId) !== attacker) return;
+        const family = weapon?.category === 'weapon' ? families[weapon.familyId] : null;
+        const profileId = resolveWeaponProfileId(family, rig);
+        const profile = profileId ? await getWeaponProfileCached(profileId) : null;
+        if (this.lastSwing.get(client.sessionId)?.at !== now || this.room.state.players.get(client.sessionId) !== attacker) return;
+        const rigDirection = composedRigDirection(attacker.direction);
+        const middleFrame = Math.floor(COMPOSED_SHEET.attackFrames.length / 2);
+        COMPOSED_SHEET.attackFrames.forEach((_sheetFrame, localFrame) => {
+          this.room.clock.setTimeout(() => {
+            const still = this.room.state.players.get(client.sessionId);
+            if (!still || still !== attacker || still.currentBoardId || this.isDead(client.sessionId)) return;
+            if (this.lastSwing.get(client.sessionId)?.at !== now) return;
+            let localRects = profile ? getActiveWeaponHitboxRects(profile, rigDirection, localFrame) : [];
+            if (!profile && localFrame === middleFrame) localRects = [composedFallbackHitbox(rigDirection)];
+            if (localRects.length === 0) return;
+            const worldRects = localRects.map((rect) => localShapeToWorldCoordinates(rect, still.x, still.y));
+            this.hooks.onSwingFrame?.(client.sessionId, worldRects, now);
+          }, (localFrame / FPS) * 1000);
+        });
+      }
       return;
     }
 
@@ -257,6 +298,7 @@ export class CombatResolver {
     if (hitLocal.length === 0) return;
     // attacker.x/y is the sprite origin's world position
     const hitWorld = hitLocal.map((r) => localShapeToWorldCoordinates(r, attacker.x, attacker.y));
+    this.hooks.onSwingFrame?.(attackerSessionId, hitWorld, this.lastSwing.get(attackerSessionId)?.at ?? 0);
 
     const entries: Array<[string, PlayerState]> = [];
     this.room.state.players.forEach((p, sid) => entries.push([sid, p]));
@@ -309,6 +351,21 @@ export class CombatResolver {
   }
 }
 
+function composedRigDirection(direction: string): RigDirection {
+  if (direction.includes('left')) return 'west';
+  if (direction.includes('right')) return 'east';
+  if (direction === 'up') return 'north';
+  return 'south';
+}
+
+function composedFallbackHitbox(direction: RigDirection): RigLocalRectangle {
+  const width = 44, height = 40, ahead = 30;
+  if (direction === 'west') return { id: 'hunting-fallback', x: -ahead - width, y: -height / 2, width, height };
+  if (direction === 'east') return { id: 'hunting-fallback', x: ahead, y: -height / 2, width, height };
+  if (direction === 'north') return { id: 'hunting-fallback', x: -width / 2, y: -ahead - height, width, height };
+  return { id: 'hunting-fallback', x: -width / 2, y: ahead, width, height };
+}
+
 /** First asset of a movement, e.g. 'attack' → 'attack/attack-4dir.png'. */
 function findAssetKey(config: CharacterConfigV1, movement: string): string | null {
   const prefix = `${movement}/`;
@@ -323,7 +380,7 @@ function findAssetKey(config: CharacterConfigV1, movement: string): string | nul
  * moving, idle→walk→run when standing. Diagonal directions degrade to their
  * horizontal component for 4-direction sheets, then to 'down'.
  */
-function targetHurtboxUnion(cfg: CharacterConfigV1, target: PlayerState): LocalRectangle[] {
+export function targetHurtboxUnion(cfg: CharacterConfigV1, target: PlayerState): LocalRectangle[] {
   const movements = target.isMoving ? ['walk', 'run', 'idle'] : ['idle', 'walk', 'run'];
   const dir = DIRECTIONS.has(target.direction) ? target.direction : 'down';
   const fallbacks = [dir];

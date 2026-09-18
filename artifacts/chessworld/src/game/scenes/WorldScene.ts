@@ -74,6 +74,8 @@ import {
   type Rect as StationRect,
 } from '../../shared/craft/PlaceableStations';
 import type { PlacedStationView } from '../../stores/placedStationsStore';
+import { AnimalLayer, type AnimalView } from '../hunting/AnimalLayer';
+import { NpcLayer, type NpcView } from '../hunting/NpcLayer';
 
 interface ChessArenaZone {
   id: string;
@@ -233,10 +235,14 @@ export class WorldScene extends Phaser.Scene {
   public onPlacedStationClick: ((placedId: string) => void) | null = null;
   /** Peças do Big Chess Board (desenho + acerto local); criado em create(). */
   private bigChessLayer: BigChessPieceLayer | null = null;
+  private animalLayer: AnimalLayer | null = null;
+  private npcLayer: NpcLayer | null = null;
   /** Clique numa peça do tabuleiro (abre o card). */
   public onBigChessPieceClick: ((square: string) => void) | null = null;
   /** Acerto local (golpe/flecha) numa peça — o GameCanvas manda `bigchess_attack` à sala. */
   public onBigChessLocalHit: ((square: string, mode: BigChessHitMode) => void) | null = null;
+  public onHuntingArrowHit: ((animalId: string) => void) | null = null;
+  public onHuntingNpcTalk: (() => void) | null = null;
   private inventoryPickupSender: ((dropId: string) => void) | null = null;
 
   // Debug graphics
@@ -590,6 +596,7 @@ export class WorldScene extends Phaser.Scene {
       if (this.placedStationLayer?.hitTest(worldPoint.x, worldPoint.y)) return;
       // Peça do tabuleiro: o clique abre o card, não anda.
       if (this.bigChessLayer?.hitTest(worldPoint.x, worldPoint.y)) return;
+      if (this.npcLayer?.hitTest(worldPoint.x, worldPoint.y)) return;
       if (this.inMatch) return;
       this.navigateTo(worldPoint.x, worldPoint.y);
     });
@@ -614,6 +621,17 @@ export class WorldScene extends Phaser.Scene {
         this.applyDynamicObstacles();
       },
     );
+    this.animalLayer = new AnimalLayer(
+      this,
+      (y) => (this.craftingRuntime.active ? this.craftingRuntime.depthForY(y) : 80),
+      () => this.localPlayerId || null,
+      (animalId) => this.onHuntingArrowHit?.(animalId),
+    );
+    this.npcLayer = new NpcLayer(
+      this,
+      (y) => (this.craftingRuntime.active ? this.craftingRuntime.depthForY(y) : 80),
+      () => this.onHuntingNpcTalk?.(),
+    );
 
     this.events.once('shutdown', () => {
       this.keyboardControls?.destroy();
@@ -625,6 +643,10 @@ export class WorldScene extends Phaser.Scene {
       this.placedStationLayer = null;
       this.bigChessLayer?.destroy();
       this.bigChessLayer = null;
+      this.animalLayer?.destroy();
+      this.animalLayer = null;
+      this.npcLayer?.destroy();
+      this.npcLayer = null;
     });
 
     // Setup zoom controls
@@ -1563,6 +1585,8 @@ export class WorldScene extends Phaser.Scene {
       this.otherPlayers.forEach((remote) => {
         remote.container.setDepth(this.craftingRuntime.depthForY(remote.container.y));
       });
+      this.animalLayer?.tick(delta);
+      this.npcLayer?.tick(delta);
     }
 
     // Big Chess Board: golpe local (só ARMA principal) contra as casas com peça
@@ -1577,7 +1601,9 @@ export class WorldScene extends Phaser.Scene {
     if (this.arrowProjectiles) {
       const tester = this.craftingRuntime.active
         ? (rects: Phaser.Geom.Rectangle[], x: number, y: number, damage: number) =>
-            this.craftingRuntime.tryProjectileHit(rects, x, y, damage) || (this.bigChessLayer?.tryProjectileHit(rects) ?? false)
+            this.craftingRuntime.tryProjectileHit(rects, x, y, damage)
+              || (this.animalLayer?.tryProjectileHit(rects) ?? false)
+              || (this.bigChessLayer?.tryProjectileHit(rects) ?? false)
         : null;
       this.arrowProjectiles.update(delta, tester);
     }
@@ -4666,6 +4692,34 @@ export class WorldScene extends Phaser.Scene {
   /** Espelha as peças do Big Chess Board da sala (store → cena). */
   public syncBigChessPieces(views: BigChessPieceView[]) {
     this.bigChessLayer?.sync(views);
+  }
+
+  public syncAnimals(views: AnimalView[]) {
+    this.animalLayer?.sync(views);
+  }
+
+  public updateAnimal(view: AnimalView) {
+    this.animalLayer?.updateAnimal(view);
+  }
+
+  public removeAnimal(id: string) {
+    this.animalLayer?.removeAnimal(id);
+  }
+
+  public syncHuntingNpcs(views: NpcView[]) {
+    this.npcLayer?.sync(views);
+  }
+
+  public updateHuntingNpc(view: NpcView) {
+    this.npcLayer?.updateNpc(view);
+  }
+
+  public removeHuntingNpc(id: string) {
+    this.npcLayer?.removeNpc(id);
+  }
+
+  public flashAnimalHit(animalId: string, damage: number) {
+    this.animalLayer?.flashHit(animalId, damage);
   }
 
   /** Fantasma do posicionamento de peça (null = remove). */

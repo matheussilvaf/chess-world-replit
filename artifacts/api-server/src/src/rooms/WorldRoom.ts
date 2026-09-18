@@ -33,6 +33,8 @@ import { totalSkillLevel, type ProgressSnapshot } from '../shared/progress/Energ
 import { loadDisplayRating, settleMatch } from '../rating/ratingService.js';
 import { DEFAULT_RATING_GAMBITS_CONFIG } from '../shared/rating/RatingShapes.js';
 import { persistMatchFinish, persistMatchStart, type MatchStartRecord } from '../rating/matchRepository.js';
+import { HuntingManager } from '../hunting/HuntingManager.js';
+import { HUNT_MSG } from '../shared/hunting/HuntingShapes.js';
 
 interface JoinOptions {
   /** Legado — IGNORADO para identidade (era spoofável). Mantido só por compat. */
@@ -99,7 +101,11 @@ export class WorldRoom extends Room<WorldState> {
       // Morreu de fome: acorda no spawn do mapa principal (KO em combate revive no lugar).
       if (this.starvedSessions.delete(target.sessionId)) this.respawnAfterStarvation(target.sessionId, target);
     },
+    onPlayerDied: (sessionId) => this.hunting?.onPlayerDied(sessionId),
+    onSwingFrame: (sessionId, rects, swingId) => this.hunting?.onSwingFrame(sessionId, rects, swingId),
   });
+  public hunting: HuntingManager | null = null;
+  private huntingGeneration = 0;
   /** Sessões cuja morte atual foi por fome (penalidade + respawn no mapa principal). */
   private starvedSessions = new Set<string>();
   /** Assinatura do progresso (energia/skills) por sessão autenticada. */
@@ -151,6 +157,25 @@ export class WorldRoom extends Room<WorldState> {
     this.clock.setInterval(() => void this.syncProgressState(), 30_000);
 
     this.region = String(options.region || 'default');
+    if (this.region.startsWith('craft:')) {
+      const generation = ++this.huntingGeneration;
+      void HuntingManager.create({
+        state: this.state,
+        region: this.region,
+        clock: this.clock,
+        clients: this.clients,
+        broadcast: (event, payload) => this.broadcast(event, payload),
+        isDead: (sessionId) => this.combatResolver.isDead(sessionId),
+        damagePlayer: (sessionId, damage, attackerName) => this.combatResolver.damagePlayer(sessionId, damage, attackerName),
+        lastSwing: (sessionId) => this.combatResolver.lastSwingFor(sessionId),
+      }).then((manager) => {
+        if (this.huntingGeneration === generation && this.region.startsWith('craft:')) {
+          this.hunting = manager;
+          if (manager) for (const client of this.clients) void manager.onJoin(client);
+        }
+        else manager?.destroy();
+      }).catch((e) => console.warn('[hunting] inicialização falhou:', e instanceof Error ? e.message : e));
+    }
     this.placedStations = new PlacedStationManager({
       state: this.state,
       region: this.region,
@@ -212,6 +237,12 @@ export class WorldRoom extends Room<WorldState> {
       if (typeof data.direction === 'string' && data.direction.length <= 16) player.direction = data.direction;
       player.isMoving = !!data.isMoving;
     });
+
+    this.onMessage(HUNT_MSG.npcTalk, (client) => void this.hunting?.npcTalk(client));
+    this.onMessage(HUNT_MSG.accept, (client, data) => void this.hunting?.accept(client, data));
+    this.onMessage(HUNT_MSG.claim, (client, data) => void this.hunting?.claim(client, data));
+    this.onMessage(HUNT_MSG.abandon, (client, data) => void this.hunting?.abandon(client, data));
+    this.onMessage(HUNT_MSG.arrowHit, (client, data) => void this.hunting?.arrowHit(client, data));
 
     this.onMessage('register_boards', (client, data) => {
       const { boards } = data as { boards: { id: string; name: string; x: number; y: number; width?: number; height?: number }[] };
@@ -1387,6 +1418,7 @@ export class WorldRoom extends Room<WorldState> {
     player.isMoving = false;
 
     this.state.players.set(client.sessionId, player);
+    void this.hunting?.onJoin(client);
     this.movementGuards.set(client.sessionId, performance.now());
     console.log(`[WorldRoom] Player joined: ${player.username} (${client.sessionId}) | total: ${this.state.players.size}`);
     if (!playerId.startsWith('anon:')) void this.inventorySnapshot(playerId).then((reply) => client.send(reply.event, reply.payload));
@@ -1478,6 +1510,7 @@ export class WorldRoom extends Room<WorldState> {
 
     const playerId = player.id;
     const username = player.username;
+    this.hunting?.onLeave(client.sessionId, player.id);
     console.log(`[WorldRoom] Player leaving: ${username} (${client.sessionId}) | consented: ${consented}`);
 
     // --- Synchronous state cleanup FIRST, before ANY await. A hung config or
@@ -1617,6 +1650,9 @@ export class WorldRoom extends Room<WorldState> {
   }
 
   async onDispose() {
+    this.huntingGeneration++;
+    this.hunting?.destroy();
+    this.hunting = null;
     // Clear all disconnect grace timers so they don't fire after room disposal.
     this.disconnectTimers.forEach((timers) => timers.forEach((t) => clearTimeout(t)));
     this.disconnectTimers.clear();
@@ -1768,6 +1804,7 @@ export class WorldRoom extends Room<WorldState> {
   }
 
   private async tick() {
+    this.hunting?.tick(1000 / this.TICK_RATE);
     const now = Date.now();
     const timedOutMatches: MatchState[] = [];
     const entries: [string, MatchState][] = [];

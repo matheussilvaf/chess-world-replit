@@ -6,6 +6,8 @@ import { VoiceParticipantState } from './VoiceParticipantState.js';
 import { WorldDropState } from './WorldDropState.js';
 import { PlacedStationState } from './PlacedStationState.js';
 import { BigChessPieceState } from './BigChessPieceState.js';
+import { AnimalState } from './AnimalState.js';
+import { NpcState } from './NpcState.js';
 
 export class WorldState extends Schema {
   players!: MapSchema<PlayerState>;
@@ -16,6 +18,8 @@ export class WorldState extends Schema {
   placedStations!: MapSchema<PlacedStationState>;
   /** Peças do Big Chess Board (chave = casa). */
   bigChessPieces!: MapSchema<BigChessPieceState>;
+  animals!: MapSchema<AnimalState>;
+  npcs!: MapSchema<NpcState>;
 
   constructor() {
     super();
@@ -26,6 +30,8 @@ export class WorldState extends Schema {
     this.worldDrops = new MapSchema<WorldDropState>();
     this.placedStations = new MapSchema<PlacedStationState>();
     this.bigChessPieces = new MapSchema<BigChessPieceState>();
+    this.animals = new MapSchema<AnimalState>();
+    this.npcs = new MapSchema<NpcState>();
   }
 }
 
@@ -37,4 +43,6 @@ defineTypes(WorldState, {
   worldDrops: { map: WorldDropState },
   placedStations: { map: PlacedStationState },
   bigChessPieces: { map: BigChessPieceState },
+  animals: { map: AnimalState },
+  npcs: { map: NpcState },
 });

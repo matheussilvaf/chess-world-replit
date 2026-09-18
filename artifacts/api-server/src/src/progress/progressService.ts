@@ -212,6 +212,11 @@ class ProgressService {
     return this.mutate(userId, (state, config, gains) => this.addXp(state, gains, 'fighting', config.skills.fighting[result]));
   }
 
+  /** XP concedido por uma ação autoritativa do servidor. */
+  grantSkillXp(userId: string, skill: SkillId, amount: number): Promise<ProgressSnapshot> {
+    return this.mutate(userId, (state, _config, gains) => this.addXp(state, gains, skill, amount));
+  }
+
   /** Itens coletados do chão: os com badge `food` dão XP de culinária. */
   async recordPickup(userId: string, items: InventoryItem[]): Promise<void> {
     const badges = await getCraftBadgesCached();
