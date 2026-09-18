@@ -20,6 +20,7 @@ Sem a conexão GitHub anexada ao ambiente o callback nem aparece, e `git push` H
 **Armadilha (set/2026):** `shellExec` no sandbox corta a saída em ~80 KB SEM marcar `truncated` — `base64 -w0` de arquivos grandes (WorldScene.ts, WorldRoom.ts) sobe blob truncado e a tree não bate. Para arquivos > ~50 KB ler com `readFile({ maxBytes: 1048576 })` e codificar em base64 DENTRO da função impura (`Buffer` só existe lá). `proxyFetch` do GitHub exige caminho relativo (`/repos/...`), não URL completa. A checagem "tree remota == `git rev-parse HEAD^{tree}`" é o que pega isso — nunca pular.
 
 ## Armadilhas extras do push via API (set/2026)
+- Passando `author` E `committer` iguais ao local (nome/email/data ISO de `%an|%ae|%aI`) com a mesma mensagem/tree/parent, o GitHub gera SHAs idênticos aos locais → depois basta `git fetch origin main` (fast-forward, sem `reset --hard`).
 - O `shellExec` do sandbox REMOVE tabulações da saída: `git diff-tree --name-status` vira `Mcaminho` (status colado). Usar `--name-only --diff-filter=ACMR` e `--diff-filter=D` em chamadas separadas.
 - A mensagem de commit lida por `git show -s --format=%B` e reagrupada perde as quebras de linha (o body vira uma linha só no GitHub). Ler a mensagem com `readFile` de um arquivo gerado por `git show -s --format=%B <sha> > /tmp/msg.txt`.
 - Ao replicar N commits, o SHA remoto difere do local; comparar parent pelo mapa local→remoto (o primeiro parent é o head remoto), não pelo SHA local.
