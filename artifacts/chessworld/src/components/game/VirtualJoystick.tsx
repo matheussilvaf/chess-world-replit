@@ -44,8 +44,9 @@ export function VirtualJoystick({ getScene }: { getScene: () => WorldScene | nul
       mode: 'static',
       position: { left: '50%', top: '50%' },
       size: joystick.size,
-      color: 'white',
-      restOpacity: 0.7,
+      // Fundo escuro translúcido + bolinha clara e opaca (o padrão "white/white a 50%" some dentro do círculo).
+      color: { back: 'rgba(15, 23, 42, 0.62)', front: 'linear-gradient(135deg, #c7d2fe, #6366f1)' },
+      restOpacity: 1,
       fadeTime: 0,
       multitouch: true,
       maxNumberOfJoysticks: 1,
@@ -88,7 +89,7 @@ export function VirtualJoystick({ getScene }: { getScene: () => WorldScene | nul
     <div
       ref={zoneRef}
       aria-label="Analógico de movimento"
-      className="absolute z-[140] pointer-events-auto select-none"
+      className="chess-joystick absolute z-[140] pointer-events-auto select-none"
       style={{
         width: zoneSize,
         height: zoneSize,
