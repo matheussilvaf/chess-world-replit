@@ -15,7 +15,11 @@ import { MatchHUD } from './game/MatchHUD';
 import { MatchRatingCard } from './game/MatchRatingCard';
 import { ChessBoardOverlay } from '../components/chess/ChessBoardOverlay';
 import { ProximityButton } from './game/ProximityButton';
+import { TouchControlsPositioner } from './game/TouchControlsPositioner';
 import { ZoneIndicator } from './game/ZoneIndicator';
+import { HudNotices } from './game/HudNotices';
+import { PlayerSummaryModal } from './game/PlayerSummaryModal';
+import { useFriendsStore } from '../stores/friendsStore';
 import { useColyseusConnection, useColyseusStore } from '../hooks/useColyseusConnection';
 import { leaveWorldRoom } from '../game/network/colyseusClient';
 import { Loader2, WifiOff, RefreshCw } from 'lucide-react';
@@ -30,6 +34,11 @@ export default function GameScene() {
     };
     window.addEventListener('beforeunload', handleBeforeUnload);
     return () => window.removeEventListener('beforeunload', handleBeforeUnload);
+  }, []);
+  useEffect(() => {
+    void useFriendsStore.getState().refresh();
+    const timer = window.setInterval(() => void useFriendsStore.getState().refresh(), 45_000);
+    return () => window.clearInterval(timer);
   }, []);
 
   if (phase === 'not_configured') {
@@ -79,11 +88,13 @@ export default function GameScene() {
     <div className="relative w-screen h-screen overflow-hidden bg-slate-900">
       <GameCanvas />
       <HUD />
+      <HudNotices />
       <PublicChat />
       <PlayerProfile />
       <BoardModal />
       <HouseModal />
       <FriendRequests />
+      <PlayerSummaryModal />
       <SettingsModal />
       <VoiceChatPanel />
       <InteractionDebugModal />
@@ -94,6 +105,7 @@ export default function GameScene() {
       <ChessBoardOverlay />
       <TableWaitingOverlays />
       <TournamentPanelOverlays />
+      <TouchControlsPositioner />
     </div>
   );
 }

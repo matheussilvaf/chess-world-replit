@@ -7,8 +7,10 @@
  * então nem o jogo nem o navegador reagem à tecla escolhida.
  */
 import { useEffect, useState } from 'react';
-import { Keyboard, RotateCcw } from 'lucide-react';
+import { Gamepad2, Keyboard, RotateCcw, Swords } from 'lucide-react';
 import { useControlsStore } from '../../../stores/controlsStore';
+import { useTouchControlsStore } from '../../../stores/touchControlsStore';
+import { useGameStore } from '../../../stores/gameStore';
 import {
   CONTROL_ACTION_LABELS,
   DEFAULT_KEY_BINDINGS,
@@ -27,6 +29,12 @@ export function ControlsSettings() {
   const setCapturing = useControlsStore((s) => s.setCapturing);
   const bind = useControlsStore((s) => s.bind);
   const resetBindings = useControlsStore((s) => s.resetBindings);
+  const joystick = useTouchControlsStore((s) => s.joystick);
+  const attack = useTouchControlsStore((s) => s.attack);
+  const setJoystick = useTouchControlsStore((s) => s.setJoystick);
+  const setAttack = useTouchControlsStore((s) => s.setAttack);
+  const setPositioning = useTouchControlsStore((s) => s.setPositioning);
+  const toggleSettings = useGameStore((s) => s.toggleSettings);
   const [notice, setNotice] = useState<{ text: string; tone: 'info' | 'warn' } | null>(null);
 
   // Captura da próxima tecla enquanto `capturing` estiver definido.
@@ -149,6 +157,45 @@ export function ControlsSettings() {
         </ul>
       </div>
 
+      <div className="space-y-3 border-t border-slate-700 pt-5">
+        <h4 className="flex items-center gap-2 font-medium text-white">
+          <Gamepad2 className="h-4 w-4 text-cyan-400" /> Analógico (celular)
+        </h4>
+        <label className="flex items-center justify-between text-sm text-slate-200">
+          Ativar
+          <input
+            type="checkbox"
+            checked={joystick.enabled}
+            onChange={(event) => setJoystick({ enabled: event.target.checked })}
+            className="h-4 w-4 accent-cyan-500"
+          />
+        </label>
+        <ControlSlider label="Transparência" value={joystick.opacity} min={0.15} max={1} step={0.05} onChange={(opacity) => setJoystick({ opacity })} />
+        <ControlSlider label="Tamanho" value={joystick.size} min={80} max={220} step={2} suffix=" px" onChange={(size) => setJoystick({ size })} />
+        <button
+          type="button"
+          onClick={() => { setPositioning('joystick'); toggleSettings(); }}
+          className="w-full rounded-lg border border-cyan-600/60 bg-cyan-500/10 px-3 py-2 text-sm font-medium text-cyan-200 hover:bg-cyan-500/20"
+        >
+          Mover na tela
+        </button>
+      </div>
+
+      <div className="space-y-3 border-t border-slate-700 pt-5">
+        <h4 className="flex items-center gap-2 font-medium text-white">
+          <Swords className="h-4 w-4 text-red-400" /> Botão de ataque
+        </h4>
+        <ControlSlider label="Tamanho" value={attack.size} min={56} max={140} step={2} suffix=" px" onChange={(size) => setAttack({ size })} />
+        <ControlSlider label="Transparência" value={attack.opacity} min={0.3} max={1} step={0.05} onChange={(opacity) => setAttack({ opacity })} />
+        <button
+          type="button"
+          onClick={() => { setPositioning('attack'); toggleSettings(); }}
+          className="w-full rounded-lg border border-red-600/60 bg-red-500/10 px-3 py-2 text-sm font-medium text-red-200 hover:bg-red-500/20"
+        >
+          Mover na tela
+        </button>
+      </div>
+
       <div className="flex items-center justify-between gap-3 min-h-[2rem]">
         <p
           role="status"
@@ -174,5 +221,35 @@ export function ControlsSettings() {
         </button>
       </div>
     </div>
+  );
+}
+
+function ControlSlider({
+  label, value, min, max, step, suffix = '', onChange,
+}: {
+  label: string;
+  value: number;
+  min: number;
+  max: number;
+  step: number;
+  suffix?: string;
+  onChange: (value: number) => void;
+}) {
+  return (
+    <label className="block text-xs text-slate-300">
+      <span className="mb-1 flex justify-between">
+        <span>{label}</span>
+        <span className="font-mono text-white">{value < 2 ? Math.round(value * 100) + '%' : Math.round(value) + suffix}</span>
+      </span>
+      <input
+        type="range"
+        min={min}
+        max={max}
+        step={step}
+        value={value}
+        onChange={(event) => onChange(Number(event.target.value))}
+        className="w-full accent-cyan-500"
+      />
+    </label>
   );
 }

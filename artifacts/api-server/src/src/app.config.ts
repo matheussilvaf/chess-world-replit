@@ -50,6 +50,7 @@ import {
   ratingAdminRouter,
 } from "./rating/ratingRoutes.js";
 import { huntingAdminRouter, publicHuntingConfigHandler } from "./hunting/huntingRoutes.js";
+import { friendsRouter, playersRouter } from "./friends/friendsRoutes.js";
 
 const config: ConfigOptions = {
   // Explicit liveness probing: without app-level pings a half-open socket
@@ -221,6 +222,8 @@ const config: ConfigOptions = {
     app.get("/api/energy-skills-config", publicEnergySkillsConfigHandler);
     app.use("/api/admin/energy-skills-config", energySkillsAdminRouter);
     app.use("/api/progress", progressRouter);
+    app.use("/api/friends", friendsRouter);
+    app.use("/api/players", playersRouter);
 
     // Big Chess Board (spec: /admin/bigchess): regras das peças/defesas no
     // admin, carteira de Crowns do jogador, config pública cacheada.

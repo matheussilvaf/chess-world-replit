@@ -2,4 +2,6 @@
 - [gitPush provider](gitpush-provider.md) — sempre `gitPush({ provider: "github" })`; quando o callback não existe, push via API Git Data (receita testada) e conferir tree sha.
 - [Same-file edit batching](edit-batching.md) — many Edit calls to one file in one batch can silently drop some; batch small, sed for repeats, grep/tsc-verify after.
 - [pnpm per-package installs](pnpm-installs.md) — instalar dependência de um app: `pnpm --filter @workspace/<pkg> add`; a ferramenta padrão falha com ERR_PNPM_ADDING_TO_ROOT.
-- [Hunting system](hunting-system.md) — animais/contratos/NPC: rig v2, geometria TMJ, HUNT_MSG, salto global `motion` editado só em /dev/caca (média = velocidade do nível), PUT /motion, tiros, lock só no resgate.
+- [Hunting system](hunting-system.md) — animais/contratos/NPC, co-op (partyId) e IA de ameaça: rig v2, geometria TMJ, HUNT_MSG, salto global `motion` editado só em /dev/caca (média = velocidade do nível), PUT /motion, tiros, lock só no resgate.
+- [Controles de toque](mobile-touch-controls.md) — analógico nipplejs (Phaser 4 → sem rex), camadas z do HUD móvel (ataque 150 < modais 500), store touchControls, verificar via /dev/controles.
+- [Sistema de amigos](friends-system.md) — friend_requests (requester_id/receiver_id, sem "visto"), escritas só via /api/friends, notifyUser em processo, teste com contas e2e.

@@ -316,6 +316,8 @@ export const HUNT_MSG = {
   accept: 'hunt_contract_accept',      // { requestId, contractId }
   claim: 'hunt_contract_claim',        // { requestId }
   abandon: 'hunt_contract_abandon',    // { requestId }
+  coopInvite: 'hunt_coop_invite',      // { requestId, friendUserId }
+  coopRespond: 'hunt_coop_respond',    // { requestId, inviteId, accept }
   arrowHit: 'hunt_arrow_hit',          // { requestId, animalId } — client-detected arrow hit, validated by last swing
   /** server → client */
   contracts: 'hunt_contracts',         // HuntContractsPayload
@@ -325,6 +327,8 @@ export const HUNT_MSG = {
   requestResult: 'hunt_request_result',// { requestId, ok, error? }
   shot: 'hunt_shot',                   // broadcast HuntShotPayload — an animal fired a projectile
   shotHit: 'hunt_shot_hit',            // broadcast HuntShotHitPayload — the projectile hit a player (remove it early)
+  coopTravel: 'hunt_coop_travel',      // { region }
+  teleport: 'hunt_teleport',           // { x, y }
 } as const;
 
 /**
@@ -348,6 +352,8 @@ export interface ActiveContractView {
   acceptedAt: number; deadline: number; xpReward: number; crownsReward: number;
   /** All animals killed — ready to claim at the NPC. */
   complete: boolean;
+  partyId?: string;
+  partyMembers?: Array<{ userId: string; username: string }>;
 }
 export interface HuntContractsPayload { now: number; contracts: HuntContractView[]; active: ActiveContractView | null; tableMissing?: boolean }
 export interface HuntStatePayload { active: ActiveContractView | null; now: number }
@@ -355,7 +361,12 @@ export type HuntEventType = 'progress' | 'completed' | 'claimed' | 'expired' | '
 export interface HuntEventPayload { type: HuntEventType; message: string; killed?: number; quantity?: number; xp?: number; crowns?: number; animalName?: string }
 
 /** Persisted per-player row (`player_hunting`). */
-export interface PlayerHuntingActive { contractId: string; variantId: string; quantity: number; killed: number; acceptedAt: number; deadline: number; region: string }
+export interface PlayerHuntingActive {
+  contractId: string; variantId: string; quantity: number; killed: number; acceptedAt: number; deadline: number; region: string;
+  partyId?: string;
+  /** Party progress when this member joined; used to prevent zero-participation offline rewards. */
+  joinedAtKilled?: number;
+}
 export interface PlayerHuntingRecord { active: PlayerHuntingActive | null; locks: Record<string, number> }
 
 // ───────────────────────── Parsing / normalization ─────────────────────────

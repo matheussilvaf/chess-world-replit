@@ -42,6 +42,8 @@ interface GameState {
   showChat: boolean;
   showProfile: boolean;
   showFriends: boolean;
+  showFriendsTab: 'friends' | 'requests';
+  selectedPlayerId: string | null;
   showSettings: boolean;
   showVoiceChat: boolean;
   boardLocked: boolean;
@@ -79,6 +81,8 @@ interface GameState {
   toggleChat: () => void;
   toggleProfile: () => void;
   toggleFriends: () => void;
+  openFriends: (tab?: 'friends' | 'requests') => void;
+  setSelectedPlayerId: (id: string | null) => void;
   toggleSettings: () => void;
   toggleVoiceChat: () => void;
 
@@ -112,6 +116,8 @@ export const useGameStore = create<GameState>((set, get) => ({
   showChat: false,
   showProfile: false,
   showFriends: false,
+  showFriendsTab: 'friends',
+  selectedPlayerId: null,
   showSettings: false,
   showVoiceChat: false,
   boardLocked: false,
@@ -150,6 +156,8 @@ export const useGameStore = create<GameState>((set, get) => ({
   toggleChat: () => set((s) => ({ showChat: !s.showChat, unreadChat: !s.showChat ? 0 : s.unreadChat })),
   toggleProfile: () => set((s) => ({ showProfile: !s.showProfile })),
   toggleFriends: () => set((s) => ({ showFriends: !s.showFriends })),
+  openFriends: (tab = 'friends') => set({ showFriends: true, showFriendsTab: tab }),
+  setSelectedPlayerId: (id) => set({ selectedPlayerId: id }),
   toggleSettings: () => set((s) => ({ showSettings: !s.showSettings })),
   toggleVoiceChat: () => set((s) => ({ showVoiceChat: !s.showVoiceChat })),
 

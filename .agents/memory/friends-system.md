@@ -1,0 +1,9 @@
+---
+name: Sistema de amigos
+description: Tabela friend_requests, rotas /api/friends, notificação em tempo real em processo e como testar as rotas com contas e2e.
+---
+- Tabela Supabase `friend_requests` já existia: `id, requester_id, receiver_id, status(pending|accepted|rejected), created_at, updated_at` — NÃO existe `sender_id` nem coluna de "visto" (sem DDL possível). "Visto" do badge é local: `chessworld.friends.seenAt.<userId>` no localStorage (badge = pendentes recebidas com created_at > seenAt; zera ao abrir a aba Solicitações).
+- **Todas as escritas passam pelo api-server** (`/api/friends`, `/api/players/:id/summary`, service role, `requireSupabaseAuth`), nunca pelo supabase-js do cliente (RLS desconhecida + validações: sem auto-pedido, sem duplicata, pedido cruzado vira aceite, só o destinatário responde). Ids interpolados em `.or(...)` do PostgREST → validar UUID antes (injeção de filtro).
+- Tempo real sem Supabase Realtime: registro em processo `server/src/realtime/userNotify.ts` (`registerClient/unregisterClient/notifyUser`) alimentado pelo WorldRoom/arena no join/leave; rotas chamam `notifyUser` (`friend_request`, `friend_accepted`); cliente trata em GameCanvas → `friendsStore` + `noticesStore.pushNotice` (HudNotices, z-300). Fallback: refresh a cada 45 s no jogo. Vale porque todas as salas rodam no MESMO processo — se um dia houver mais de um processo, trocar por pub/sub.
+- Resumo do jogador (clique no sprite → `PlayerSummaryModal`): nível/skills via ProgressService, rating/gambits em `profiles`, crowns em `player_wallets`, status de amizade calculado no servidor.
+- Teste das rotas: script node com `signInWithPassword` das contas e2e (`e2e-bot-a/b@chessworld.test`, senha em `scripts/e2e-tournament.mjs`) — o script precisa ficar dentro de `artifacts/api-server/scripts/` para resolver `@supabase/supabase-js` (fora dá ERR_MODULE_NOT_FOUND).

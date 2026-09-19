@@ -261,6 +261,9 @@ importers:
       livekit-client:
         specifier: ^2.20.2
         version: 2.20.2
+      nipplejs:
+        specifier: ^1.0.4
+        version: 1.0.4
       phaser:
         specifier: ^4.2.1
         version: 4.2.1
@@ -2894,6 +2897,9 @@ packages:
     peerDependencies:
       react: ^16.8 || ^17 || ^18 || ^19 || ^19.0.0-rc
       react-dom: ^16.8 || ^17 || ^18 || ^19 || ^19.0.0-rc
+
+  nipplejs@1.0.4:
+    resolution: {integrity: sha512-YtvRZDuyWQ+tOj0nUjfnZt4ZQmJVWfK9+yPmV5OXpQ4k4AkOGcSfKvSXbPNkV0ERqc4eakkBSZ7/Wyx1y6h/Sg==}
 
   node-gyp-build-optional-packages@5.2.2:
     resolution: {integrity: sha512-s+w+rBWnpTMwSFbaE0UXsRlg7hU4FjekKU4eyAih5T8nJuNZT1nNsskXpxmeqSK9UzkBl6UgRlnKc8hz8IEqOw==}
@@ -6086,6 +6092,8 @@ snapshots:
     dependencies:
       react: 19.1.0
       react-dom: 19.1.0(react@19.1.0)
+
+  nipplejs@1.0.4: {}
 
   node-gyp-build-optional-packages@5.2.2:
     dependencies:

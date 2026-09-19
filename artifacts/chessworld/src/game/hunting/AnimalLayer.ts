@@ -15,6 +15,7 @@ import {
   type AnimalRig,
 } from './huntingAssets';
 import { AnimalPlayback, type AnimalPlaybackState } from './animalPlayback';
+import { useHuntingStore } from '../../stores/huntingStore';
 
 export interface AnimalView {
   id: string;
@@ -143,9 +144,10 @@ export class AnimalLayer {
   contractTargets(): { id: string; name: string; x: number; y: number }[] {
     const me = this.localUserId();
     if (!me) return [];
+    const owner = useHuntingStore.getState().active?.partyId ?? me;
     const out: { id: string; name: string; x: number; y: number }[] = [];
     for (const entry of this.entries.values()) {
-      if (entry.dying || entry.view.dead || entry.view.contractOwner !== me) continue;
+      if (entry.dying || entry.view.dead || entry.view.contractOwner !== owner) continue;
       out.push({ id: entry.view.id, name: entry.view.name, x: entry.container.x, y: entry.container.y });
     }
     return out;
@@ -153,7 +155,8 @@ export class AnimalLayer {
 
   private refresh(entry: Entry): void {
     const { view, sprite, playbackState } = entry;
-    entry.label.setText(view.name).setColor(view.contractOwner && view.contractOwner === this.localUserId() ? '#facc15' : '#ffffff');
+    const owner = useHuntingStore.getState().active?.partyId ?? this.localUserId();
+    entry.label.setText(view.name).setColor(view.contractOwner && view.contractOwner === owner ? '#facc15' : '#ffffff');
     entry.label.setY(sprite ? -Math.max(34, sprite.displayHeight * (1 - sprite.originY) + 7) : -42);
     entry.bar.setY(entry.label.y + 2);
     entry.bar.clear();

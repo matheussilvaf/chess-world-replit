@@ -25,6 +25,7 @@ import type { WorldScene } from '../game/scenes/WorldScene';
 import type { Room } from 'colyseus.js';
 import { PlayerNameTags } from './game/PlayerNameTags';
 import { AttackButton } from './game/AttackButton';
+import { VirtualJoystick } from './game/VirtualJoystick';
 import { CharacterCreationModal } from './character-creation/CharacterCreationModal';
 import { ToolHotbar } from './game/ToolHotbar';
 import { CollectionInventoryPanel } from './game/CollectionInventoryPanel';
@@ -61,6 +62,10 @@ import { useHuntingStore } from '../stores/huntingStore';
 import { HuntingContractsModal } from './hunting/HuntingContractsModal';
 import { ActiveContractChip } from './hunting/ActiveContractChip';
 import { HuntCompass } from './hunting/HuntCompass';
+import { CoopInviteModal } from './hunting/CoopInviteModal';
+import { CoopInviteFriendPicker } from './hunting/CoopInviteFriendPicker';
+import { useFriendsStore, openFriends } from '../stores/friendsStore';
+import { pushNotice } from '../stores/noticesStore';
 
 export function GameCanvas() {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -85,6 +90,8 @@ export function GameCanvas() {
   const recipeBookOpen = useRecipeBookStore((s) => s.open);
   const dropPlacementActive = useInventoryUiStore((s) => !!s.placement);
   const huntingModalOpen = useHuntingStore((s) => s.modalOpen);
+  const coopInvite = useHuntingStore((s) => s.coopInvite);
+  const invitePickerOpen = useHuntingStore((s) => s.invitePickerOpen);
   const closeStationPanel = useCallback(() => {
     setStationId(null);
     setStationPlacedId(null);
@@ -573,6 +580,10 @@ export function GameCanvas() {
     scene.setAttackSender((payload) => {
       room.send('attack', payload);
     });
+    scene.onPlayerClick = (playerId) => {
+      const ownId = useAuthStore.getState().user?.id;
+      if (playerId && playerId !== ownId) useGameStore.getState().setSelectedPlayerId(playerId);
+    };
     scene.setInventoryPickupSender((dropId) => room.send('inventory_pickup', { requestId: crypto.randomUUID(), dropId }));
     // Estação portátil posicionada: dono/autorizado abre o card privado; os demais podem pedir permissão.
     scene.onPlacedStationClick = (placedId) => {
@@ -673,6 +684,22 @@ export function GameCanvas() {
     void ensureProgressConfig();
     const removeProgressUpdate = room.onMessage('progress_update', (data: ProgressSnapshot) => {
       useProgressStore.getState().applySnapshot(data);
+    });
+    const removeFriendRequest = room.onMessage('friend_request', (data: { requestId: string; from: { userId: string; username: string }; createdAt: string }) => {
+      useFriendsStore.getState().handleRealtime('friend_request', data);
+      pushNotice({
+        title: 'Nova solicitação de amizade',
+        body: `${data.from.username} quer ser seu amigo.`,
+        onClick: () => openFriends('requests'),
+      });
+    });
+    const removeFriendAccepted = room.onMessage('friend_accepted', (data: { userId: string; username: string }) => {
+      useFriendsStore.getState().handleRealtime('friend_accepted', data);
+      pushNotice({
+        title: 'Solicitação aceita',
+        body: `${data.username} agora é seu amigo.`,
+        onClick: () => openFriends('friends'),
+      });
     });
     const removeEatResult = room.onMessage('eat_result', (data: EatResult & { requestId?: string }) => {
       if (Array.isArray(data.items)) useCollectionInventoryStore.getState().applyServerTotals(data.items);
@@ -1002,6 +1029,30 @@ export function GameCanvas() {
     const removeHuntContracts = room.onMessage(HUNT_MSG.contracts, (data: HuntContractsPayload) => useHuntingStore.getState().applyContracts(data));
     const removeHuntState = room.onMessage(HUNT_MSG.state, (data: HuntStatePayload) => useHuntingStore.getState().applyState(data));
     const removeHuntEvent = room.onMessage(HUNT_MSG.event, (data: HuntEventPayload) => useHuntingStore.getState().applyEvent(data));
+    const removeCoopInvite = room.onMessage('hunt_coop_invite', (data: any) => {
+      if (!data || typeof data.inviteId !== 'string' || typeof data.expiresAt !== 'number') return;
+      useHuntingStore.getState().setCoopInvite(data);
+      const respond = (accept: boolean) => {
+        const requestId = crypto.randomUUID();
+        void useHuntingStore.getState().trackRequest(requestId);
+        room.send(HUNT_MSG.coopRespond, { requestId, inviteId: data.inviteId, accept });
+        useHuntingStore.getState().setCoopInvite(null);
+      };
+      pushNotice({
+        title: `${data.fromUsername} convidou você para caçar junto`,
+        body: 'Toque para ver o contrato',
+        onClick: () => useHuntingStore.getState().setCoopInvite(data),
+        actions: [
+          { label: 'Ver contrato', onClick: () => useHuntingStore.getState().setCoopInvite(data), variant: 'secondary' },
+          { label: 'Aceitar', onClick: () => respond(true), variant: 'primary' },
+          { label: 'Recusar', onClick: () => respond(false), variant: 'danger' },
+        ],
+      });
+    });
+    const removeHuntTeleport = room.onMessage(HUNT_MSG.teleport, (data: { x?: number; y?: number }) => {
+      if (!Number.isFinite(data?.x) || !Number.isFinite(data?.y)) return;
+      scene.teleportLocalPlayer(data.x!, data.y!);
+    });
     const removeAnimalHit = room.onMessage(HUNT_MSG.animalHit, (data: { animalId?: string; damage?: number }) => {
       if (typeof data?.animalId === 'string') scene.flashAnimalHit(data.animalId, Number(data.damage ?? 0));
     });
@@ -1060,9 +1111,12 @@ export function GameCanvas() {
       if (typeof removeAccessRequest === 'function') removeAccessRequest();
       if (typeof removeAccessUpdate === 'function') removeAccessUpdate();
       if (typeof removeProgressUpdate === 'function') removeProgressUpdate();
+      if (typeof removeFriendRequest === 'function') removeFriendRequest();
+      if (typeof removeFriendAccepted === 'function') removeFriendAccepted();
       if (typeof removeEatResult === 'function') removeEatResult();
       unsubscribeProgress();
       scene.onToolBlocked = null;
+      scene.onPlayerClick = undefined;
       scene.setEnergyState({ weak: false, speedPercent: 100 });
       useProgressStore.getState().setEating(null);
       detachDrops?.();
@@ -1076,6 +1130,8 @@ export function GameCanvas() {
       if (typeof removeHuntRequest === 'function') removeHuntRequest();
       if (typeof removeHuntShot === 'function') removeHuntShot();
       if (typeof removeHuntShotHit === 'function') removeHuntShotHit();
+      if (typeof removeCoopInvite === 'function') removeCoopInvite();
+      if (typeof removeHuntTeleport === 'function') removeHuntTeleport();
       if (typeof removeWalletUpdate === 'function') removeWalletUpdate();
       if (typeof removeGambitsUpdate === 'function') removeGambitsUpdate();
       if (typeof removeRatingUpdate === 'function') removeRatingUpdate();
@@ -1478,6 +1534,9 @@ export function GameCanvas() {
       <AttackButton
         getScene={() => (gameRef.current ? getWorldScene(gameRef.current) : null)}
       />
+      <VirtualJoystick
+        getScene={() => (gameRef.current ? getWorldScene(gameRef.current) : null)}
+      />
       {/* Personagem do jogador: criação obrigatória + equipamento */}
       {showCreation && <CharacterCreationModal />}
       <ToolHotbar />
@@ -1496,6 +1555,8 @@ export function GameCanvas() {
       <BigChessOverlays />
       <ActiveContractChip />
       {huntingModalOpen && <HuntingContractsModal />}
+      {coopInvite && <CoopInviteModal />}
+      {invitePickerOpen && <CoopInviteFriendPicker />}
       <PerformanceHud />
     </div>
   );

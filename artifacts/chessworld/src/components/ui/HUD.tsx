@@ -1,6 +1,7 @@
 import { useState, useCallback, useEffect, useRef } from 'react';
 import { useAuthStore } from '../../stores/authStore';
 import { useGameStore } from '../../stores/gameStore';
+import { useFriendsStore } from '../../stores/friendsStore';
 import { useChessStore } from '../../stores/chessStore';
 import { useGameSettingsStore } from '../../stores/gameSettingsStore';
 import { useColyseusStore } from '../../hooks/useColyseusConnection';
@@ -10,6 +11,7 @@ import { voiceClient } from '../../game/voice/livekitVoiceClient';
 import { leaveWorldRoom } from '../../game/network/colyseusClient';
 import {
   User, MessageSquare, Users, Settings, DoorOpen, Mic, Maximize, Minimize, TreePine, Castle, Crown, Swords, BookOpen,
+  ChevronDown, Backpack,
 } from 'lucide-react';
 import { isProvisionalRating } from '../../shared/rating/Glicko2';
 import { useRatingStore } from '../../stores/ratingStore';
@@ -37,6 +39,7 @@ export function HUD() {
   );
   const crowns = useWalletStore((s) => s.crowns);
   const refreshWallet = useWalletStore((s) => s.refresh);
+  const friendsUnseen = useFriendsStore((state) => state.unseenCount);
   const { region, onlinePlayers, unreadChat, liveChatMessage, showChat, toggleChat, toggleProfile, toggleFriends, toggleSettings, toggleVoiceChat, currentWorld, setTravelRequest } = useGameStore();
   const { phase } = useColyseusStore();
   const matchId = useChessStore(s => s.matchId);
@@ -46,6 +49,17 @@ export function HUD() {
   const toggleInventory = useInventoryUiStore((s) => s.toggleInventory);
   const recipeBookOpen = useRecipeBookStore((s) => s.open);
   const toggleRecipeBook = useRecipeBookStore((s) => s.toggleBook);
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  const mobileMenuRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!mobileMenuOpen) return;
+    const close = (event: PointerEvent) => {
+      if (!mobileMenuRef.current?.contains(event.target as Node)) setMobileMenuOpen(false);
+    };
+    document.addEventListener('pointerdown', close);
+    return () => document.removeEventListener('pointerdown', close);
+  }, [mobileMenuOpen]);
 
   const regionInfo = REGIONS.find(r => r.id === region);
   const inGame = !!matchId;
@@ -182,6 +196,46 @@ export function HUD() {
 
         {/* Action buttons */}
         <div className="pointer-events-auto flex items-center gap-1.5">
+          <div ref={mobileMenuRef} className="relative flex items-center gap-1.5 md:hidden">
+            <HUDButton icon={<Mic className="w-4 h-4" />} onClick={toggleVoiceChat} label="Voz" />
+            <button
+              type="button"
+              aria-label={mobileMenuOpen ? 'Fechar menu' : 'Abrir menu'}
+              aria-expanded={mobileMenuOpen}
+              onClick={() => setMobileMenuOpen((open) => !open)}
+              className="relative flex h-9 w-9 items-center justify-center rounded-lg border border-slate-700/50 bg-slate-900/90 text-slate-300 backdrop-blur-sm"
+            >
+              <ChevronDown className={`h-4 w-4 transition-transform ${mobileMenuOpen ? 'rotate-180' : ''}`} />
+              {!mobileMenuOpen && (unreadChat > 0 || friendsUnseen > 0) && <span className="absolute right-1 top-1 h-2 w-2 rounded-full bg-red-500" />}
+            </button>
+            {mobileMenuOpen && (
+              <div className="absolute right-0 top-full mt-2 flex w-48 flex-col gap-1 rounded-xl border border-slate-700/60 bg-slate-900/95 p-2 shadow-2xl">
+                <MobileMenuButton icon={<MessageSquare />} label="Chat" badge={unreadChat} onClick={toggleChat} close={() => setMobileMenuOpen(false)} />
+                {!inGame && (
+                  <MobileMenuButton
+                    icon={currentWorld === 'crafting' ? <Castle /> : <TreePine />}
+                    label={currentWorld === 'crafting' ? 'Mundo principal' : 'Mundo de coleta'}
+                    onClick={() => setTravelRequest(currentWorld === 'crafting' ? 'main' : 'crafting')}
+                    close={() => setMobileMenuOpen(false)}
+                  />
+                )}
+                <MobileMenuButton icon={<Backpack />} label="Inventário" onClick={toggleInventory} close={() => setMobileMenuOpen(false)} />
+                <MobileMenuButton icon={<BookOpen />} label="Livro de receitas" onClick={toggleRecipeBook} close={() => setMobileMenuOpen(false)} />
+                <MobileMenuButton icon={<Users />} label="Amigos" badge={friendsUnseen} onClick={toggleFriends} close={() => setMobileMenuOpen(false)} />
+                <MobileMenuButton icon={<Settings />} label="Configurações" onClick={toggleSettings} close={() => setMobileMenuOpen(false)} />
+                {FULLSCREEN_SUPPORTED && (
+                  <MobileMenuButton icon={isFullscreen ? <Minimize /> : <Maximize />} label={isFullscreen ? 'Sair da tela cheia' : 'Tela cheia'} onClick={toggleFullscreen} close={() => setMobileMenuOpen(false)} />
+                )}
+                {!inGame && (
+                  <>
+                    <MobileMenuButton icon={<User />} label="Perfil" onClick={toggleProfile} close={() => setMobileMenuOpen(false)} />
+                    <MobileMenuButton icon={<DoorOpen />} label="Sair do jogo" onClick={() => { void handleLeaveGame(); }} close={() => setMobileMenuOpen(false)} />
+                  </>
+                )}
+              </div>
+            )}
+          </div>
+          <div className="hidden items-center gap-1.5 md:flex">
           {/* Always visible in game mode: Chat, Voice, Settings, Fullscreen */}
           <div className="relative">
             <HUDButton
@@ -247,11 +301,12 @@ export function HUD() {
             />
           )}
 
+          <HUDButton icon={<Users className="w-4 h-4" />} onClick={toggleFriends} label="Amigos" badge={friendsUnseen} />
+
           {/* Extra buttons — hidden in game mode */}
           {!inGame && (
             <>
               <HUDButton icon={<User className="w-4 h-4" />} onClick={toggleProfile} label="Profile" />
-              <HUDButton icon={<Users className="w-4 h-4" />} onClick={toggleFriends} label="Friends" />
               <HUDButton
                 icon={<DoorOpen className="w-4 h-4" />}
                 onClick={handleLeaveGame}
@@ -260,9 +315,32 @@ export function HUD() {
               />
             </>
           )}
+          </div>
         </div>
       </div>
     </div>
+  );
+}
+
+function MobileMenuButton({
+  icon, label, onClick, close, badge = 0,
+}: {
+  icon: React.ReactNode;
+  label: string;
+  onClick: () => void;
+  close: () => void;
+  badge?: number;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={() => { onClick(); close(); }}
+      className="flex h-10 w-full items-center gap-3 rounded-lg px-3 text-sm text-slate-200 hover:bg-slate-800"
+    >
+      <span className="[&>svg]:h-4 [&>svg]:w-4">{icon}</span>
+      <span className="flex-1 text-left">{label}</span>
+      {badge > 0 && <span className="rounded-full bg-red-500 px-1.5 text-[10px] font-bold text-white">{badge > 9 ? '9+' : badge}</span>}
+    </button>
   );
 }
 

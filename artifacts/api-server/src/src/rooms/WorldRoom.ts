@@ -35,6 +35,8 @@ import { DEFAULT_RATING_GAMBITS_CONFIG } from '../shared/rating/RatingShapes.js'
 import { persistMatchFinish, persistMatchStart, type MatchStartRecord } from '../rating/matchRepository.js';
 import { HuntingManager } from '../hunting/HuntingManager.js';
 import { HUNT_MSG } from '../shared/hunting/HuntingShapes.js';
+import { inviteCoop, respondCoop } from '../hunting/HuntingCoop.js';
+import { registerClient, unregisterClient } from '../realtime/userNotify.js';
 
 interface JoinOptions {
   /** Legado — IGNORADO para identidade (era spoofável). Mantido só por compat. */
@@ -243,6 +245,8 @@ export class WorldRoom extends Room<WorldState> {
     this.onMessage(HUNT_MSG.claim, (client, data) => void this.hunting?.claim(client, data));
     this.onMessage(HUNT_MSG.abandon, (client, data) => void this.hunting?.abandon(client, data));
     this.onMessage(HUNT_MSG.arrowHit, (client, data) => void this.hunting?.arrowHit(client, data));
+    this.onMessage(HUNT_MSG.coopInvite, (client, data) => { if (this.hunting) void inviteCoop(this.hunting, client, data); });
+    this.onMessage(HUNT_MSG.coopRespond, (client, data) => { if (this.hunting) void respondCoop(this.hunting, client, data); });
 
     this.onMessage('register_boards', (client, data) => {
       const { boards } = data as { boards: { id: string; name: string; x: number; y: number; width?: number; height?: number }[] };
@@ -1394,6 +1398,7 @@ export class WorldRoom extends Room<WorldState> {
         this.state.players.delete(existingSessionId);
         const staleClient = this.clients.find(c => c.sessionId === existingSessionId);
         if (staleClient) {
+          unregisterClient(existing.id, staleClient);
           staleClient.leave();
         }
       }
@@ -1418,6 +1423,7 @@ export class WorldRoom extends Room<WorldState> {
     player.isMoving = false;
 
     this.state.players.set(client.sessionId, player);
+    registerClient(playerId, client);
     void this.hunting?.onJoin(client);
     this.movementGuards.set(client.sessionId, performance.now());
     console.log(`[WorldRoom] Player joined: ${player.username} (${client.sessionId}) | total: ${this.state.players.size}`);
@@ -1509,6 +1515,7 @@ export class WorldRoom extends Room<WorldState> {
     if (!player) return;
 
     const playerId = player.id;
+    unregisterClient(playerId, client);
     const username = player.username;
     this.hunting?.onLeave(client.sessionId, player.id);
     console.log(`[WorldRoom] Player leaving: ${username} (${client.sessionId}) | consented: ${consented}`);
@@ -1650,6 +1657,10 @@ export class WorldRoom extends Room<WorldState> {
   }
 
   async onDispose() {
+    for (const client of this.clients) {
+      const player = this.state.players.get(client.sessionId);
+      if (player) unregisterClient(player.id, client);
+    }
     this.huntingGeneration++;
     this.hunting?.destroy();
     this.hunting = null;

@@ -40,6 +40,8 @@ import {
   type PlayerHuntingRecord,
 } from '../shared/hunting/HuntingShapes.js';
 import { runDistanceBetween, runFrameAt, runLeapFor } from '../shared/hunting/HuntingMotion.js';
+import { selectHuntingThreatTarget } from '../shared/hunting/HuntingThreat.js';
+import { canAddHuntingPartyMember, isHuntingPartyRewardEligible } from '../shared/hunting/HuntingCoopPolicy.js';
 import { CRAFTING_WORLD_MAP, type MapAnchor } from '../shared/hunting/craftingWorldMapData.js';
 import { getCraftingWorldGeometry } from '../shared/hunting/HuntingMapGeometry.js';
 import { rectanglesIntersect, type LocalRectangle } from '../shared/combat/CharacterCombatShapes.js';
@@ -54,6 +56,7 @@ import { progressService } from '../progress/progressService.js';
 import { addCrowns } from '../bigchess/bigChessRepository.js';
 import { getHuntingConfigCached } from './huntingConfigRepository.js';
 import { getPlayerHunting, updateIfActiveMatches } from './playerHuntingRepository.js';
+import { registerHunter, unregisterManager } from './HuntingCoop.js';
 
 type AiMode = 'rooted' | 'return' | 'wander' | 'alert' | 'chase' | 'attack' | 'retreat' | 'dodge';
 type Gait = 'walk' | 'run';
@@ -90,6 +93,8 @@ interface RuntimeAnimal {
   /** -1 / 0 / 1: circling side while flanking, re-rolled every couple of seconds. */
   flankSide: number;
   flankUntil: number;
+  threat: Map<string, { threat: number; lastHitAt: number }>;
+  targetOutsideReachSince: number;
 }
 /** Below this player speed (px/s) the target counts as standing still (animal may stalk instead of running). */
 const TARGET_MOVING_SPEED = 25;
@@ -144,6 +149,7 @@ export class HuntingManager {
   private readonly geometry = getCraftingWorldGeometry();
   private readonly runtime = new Map<string, RuntimeAnimal>();
   private readonly records = new Map<string, PlayerHuntingRecord>();
+  private readonly usernames = new Map<string, string>();
   private readonly tableMissing = new Map<string, boolean>();
   private readonly mutationSeq = new Map<string, number>();
   private readonly recordQueues = new Map<string, Promise<void>>();
@@ -212,7 +218,7 @@ export class HuntingManager {
     this.reconcileAmbient();
     this.spawnNpc();
     // contracts stranded by a disable/enable cycle or a failed spawn (full room, no free anchor) heal here
-    for (const owner of this.records.keys()) this.topUpContract(owner, 'batch');
+    for (const [userId, record] of this.records) this.topUpContract(record.active?.partyId ?? userId, 'batch');
   }
 
   private reconcileAmbient(): void {
@@ -294,6 +300,7 @@ export class HuntingManager {
       regenStartedAt: 0, regenStartHp: variant.hp,
       runElapsedMs: -1, chaseGait: 'run', targetTrack: null, retreatUntil: 0, retreatCooldownUntil: 0,
       dodgeUntil: 0, nextDodgeAt: 0, flankSide: 0, flankUntil: 0,
+      threat: new Map(), targetOutsideReachSince: 0,
     };
     this.runtime.set(id, rt);
     this.host.state.animals.set(id, state);
@@ -378,6 +385,42 @@ export class HuntingManager {
     this.face(animal, target.x - animal.state.x, target.y - animal.state.y);
   }
 
+  private selectThreatTarget(animal: RuntimeAnimal, now: number, profile: HuntingLevelProfile): void {
+    const elapsed = Math.max(0, now - this.lastDecisionAt) / 1000 || 0.1;
+    const entries: Array<{ sessionId: string; threat: number; distance: number; lastHitAt: number }> = [];
+    for (const [sessionId, value] of animal.threat) {
+      const player = this.host.state.players.get(sessionId);
+      if (!player || player.currentBoardId || player.hp <= 0 || this.host.isDead(sessionId)) {
+        animal.threat.delete(sessionId);
+        continue;
+      }
+      if (now - value.lastHitAt > 4000) value.threat *= Math.pow(0.88, elapsed);
+      const distance = Math.hypot(player.x - animal.state.x, player.y - animal.state.y);
+      if (distance <= ANIMAL_BITE_RANGE + 4) value.threat += 2 * elapsed;
+      if (value.threat < 0.05) {
+        animal.threat.delete(sessionId);
+        continue;
+      }
+      entries.push({ sessionId, threat: value.threat, distance, lastHitAt: value.lastHitAt });
+    }
+    const selected = selectHuntingThreatTarget(
+      entries,
+      animal.targetSessionId,
+      ANIMAL_BITE_RANGE + 4,
+      animal.variant.combatBreakDistance * profile.persistence,
+      now,
+      animal.targetOutsideReachSince,
+    );
+    animal.targetOutsideReachSince = selected.currentOutsideReachSince;
+    if (selected.currentSessionId && selected.currentSessionId !== animal.targetSessionId) {
+      const player = this.host.state.players.get(selected.currentSessionId);
+      if (player) this.acquireTarget(animal, selected.currentSessionId, player, now, profile);
+    } else if (!selected.currentSessionId && animal.threat.size) {
+      animal.targetSessionId = '';
+      animal.targetTrack = null;
+    }
+  }
+
   /** Farthest the animal may get from its target on its own — inside the combat-break radius, with margin. */
   private leashFor(animal: RuntimeAnimal, profile: HuntingLevelProfile): number {
     return animal.variant.combatBreakDistance * profile.persistence * SELF_DISTANCE_LEASH;
@@ -425,6 +468,7 @@ export class HuntingManager {
     const parsed = parseVariantId(animal.state.variantId);
     const profile = this.profileFor(animal);
     const isTree = parsed?.animalKey === MONSTER_TREE_ANIMAL_KEY;
+    this.selectThreatTarget(animal, now, profile);
     let target = animal.targetSessionId ? this.host.state.players.get(animal.targetSessionId) : undefined;
     if (target && (target.currentBoardId || target.hp <= 0 || this.host.isDead(animal.targetSessionId))) target = undefined;
     if (target && Math.hypot(target.x - animal.state.x, target.y - animal.state.y) > animal.variant.combatBreakDistance * profile.persistence) target = undefined;
@@ -451,6 +495,8 @@ export class HuntingManager {
         animal.targetX = animal.state.x; animal.targetY = animal.state.y;
         animal.pauseUntil = now + randomBetween(500, 1500);
       }
+      animal.threat.clear();
+      animal.targetOutsideReachSince = 0;
       this.regen(animal, 100, now);
       return;
     }
@@ -833,6 +879,11 @@ export class HuntingManager {
     const damage = await this.damageFor(player, shoot);
     if (this.host.state.players.get(sessionId) !== player || animal.state.dead || damage === null || damage <= 0) return false;
     animal.lastAttackerSessionId = sessionId;
+    const priorThreat = animal.threat.get(sessionId);
+    animal.threat.set(sessionId, {
+      threat: (priorThreat?.threat ?? 0) + damage,
+      lastHitAt: Date.now(),
+    });
     if (animal.targetSessionId !== sessionId || animal.mode === 'wander' || animal.mode === 'rooted' || animal.mode === 'return') {
       this.acquireTarget(animal, sessionId, player, Date.now(), this.profileFor(animal));
     }
@@ -846,6 +897,7 @@ export class HuntingManager {
     if (animal.state.dead) return;
     animal.state.dead = true;
     animal.state.anim = 'idle';
+    animal.threat.clear();
     const killer = this.host.state.players.get(killerSessionId);
     if (killer && animal.variant.xpEnabled) void progressService.grantSkillXp(killer.id, 'hunting', animal.variant.xp);
     if (killer) this.client(killerSessionId)?.send(HUNT_MSG.event, { type: 'kill', message: `${animal.variant.name} abatido`, xp: animal.variant.xp, animalName: animal.variant.name });
@@ -883,6 +935,8 @@ export class HuntingManager {
     const loaded = await getPlayerHunting(player.id);
     if (this.host.state.players.get(client.sessionId) !== player) return;
     this.records.set(player.id, loaded.record);
+    this.usernames.set(player.id, player.username);
+    registerHunter(player.id, this);
     this.tableMissing.set(player.id, loaded.tableMissing);
     const active = loaded.record.active;
     if (active && active.deadline < Date.now()) {
@@ -890,13 +944,16 @@ export class HuntingManager {
       return;
     }
     this.sendState(client, loaded.record);
-    this.topUpContract(player.id, 'batch');
+    this.topUpContract(active?.partyId ?? player.id, 'batch');
   }
 
   onLeave(sessionId: string, userId: string): void {
     this.consumedShots.delete(sessionId);
     this.cancelTimers(`contract:${userId}`);
-    for (const animal of [...this.runtime.values()]) if (animal.state.contractOwner === userId) this.removeAnimal(animal.state.id);
+    const partyId = this.records.get(userId)?.active?.partyId ?? userId;
+    const otherMemberPresent = [...this.records.entries()].some(([id, record]) =>
+      id !== userId && (record.active?.partyId ?? id) === partyId && this.sessionForUser(id));
+    if (!otherMemberPresent) for (const animal of [...this.runtime.values()]) if (animal.state.contractOwner === partyId) this.removeAnimal(animal.state.id);
   }
 
   async npcTalk(client: Client): Promise<void> {
@@ -962,19 +1019,43 @@ export class HuntingManager {
       return this.result(client, requestId, false, 'Contrato expirado');
     }
     if (active.killed < active.quantity || !this.nearNpc(player)) return this.result(client, requestId, false, 'Contrato ainda não pode ser resgatado');
-    const next: PlayerHuntingRecord = { active: null, locks: { ...record.locks, [contract.id]: Date.now() + contract.cooldownHours * 3600_000 } };
-    const saved = await updateIfActiveMatches(player.id, active.contractId, next);
-    if (!saved.ok) return this.result(client, requestId, false, saved.error ?? 'Falha ao salvar contrato');
-    if (!saved.matched) {
-      this.sendState(client, await this.reloadPlayerRecord(player.id));
-      return this.result(client, requestId, false, 'Contrato já processado');
+    const partyId = active.partyId ?? player.id;
+    const members = [...this.records.entries()].filter(([id, item]) =>
+      (item.active?.partyId ?? id) === partyId &&
+      item.active?.contractId === active.contractId &&
+      item.active.killed >= item.active.quantity &&
+      isHuntingPartyRewardEligible({
+        isLeader: id === partyId,
+        connected: this.sessionForUser(id) !== null,
+        killed: item.active.killed,
+        joinedAtKilled: item.active.joinedAtKilled,
+      }));
+    for (const [userId, memberRecord] of members) {
+      const memberActive = memberRecord.active!;
+      const next: PlayerHuntingRecord = { active: null, locks: { ...memberRecord.locks, [contract.id]: Date.now() + contract.cooldownHours * 3600_000 } };
+      const saved = await updateIfActiveMatches(userId, memberActive.contractId, next, {
+        acceptedAt: memberActive.acceptedAt,
+        killed: memberActive.killed,
+      });
+      if (!saved.ok || !saved.matched) {
+        const current = await this.reloadPlayerRecord(userId);
+        const sid = this.sessionForUser(userId), staleClient = sid ? this.client(sid) : undefined;
+        if (staleClient) this.sendState(staleClient, current);
+        continue;
+      }
+      this.records.set(userId, next);
+      await progressService.grantSkillXp(userId, 'hunting', contract.xpReward);
+      const wallet = await addCrowns(userId, contract.crownsReward);
+      const sid = this.sessionForUser(userId), memberClient = sid ? this.client(sid) : undefined;
+      if (wallet.ok) memberClient?.send('wallet_update', { crowns: wallet.crowns });
+      memberClient?.send(HUNT_MSG.event, {
+        type: 'claimed',
+        message: members.length > 1 ? `Contrato concluído em grupo com ${player.username}` : 'Recompensa recebida',
+        xp: contract.xpReward, crowns: contract.crownsReward,
+      });
+      if (memberClient) this.sendState(memberClient, next);
     }
-    this.records.set(player.id, next);
-    await progressService.grantSkillXp(player.id, 'hunting', contract.xpReward);
-    const wallet = await addCrowns(player.id, contract.crownsReward);
-    if (wallet.ok) client.send('wallet_update', { crowns: wallet.crowns });
-    client.send(HUNT_MSG.event, { type: 'claimed', message: 'Recompensa recebida', xp: contract.xpReward, crowns: contract.crownsReward });
-    this.sendState(client, next); this.result(client, requestId, true);
+    this.result(client, requestId, true);
   }
 
   async abandon(client: Client, data: unknown): Promise<void> {
@@ -989,7 +1070,7 @@ export class HuntingManager {
     if (player) void this.cancelContract(player, 'cancelled_death', '', this.client(sessionId));
   }
 
-  private async cancelContract(player: PlayerState, type: 'abandoned' | 'expired' | 'cancelled_death', requestId = '', client?: Client): Promise<void> {
+  private async cancelContract(player: PlayerState, type: 'abandoned' | 'expired' | 'cancelled_death' | 'cancelled_coop', requestId = '', client?: Client): Promise<void> {
     const record = this.records.get(player.id), active = record?.active;
     if (!record || !active) return client && this.result(client, requestId, false, 'Nenhum contrato ativo');
     // a failed/abandoned contract is NOT locked: the reopen cooldown only starts when the reward is claimed
@@ -1002,10 +1083,17 @@ export class HuntingManager {
       return client && this.result(client, requestId, false, 'Contrato já processado');
     }
     this.records.set(player.id, next);
-    for (const animal of [...this.runtime.values()]) if (animal.state.contractOwner === player.id) this.removeAnimal(animal.state.id);
-    const reason = type === 'expired' ? 'Prazo do contrato esgotado' : type === 'abandoned' ? 'Contrato abandonado' : 'Contrato cancelado pela morte';
+    const partyId = active.partyId ?? player.id;
+    const hasMembers = [...this.records.entries()].some(([id, item]) => id !== player.id && (item.active?.partyId ?? id) === partyId);
+    if (!hasMembers) for (const animal of [...this.runtime.values()]) if (animal.state.contractOwner === partyId) this.removeAnimal(animal.state.id);
+    const reason = type === 'expired' ? 'Prazo do contrato esgotado' : type === 'abandoned' ? 'Contrato abandonado' : type === 'cancelled_coop' ? 'Contrato anterior abandonado' : 'Contrato cancelado pela morte';
     client?.send(HUNT_MSG.event, { type, message: `${reason} — fale com o bárbaro para aceitá-lo de novo` });
     if (client) { this.sendState(client, next); if (requestId) this.result(client, requestId, true); }
+    for (const [memberId, memberRecord] of this.records) {
+      if (!memberRecord.active || (memberRecord.active.partyId ?? memberId) !== partyId) continue;
+      const sid = this.sessionForUser(memberId), memberClient = sid ? this.client(sid) : undefined;
+      if (memberClient) this.sendState(memberClient, memberRecord);
+    }
   }
 
   private async expireContracts(): Promise<void> {
@@ -1019,19 +1107,25 @@ export class HuntingManager {
 
   private async onContractKill(animal: RuntimeAnimal, killerId: string): Promise<void> {
     const owner = animal.state.contractOwner;
-    const current = this.records.get(owner)?.active;
+    const current = [...this.records.entries()].find(([id, record]) => (record.active?.partyId ?? id) === owner)?.[1].active;
     if (!current || current.variantId !== animal.state.variantId || current.deadline < Date.now()) {
       const sid = this.sessionForUser(owner), player = sid ? this.host.state.players.get(sid) : undefined;
       if (player && current?.deadline && current.deadline < Date.now()) void this.cancelContract(player, 'expired', '', this.client(sid!));
       return;
     }
-    if (killerId !== owner) {
+    const killerActive = this.records.get(killerId)?.active;
+    if (!killerActive || (killerActive.partyId ?? killerId) !== owner) {
       // stolen kill: the owner's quota is untouched, so the animal is replaced (back to the batch size) in 5 s
       this.schedule(`contract:${owner}`, 5000, () => this.topUpContract(owner, 'replace'));
       return;
     }
     const previous = this.recordQueues.get(owner) ?? Promise.resolve();
-    const queued = previous.then(() => this.applyContractKill(owner, animal.state.variantId));
+    const queued = previous.then(async () => {
+      const members = [...this.records.entries()]
+        .filter(([id, record]) => (record.active?.partyId ?? id) === owner)
+        .map(([id]) => id);
+      await Promise.all(members.map((id) => this.applyContractKill(id, animal.state.variantId)));
+    });
     this.recordQueues.set(owner, queued);
     await queued.finally(() => {
       if (this.recordQueues.get(owner) !== queued) return;
@@ -1071,12 +1165,17 @@ export class HuntingManager {
    * 'replace' (an animal stolen by another player) fills the batch back up to its size.
    */
   private topUpContract(owner: string, mode: 'batch' | 'replace'): void {
-    const active = this.records.get(owner)?.active;
+    const member = [...this.records.entries()].find(([id, record]) => (record.active?.partyId ?? id) === owner);
+    const active = member?.[1].active;
     if (this.destroyed || !this.config.general.enabled || !active || active.region !== this.host.region || active.deadline < Date.now()) return;
     if (!this.config.variants[active.variantId]) return;
     // a kill still being persisted tops up itself once it lands (sizing from stale progress would overshoot the quota)
     if (this.recordQueues.has(owner)) return;
-    const sid = this.sessionForUser(owner), player = sid ? this.host.state.players.get(sid) : undefined;
+    const present = [...this.records.keys()].find((id) => {
+      const record = this.records.get(id);
+      return (record?.active?.partyId ?? id) === owner && this.sessionForUser(id);
+    });
+    const sid = present ? this.sessionForUser(present) : null, player = sid ? this.host.state.players.get(sid) : undefined;
     if (!player) return; // the owner's animals leave the room with them (onLeave)
     const alive = [...this.runtime.values()].filter((a) => !a.state.dead && a.state.contractOwner === owner).length;
     if (mode === 'batch' && alive > 0) return;
@@ -1104,7 +1203,81 @@ export class HuntingManager {
       animalName: this.config.variants[a.variantId]?.name ?? a.variantId,
       quantity: a.quantity, killed: a.killed, acceptedAt: a.acceptedAt, deadline: a.deadline,
       xpReward: c?.xpReward ?? 0, crownsReward: c?.crownsReward ?? 0, complete: a.killed >= a.quantity,
+      ...(a.partyId ? { partyId: a.partyId, partyMembers: this.coopPartyMembers(a.partyId) } : {}),
     };
+  }
+
+  coopRegion(): string { return this.host.region; }
+  coopPlayer(sessionId: string): PlayerState | undefined { return this.host.state.players.get(sessionId); }
+  coopPartyMembers(partyId: string): Array<{ userId: string; username: string }> {
+    return [...this.records.entries()]
+      .filter(([userId, record]) => !!record.active && (record.active.partyId ?? userId) === partyId)
+      .map(([userId]) => ({ userId, username: this.usernames.get(userId) ?? userId }));
+  }
+  coopContractSnapshot(userId: string): (ReturnType<HuntingManager['activeView']> & { partyId?: string }) | null {
+    const record = this.records.get(userId);
+    return record ? this.activeView(record) : null;
+  }
+  async joinCoopParty(client: Client, invite: { partyId: string; contract: NonNullable<ReturnType<HuntingManager['coopContractSnapshot']>>; region: string }): Promise<{ ok: boolean; error?: string }> {
+    const player = this.host.state.players.get(client.sessionId);
+    const leader = this.records.get(invite.partyId)?.active;
+    if (!player || !leader || leader.contractId !== invite.contract.contractId) return { ok: false, error: 'O contrato do líder não está mais ativo' };
+    if (leader.killed >= leader.quantity) return { ok: false, error: 'Esse contrato já foi concluído' };
+    const previous = this.records.get(player.id) ?? (await getPlayerHunting(player.id)).record;
+    if ((previous.locks[leader.contractId] ?? 0) > Date.now()) return { ok: false, error: 'Você está em cooldown para esse contrato' };
+    if (previous.active) await this.cancelContract(player, 'cancelled_coop', '', client);
+    if (!leader.partyId) {
+      const leaderRecord = this.records.get(invite.partyId)!;
+      const groupedLeader: PlayerHuntingRecord = { active: { ...leader, partyId: invite.partyId }, locks: { ...leaderRecord.locks } };
+      const grouped = await updateIfActiveMatches(invite.partyId, leader.contractId, groupedLeader, { acceptedAt: leader.acceptedAt, killed: leader.killed });
+      if (!grouped.ok || !grouped.matched) return { ok: false, error: 'Não foi possível formar o grupo' };
+      this.records.set(invite.partyId, groupedLeader);
+      const leaderSid = this.sessionForUser(invite.partyId), leaderClient = leaderSid ? this.client(leaderSid) : undefined;
+      if (leaderClient) this.sendState(leaderClient, groupedLeader);
+    }
+    const currentLeader = this.records.get(invite.partyId)!.active!;
+    if (currentLeader.killed >= currentLeader.quantity) return { ok: false, error: 'Esse contrato já foi concluído' };
+    const baseRecord = this.records.get(player.id) ?? { active: null, locks: { ...previous.locks } };
+    const next: PlayerHuntingRecord = {
+      active: {
+        ...currentLeader,
+        killed: currentLeader.killed,
+        partyId: invite.partyId,
+        joinedAtKilled: currentLeader.killed,
+        region: this.host.region,
+      },
+      locks: { ...baseRecord.locks },
+    };
+    // Reservation is intentionally synchronous: concurrent accepts observe this retained record.
+    const memberCount = this.coopPartyMembers(invite.partyId).length;
+    if (!canAddHuntingPartyMember(memberCount)) return { ok: false, error: 'O grupo já tem 4 caçadores' };
+    this.records.set(player.id, next);
+    const saved = await updateIfActiveMatches(player.id, null, next);
+    if (!saved.ok || !saved.matched) {
+      this.records.set(player.id, baseRecord);
+      return { ok: false, error: saved.error ?? 'Não foi possível entrar no grupo' };
+    }
+    this.usernames.set(player.id, player.username);
+    const leaderSid = this.sessionForUser(invite.partyId);
+    const leaderPlayer = leaderSid ? this.host.state.players.get(leaderSid) : undefined;
+    if (leaderPlayer) {
+      let x = leaderPlayer.x, y = leaderPlayer.y;
+      for (let i = 0; i < 16; i++) {
+        const angle = Math.random() * Math.PI * 2, distance = randomBetween(48, 96);
+        const px = leaderPlayer.x + Math.cos(angle) * distance, py = leaderPlayer.y + Math.sin(angle) * distance;
+        if (this.geometry.isWalkableForNpc(px, py)) { x = px; y = py; break; }
+      }
+      player.x = x; player.y = y; player.targetX = x; player.targetY = y; player.isMoving = false;
+      client.send(HUNT_MSG.teleport, { x, y });
+    }
+    this.sendState(client, next);
+    for (const [memberId, memberRecord] of this.records) {
+      if ((memberRecord.active?.partyId ?? memberId) !== invite.partyId) continue;
+      const sid = this.sessionForUser(memberId), memberClient = sid ? this.client(sid) : undefined;
+      if (memberClient) this.sendState(memberClient, memberRecord);
+    }
+    this.topUpContract(invite.partyId, 'batch');
+    return { ok: true };
   }
   private sendState(client: Client, record: PlayerHuntingRecord): void {
     client.send(HUNT_MSG.state, { active: this.activeView(record), now: Date.now() });
@@ -1149,6 +1322,7 @@ export class HuntingManager {
 
   destroy(): void {
     this.destroyed = true;
+    unregisterManager(this);
     for (const interval of this.intervals) interval.clear?.();
     this.intervals.clear();
     for (const group of this.timers.values()) for (const timer of group) timer.clear?.();

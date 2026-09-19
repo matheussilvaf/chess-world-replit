@@ -23,6 +23,7 @@ export function ActiveContractChip() {
         <button type="button" onClick={() => useHuntingStore.getState().setModalOpen(true)} className={`pointer-events-auto flex items-center gap-2 rounded-full border px-3 py-2 text-xs font-bold shadow-xl backdrop-blur ${seconds < 60 && !active.complete ? 'border-red-400 bg-red-950/90 text-red-100' : 'border-amber-500/70 bg-slate-950/90 text-amber-100'}`}>
           <Crosshair className="h-4 w-4" />
           {active.complete ? 'Completo — volte ao caçador' : `${active.animalName} ${active.killed}/${active.quantity} · ${Math.floor(seconds / 60).toString().padStart(2, '0')}:${(seconds % 60).toString().padStart(2, '0')}`}
+          {!!active.partyMembers?.length && <span className="max-w-28 truncate text-emerald-300">Em grupo: {active.partyMembers.map((member) => member.username).join(', ')}</span>}
         </button>
       )}
       {notice && <div className="rounded-lg border border-amber-500/50 bg-slate-950/95 px-4 py-2 text-center text-xs text-amber-100 shadow-xl">{notice}</div>}

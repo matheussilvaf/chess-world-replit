@@ -7,6 +7,11 @@ import type {
 } from '../shared/hunting/HuntingShapes';
 
 interface PendingRequest { resolve: (ok: boolean) => void; timeout: number }
+export interface HuntingCoopInvite {
+  inviteId: string; partyId: string; fromUserId: string; fromUsername: string; toUserId: string;
+  region: string; expiresAt: number;
+  contract: ActiveContractView;
+}
 interface HuntingState {
   active: ActiveContractView | null;
   contracts: HuntContractsPayload | null;
@@ -16,6 +21,8 @@ interface HuntingState {
   notice: string | null;
   error: string | null;
   pending: Record<string, PendingRequest>;
+  coopInvite: HuntingCoopInvite | null;
+  invitePickerOpen: boolean;
   applyContracts: (payload: HuntContractsPayload) => void;
   applyState: (payload: HuntStatePayload) => void;
   applyEvent: (payload: HuntEventPayload) => void;
@@ -25,11 +32,13 @@ interface HuntingState {
   trackRequest: (requestId: string) => Promise<boolean>;
   resolveRequest: (requestId: string, ok: boolean, error?: string) => void;
   reset: () => void;
+  setCoopInvite: (invite: HuntingCoopInvite | null) => void;
+  setInvitePickerOpen: (open: boolean) => void;
 }
 
 export const useHuntingStore = create<HuntingState>((set, get) => ({
   active: null, contracts: null, modalOpen: false, now: Date.now(), tableMissing: false,
-  notice: null, error: null, pending: {},
+  notice: null, error: null, pending: {}, coopInvite: null, invitePickerOpen: false,
   applyContracts: (payload) => set({
     contracts: payload, active: payload.active, now: payload.now, tableMissing: payload.tableMissing === true,
     modalOpen: true, error: null,
@@ -57,11 +66,13 @@ export const useHuntingStore = create<HuntingState>((set, get) => ({
     request.resolve(ok);
     set({ pending, error: ok ? null : (error ?? 'Não foi possível concluir a solicitação.') });
   },
+  setCoopInvite: (coopInvite) => set({ coopInvite }),
+  setInvitePickerOpen: (invitePickerOpen) => set({ invitePickerOpen }),
   reset: () => {
     for (const request of Object.values(get().pending)) {
       window.clearTimeout(request.timeout);
       request.resolve(false);
     }
-    set({ active: null, contracts: null, modalOpen: false, now: Date.now(), tableMissing: false, notice: null, error: null, pending: {} });
+    set({ active: null, contracts: null, modalOpen: false, now: Date.now(), tableMissing: false, notice: null, error: null, pending: {}, coopInvite: null, invitePickerOpen: false });
   },
 }));

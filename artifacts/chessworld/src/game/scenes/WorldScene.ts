@@ -291,6 +291,8 @@ export class WorldScene extends Phaser.Scene {
   private keyboardControls: KeyboardControls | null = null;
   /** True enquanto o teclado comanda o movimento (tem prioridade sobre o clique). */
   private keyboardMoving = false;
+  /** Vetor analógico em coordenadas de tela (y positivo para baixo). */
+  private externalMoveVector = { x: 0, y: 0 };
   /** Vetores reutilizados na projeção tela→mundo do teclado (sem alocar por frame). */
   private readonly kbWorldA = new Phaser.Math.Vector2();
   private readonly kbWorldB = new Phaser.Math.Vector2();
@@ -1850,11 +1852,13 @@ export class WorldScene extends Phaser.Scene {
    */
   private updateKeyboardMove(): boolean {
     const kb = this.keyboardControls;
-    if (!kb) return false;
-    if (this.movementLocked || this.inMatch || this.currentSeatInfo || this.seatTween) {
+    if (!kb && this.externalMoveVector.x === 0 && this.externalMoveVector.y === 0) return false;
+    if (this.movementLocked || this.inMatch || this.currentSeatInfo || this.seatTween || Date.now() < this.deadUntil) {
       // Travado (partida, assento, troca de mapa…): solta as teclas presas para
       // nada ficar "na fila" até destravar; quem estava andando para e avisa.
-      kb.clear();
+      kb?.clear();
+      this.externalMoveVector.x = 0;
+      this.externalMoveVector.y = 0;
       if (this.keyboardMoving) {
         this.keyboardMoving = false;
         this.matter.body.setVelocity(this.playerBody, { x: 0, y: 0 });
@@ -1863,7 +1867,14 @@ export class WorldScene extends Phaser.Scene {
       }
       return false;
     }
-    const v = kb.moveVector();
+    const externalMagnitude = Math.hypot(this.externalMoveVector.x, this.externalMoveVector.y);
+    const keyboardVector = kb?.moveVector() ?? null;
+    const v = externalMagnitude > 0
+      ? {
+          x: this.externalMoveVector.x / externalMagnitude,
+          y: this.externalMoveVector.y / externalMagnitude,
+        }
+      : keyboardVector;
     if (!v) {
       if (!this.keyboardMoving) return false;
       this.keyboardMoving = false;
@@ -1905,11 +1916,13 @@ export class WorldScene extends Phaser.Scene {
         wy = dy / len;
       }
     }
-    this.matter.body.setVelocity(this.playerBody, { x: wx * this.playerSpeed, y: wy * this.playerSpeed });
+    const speedScale = externalMagnitude > 0 ? Math.min(1, externalMagnitude / 0.85) : 1;
+    const moveSpeed = this.playerSpeed * speedScale;
+    this.matter.body.setVelocity(this.playerBody, { x: wx * moveSpeed, y: wy * moveSpeed });
 
     const dir = this.getDirection8(wx, wy);
     this.currentDirection = dir;
-    this.localWalk(dir, this.playerSpeed / MAP_CONFIG.playerSpeed);
+    this.localWalk(dir, moveSpeed / MAP_CONFIG.playerSpeed);
 
     const now = Date.now();
     if (now - this.lastSentTime >= this.SEND_INTERVAL) {
@@ -1943,6 +1956,18 @@ export class WorldScene extends Phaser.Scene {
   }
 
   // --- Public API ---
+
+  public setExternalMoveVector(x: number, y: number) {
+    const length = Math.hypot(x, y);
+    if (!Number.isFinite(length) || length < 0.12) {
+      this.externalMoveVector.x = 0;
+      this.externalMoveVector.y = 0;
+      return;
+    }
+    const scale = length > 1 ? 1 / length : 1;
+    this.externalMoveVector.x = x * scale;
+    this.externalMoveVector.y = y * scale;
+  }
 
   public setLocalPlayer(playerId: string, _region: string) {
     this.localPlayerId = playerId;

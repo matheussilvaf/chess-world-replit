@@ -38,7 +38,7 @@ export function HuntingContractsModal() {
   };
 
   return (
-    <div className="absolute inset-0 z-[80] flex items-center justify-center bg-black/65 p-2 backdrop-blur-sm sm:p-6" onMouseDown={(e) => { if (e.target === e.currentTarget) close(); }}>
+    <div className="absolute inset-0 z-[500] flex items-center justify-center bg-black/65 p-2 backdrop-blur-sm sm:p-6" onMouseDown={(e) => { if (e.target === e.currentTarget) close(); }}>
       <section className="pointer-events-auto flex max-h-[92vh] w-full max-w-3xl flex-col overflow-hidden rounded-2xl border border-amber-700/60 bg-[#17120d] text-amber-50 shadow-2xl">
         <header className="flex items-center justify-between border-b border-amber-900/70 bg-[#24180d] px-4 py-3">
           <div>
@@ -91,12 +91,14 @@ function ContractCard({ contract, active, now, busy, send }: {
         <div className="mt-4">
           <div className="mb-1 flex justify-between text-xs"><span>{active.killed} / {active.quantity}</span><span>{remaining(active.deadline - now)}</span></div>
           <div className="h-2 overflow-hidden rounded-full bg-black/50"><div className="h-full bg-amber-400" style={{ width: `${Math.min(100, active.killed / active.quantity * 100)}%` }} /></div>
+          {!!active.partyMembers?.length && <p className="mt-2 text-xs text-amber-200/70">Caçando com: {active.partyMembers.map((member) => member.username).join(', ')}</p>}
         </div>
       )}
       <div className="mt-4 flex flex-wrap gap-2">
         {availability === 'available' && <button disabled={busy} onClick={() => send(HUNT_MSG.accept, { contractId: contract.id })} className="rounded-lg bg-amber-500 px-3 py-2 text-sm font-bold text-black disabled:opacity-40">Aceitar</button>}
         {active?.complete && <button disabled={busy} onClick={() => send(HUNT_MSG.claim, {})} className="rounded-lg bg-emerald-500 px-3 py-2 text-sm font-bold text-black disabled:opacity-40">Resgatar recompensa</button>}
         {active && <button disabled={busy} onClick={() => { if (window.confirm('Abandonar este contrato?')) send(HUNT_MSG.abandon, {}); }} className="rounded-lg border border-red-700 px-3 py-2 text-sm text-red-200 disabled:opacity-40">Abandonar</button>}
+        {active && <button disabled={busy} onClick={() => useHuntingStore.getState().setInvitePickerOpen(true)} className="rounded-lg border border-amber-600 px-3 py-2 text-sm text-amber-100 disabled:opacity-40">Convidar um amigo</button>}
         {availability === 'locked' && <span className="text-sm text-slate-400">Disponível em {lockLabel((contract.lockedUntil ?? now) - now)}</span>}
         {availability === 'busy' && !active && <span className="text-sm text-slate-400">Conclua seu contrato atual.</span>}
       </div>

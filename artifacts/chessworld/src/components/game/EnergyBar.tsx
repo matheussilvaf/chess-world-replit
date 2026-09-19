@@ -33,7 +33,7 @@ export function EnergyBar() {
   const tone = energyTone(snapshot.state);
   const pct = Math.max(0, Math.min(100, snapshot.state.percent));
   return (
-    <div className="pointer-events-none relative flex w-full flex-col items-center gap-1">
+    <div className="pointer-events-none relative flex w-[min(62vw,240px)] flex-col items-center gap-1 md:w-full">
       {(ticks.length > 0 || notice) && (
         <div className="flex flex-col items-center gap-0.5 text-[11px] font-bold drop-shadow-[0_1px_2px_rgba(0,0,0,.9)]">
           {ticks.map((tick) => (
@@ -54,7 +54,7 @@ export function EnergyBar() {
         data-testid="energy-bar"
         data-tone={tone}
         title={`${LABEL[tone]} ${snapshot.energy}/${snapshot.maxEnergy}`}
-        className="relative flex h-4 w-[min(92vw,300px)] items-center overflow-hidden rounded-full border-2 border-[#8a5a2b] bg-[#1a0f07] shadow-[0_0_0_1px_#1a0f07,0_4px_12px_rgba(0,0,0,.6)]"
+         className="relative flex h-4 w-full items-center overflow-hidden rounded-full border-2 border-[#8a5a2b] bg-[#1a0f07] shadow-[0_0_0_1px_#1a0f07,0_4px_12px_rgba(0,0,0,.6)] md:w-[min(92vw,300px)]"
       >
         <span className={`absolute inset-y-0 left-0 rounded-full transition-[width,background-color] duration-300 ease-out ${FILL[tone]}`} style={{ width: `${pct}%` }} />
         <span className="relative z-10 flex w-full items-center justify-center gap-1 text-[10px] font-bold uppercase tracking-wide text-white drop-shadow-[0_1px_1px_rgba(0,0,0,.9)]">

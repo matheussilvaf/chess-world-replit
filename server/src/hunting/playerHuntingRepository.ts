@@ -26,6 +26,10 @@ function normalizeActive(value: unknown): PlayerHuntingActive | null {
     contractId: v.contractId, variantId: v.variantId, region: v.region,
     quantity: Math.max(1, Math.floor(v.quantity!)), killed: Math.max(0, Math.floor(v.killed!)),
     acceptedAt: v.acceptedAt!, deadline: v.deadline!,
+    ...(typeof v.partyId === 'string' && v.partyId ? { partyId: v.partyId } : {}),
+    ...(typeof v.joinedAtKilled === 'number' && Number.isFinite(v.joinedAtKilled)
+      ? { joinedAtKilled: Math.max(0, Math.floor(v.joinedAtKilled)) }
+      : {}),
   };
 }
 

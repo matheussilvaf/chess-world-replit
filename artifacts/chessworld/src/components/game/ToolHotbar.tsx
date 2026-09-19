@@ -93,6 +93,7 @@ export function ToolHotbar() {
   const [badges, setBadges] = useState<CraftBadgeMap | null>(null);
   const [eatPreview, setEatPreview] = useState<EatPreview | null>(null);
   const barRef = useRef<HTMLDivElement | null>(null);
+  const stackRef = useRef<HTMLDivElement | null>(null);
   const eatTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const { flights, launch: launchFlights, remove: removeFlight } = useEatFlights();
 
@@ -109,6 +110,20 @@ export function ToolHotbar() {
     return () => { cancelled = true; };
   }, []);
   useEffect(() => () => { if (eatTimerRef.current) clearTimeout(eatTimerRef.current); }, []);
+  useEffect(() => {
+    const element = stackRef.current;
+    if (!element || typeof ResizeObserver === 'undefined') return;
+    const update = () => {
+      document.documentElement.style.setProperty('--hud-bottom-stack', `${Math.ceil(element.getBoundingClientRect().height + 8)}px`);
+    };
+    const observer = new ResizeObserver(update);
+    observer.observe(element);
+    update();
+    return () => {
+      observer.disconnect();
+      document.documentElement.style.removeProperty('--hud-bottom-stack');
+    };
+  }, [character, ready]);
 
   // Avisos somem sozinhos.
   const notice = equipError ?? inventoryError;
@@ -220,7 +235,7 @@ export function ToolHotbar() {
 
   return (
     <>
-      <div className="pointer-events-none fixed inset-x-0 bottom-2 z-[110] flex flex-col items-center gap-2">
+      <div ref={stackRef} className="pointer-events-none fixed bottom-2 left-2 z-[110] flex max-w-[74vw] flex-col items-start gap-2 md:inset-x-0 md:left-0 md:max-w-none md:items-center">
         {notice && (
           <div className="pointer-events-auto flex max-w-[min(92vw,420px)] items-start gap-2 rounded-lg border border-red-800 bg-[#3a1512] px-3 py-2 text-xs text-red-100 shadow-lg">
             <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-red-300" />
@@ -236,12 +251,12 @@ export function ToolHotbar() {
           </div>
         )}
         <EnergyBar />
-        <div className="pointer-events-auto flex items-stretch gap-1.5">
+        <div className="pointer-events-auto flex max-w-full items-stretch gap-1 md:gap-1.5">
           <div
             ref={barRef}
-            className="flex items-center gap-1.5 rounded-xl border-[3px] border-[#8a5a2b] bg-[#2a1a0e] p-1.5 shadow-[0_0_0_1px_#1a0f07,0_10px_28px_rgba(0,0,0,.6)]"
+            className="flex min-w-0 items-center gap-1 overflow-hidden rounded-xl border-[3px] border-[#8a5a2b] bg-[#2a1a0e] p-1 shadow-[0_0_0_1px_#1a0f07,0_10px_28px_rgba(0,0,0,.6)] md:gap-1.5 md:p-1.5"
           >
-            <div className="w-12 sm:w-14">
+            <div className="w-10 shrink-0 md:w-14">
               <WeaponSlotCell index={weaponIndex} catalog={catalog} thumbSize={36} compact />
             </div>
             <span className="mx-0.5 h-8 w-px self-center bg-[#8a5a2b]/70" aria-hidden />
@@ -257,7 +272,12 @@ export function ToolHotbar() {
                     : undefined
                 : 'Slot vazio';
               return (
-                <div key={index} className="w-12 sm:w-14">
+                <div
+                  key={index}
+                  className={`w-10 shrink-0 md:w-14 ${
+                    offset >= 4 ? 'hidden md:block' : offset >= 3 ? 'hidden min-[430px]:block' : ''
+                  }`}
+                >
                   <InventorySlotCell
                     index={index}
                     itemKey={key}
@@ -284,14 +304,14 @@ export function ToolHotbar() {
             onClick={toggleInventory}
             aria-pressed={inventoryOpen}
             title={inventoryOpen ? 'Fechar inventário' : 'Abrir inventário'}
-            className={`flex w-11 flex-col items-center justify-center gap-0.5 rounded-xl border-[3px] text-[9px] font-bold uppercase tracking-wide shadow-[0_0_0_1px_#1a0f07,0_10px_28px_rgba(0,0,0,.6)] transition-colors sm:w-12 ${
+            className={`flex w-10 shrink-0 items-center justify-center rounded-xl border-[3px] text-[9px] font-bold uppercase tracking-wide shadow-[0_0_0_1px_#1a0f07,0_10px_28px_rgba(0,0,0,.6)] transition-colors md:w-12 md:flex-col md:gap-0.5 ${
               inventoryOpen
                 ? 'border-amber-400/80 bg-[#4a2e15] text-amber-100'
                 : 'border-[#8a5a2b] bg-[#2a1a0e] text-amber-200/80 hover:bg-[#33200f] hover:text-amber-100'
             }`}
           >
             <Backpack className="h-4 w-4" />
-            <span>Bolsa</span>
+            <span className="hidden md:inline">Bolsa</span>
           </button>
           <button
             type="button"
@@ -299,14 +319,14 @@ export function ToolHotbar() {
             aria-pressed={skillsOpen}
             data-testid="skills-button"
             title={skillsOpen ? 'Fechar habilidades' : 'Abrir habilidades'}
-            className={`flex w-11 flex-col items-center justify-center gap-0.5 rounded-xl border-[3px] text-[9px] font-bold uppercase tracking-wide shadow-[0_0_0_1px_#1a0f07,0_10px_28px_rgba(0,0,0,.6)] transition-colors sm:w-12 ${
+            className={`flex w-10 shrink-0 items-center justify-center rounded-xl border-[3px] text-[9px] font-bold uppercase tracking-wide shadow-[0_0_0_1px_#1a0f07,0_10px_28px_rgba(0,0,0,.6)] transition-colors md:w-12 md:flex-col md:gap-0.5 ${
               skillsOpen
                 ? 'border-amber-400/80 bg-[#4a2e15] text-amber-100'
                 : 'border-[#8a5a2b] bg-[#2a1a0e] text-amber-200/80 hover:bg-[#33200f] hover:text-amber-100'
             }`}
           >
             <Sparkles className="h-4 w-4" />
-            <span>Skills</span>
+            <span className="hidden md:inline">Skills</span>
           </button>
         </div>
       </div>
