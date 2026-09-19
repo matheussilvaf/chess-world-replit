@@ -11,6 +11,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { AlertTriangle, Backpack, Sparkles, X } from 'lucide-react';
 import { usePlayerCharacterStore } from '../../stores/playerCharacterStore';
 import { useCollectionInventoryStore, weaponSlotIndex } from '../../stores/collectionInventoryStore';
+import { INVENTORY_COLUMNS } from '../../shared/collection/CollectionShapes';
 import { useInventoryUiStore } from '../../stores/inventoryUiStore';
 import { useProgressStore } from '../../stores/progressStore';
 import { getInventoryBridge } from '../../game/inventory/inventoryBridge';
@@ -124,6 +125,32 @@ export function ToolHotbar() {
       document.documentElement.style.removeProperty('--hud-bottom-stack');
     };
   }, [character, ready]);
+  // Celular: a barra ocupa a largura da tela (com margem) e os 5 slots dividem o espaço que sobra
+  // depois dos botões Bolsa/Skills. No desktop (md+) `mobileCell` fica null e valem as classes fixas.
+  const [mobileCell, setMobileCell] = useState<number | null>(null);
+  useEffect(() => {
+    const element = stackRef.current;
+    if (!element || typeof ResizeObserver === 'undefined') return;
+    const desktop = window.matchMedia('(min-width: 768px)');
+    const compute = () => {
+      if (desktop.matches) return setMobileCell(null);
+      const width = element.getBoundingClientRect().width;
+      // 2 botões de 40 px + 2 espaços de 6 px + borda/padding da barra (14 px) + divisor (5 px) + 4 espaços de 4 px.
+      const cell = Math.floor((width - 80 - 12 - 14 - 5 - 16) / INVENTORY_COLUMNS);
+      setMobileCell(Math.max(28, Math.min(56, cell)));
+    };
+    const observer = new ResizeObserver(compute);
+    observer.observe(element);
+    desktop.addEventListener('change', compute);
+    compute();
+    return () => {
+      observer.disconnect();
+      desktop.removeEventListener('change', compute);
+    };
+  }, [character, ready]);
+  const cellStyle = mobileCell ? { width: mobileCell } : undefined;
+  const cellClass = mobileCell ? 'shrink-0 md:w-14' : 'w-10 shrink-0 md:w-14';
+  const thumbSize = mobileCell ? Math.max(20, mobileCell - 10) : 36;
 
   // Avisos somem sozinhos.
   const notice = equipError ?? inventoryError;
@@ -235,7 +262,7 @@ export function ToolHotbar() {
 
   return (
     <>
-      <div ref={stackRef} className="pointer-events-none fixed bottom-2 left-2 z-[110] flex max-w-[74vw] flex-col items-start gap-2 md:inset-x-0 md:left-0 md:max-w-none md:items-center">
+      <div ref={stackRef} className="pointer-events-none fixed inset-x-3 bottom-2 z-[110] flex flex-col items-start gap-2 md:inset-x-0 md:items-center">
         {notice && (
           <div className="pointer-events-auto flex max-w-[min(92vw,420px)] items-start gap-2 rounded-lg border border-red-800 bg-[#3a1512] px-3 py-2 text-xs text-red-100 shadow-lg">
             <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-red-300" />
@@ -251,13 +278,13 @@ export function ToolHotbar() {
           </div>
         )}
         <EnergyBar />
-        <div className="pointer-events-auto flex max-w-full items-stretch gap-1 md:gap-1.5">
+        <div className="pointer-events-auto flex w-full items-stretch gap-1.5 md:w-auto">
           <div
             ref={barRef}
-            className="flex min-w-0 items-center gap-1 overflow-hidden rounded-xl border-[3px] border-[#8a5a2b] bg-[#2a1a0e] p-1 shadow-[0_0_0_1px_#1a0f07,0_10px_28px_rgba(0,0,0,.6)] md:gap-1.5 md:p-1.5"
+            className="flex min-w-0 flex-1 items-center gap-1 overflow-hidden rounded-xl border-[3px] border-[#8a5a2b] bg-[#2a1a0e] p-1 shadow-[0_0_0_1px_#1a0f07,0_10px_28px_rgba(0,0,0,.6)] md:flex-none md:gap-1.5 md:p-1.5"
           >
-            <div className="w-10 shrink-0 md:w-14">
-              <WeaponSlotCell index={weaponIndex} catalog={catalog} thumbSize={36} compact />
+            <div className={cellClass} style={cellStyle}>
+              <WeaponSlotCell index={weaponIndex} catalog={catalog} thumbSize={thumbSize} compact />
             </div>
             <span className="mx-0.5 h-8 w-px self-center bg-[#8a5a2b]/70" aria-hidden />
             {quick.map((key, offset) => {
@@ -272,12 +299,7 @@ export function ToolHotbar() {
                     : undefined
                 : 'Slot vazio';
               return (
-                <div
-                  key={index}
-                  className={`w-10 shrink-0 md:w-14 ${
-                    offset >= 4 ? 'hidden md:block' : offset >= 3 ? 'hidden min-[430px]:block' : ''
-                  }`}
-                >
+                <div key={index} className={cellClass} style={cellStyle}>
                   <InventorySlotCell
                     index={index}
                     itemKey={key}
@@ -285,7 +307,7 @@ export function ToolHotbar() {
                     catalog={catalog}
                     durability={view}
                     tone="quick"
-                    thumbSize={36}
+                    thumbSize={thumbSize}
                     active={active}
                     ghosted={dragging?.from === index || (!!key && eatPreview?.key === key && shownQty(key) === 0)}
                     dropTarget={dragging?.over === index}

@@ -4,6 +4,7 @@ import type { WorldScene } from '../../game/scenes/WorldScene';
 import { useTouchControlsStore } from '../../stores/touchControlsStore';
 
 const ZONE_PADDING = 24;
+const DEADZONE = 0.12;
 
 export function detectTouchDevice(): boolean {
   if (typeof window === 'undefined') return false;
@@ -17,15 +18,29 @@ export function VirtualJoystick({ getScene }: { getScene: () => WorldScene | nul
   const joystick = useTouchControlsStore((s) => s.joystick);
   const positioning = useTouchControlsStore((s) => s.positioning);
   const [isTouch] = useState(detectTouchDevice);
+  // O modo "static" do nipplejs calcula o centro uma vez; ao girar/redimensionar a tela recriamos o analógico.
+  const [layoutTick, setLayoutTick] = useState(0);
   const visible = joystick.enabled && isTouch && !positioning;
 
   useEffect(() => {
-    if (!visible || !zoneRef.current) {
+    if (!visible) return;
+    const bump = () => setLayoutTick((tick) => tick + 1);
+    window.addEventListener('resize', bump);
+    window.addEventListener('orientationchange', bump);
+    return () => {
+      window.removeEventListener('resize', bump);
+      window.removeEventListener('orientationchange', bump);
+    };
+  }, [visible]);
+
+  useEffect(() => {
+    const zone = zoneRef.current;
+    if (!visible || !zone) {
       getSceneRef.current()?.setExternalMoveVector(0, 0);
       return;
     }
     const manager = nipplejs.create({
-      zone: zoneRef.current,
+      zone,
       mode: 'static',
       position: { left: '50%', top: '50%' },
       size: joystick.size,
@@ -36,25 +51,35 @@ export function VirtualJoystick({ getScene }: { getScene: () => WorldScene | nul
       maxNumberOfJoysticks: 1,
     });
     const zero = () => getSceneRef.current()?.setExternalMoveVector(0, 0);
+    // O nipplejs escuta pointermove/pointerup no `document`: nada aqui pode interromper a propagação
+    // desses eventos (era o que travava o analógico enquanto o dedo estava sobre a área de toque).
     manager.on('move', (event) => {
       const data = event.data;
       if (!data?.vector) return;
       const magnitude = Math.min(1, (data.distance || 0) / (joystick.size / 2));
-      if (magnitude < 0.12) return zero();
+      if (magnitude < DEADZONE) return zero();
       getSceneRef.current()?.setExternalMoveVector(
         data.vector.x * magnitude,
         -data.vector.y * magnitude,
       );
     });
     manager.on('end', zero);
+    // O Phaser também escuta touchstart/touchend na window e ignora eventos já cancelados:
+    // cancelar aqui evita que o dedo do analógico vire um pointer do jogo (pinch/toque para andar).
+    const swallowTouch = (event: TouchEvent) => {
+      if (event.cancelable) event.preventDefault();
+    };
+    const touchEvents = ['touchstart', 'touchmove', 'touchend', 'touchcancel'] as const;
+    for (const type of touchEvents) zone.addEventListener(type, swallowTouch, { passive: false });
     const onVisibility = () => { if (document.hidden) zero(); };
     document.addEventListener('visibilitychange', onVisibility);
     return () => {
       zero();
       document.removeEventListener('visibilitychange', onVisibility);
+      for (const type of touchEvents) zone.removeEventListener(type, swallowTouch);
       manager.destroy();
     };
-  }, [visible, joystick.size]);
+  }, [visible, joystick.size, joystick.position.x, joystick.position.y, layoutTick]);
 
   if (!visible) return null;
   // Área de toque maior que o analógico (margem de 24 px em volta) para o dedo não "errar" o início do arrasto.
@@ -72,9 +97,6 @@ export function VirtualJoystick({ getScene }: { getScene: () => WorldScene | nul
         opacity: joystick.opacity,
         touchAction: 'none',
       }}
-      onPointerDown={(event) => event.stopPropagation()}
-      onPointerMove={(event) => event.stopPropagation()}
-      onPointerUp={(event) => event.stopPropagation()}
       onClick={(event) => event.stopPropagation()}
     />
   );

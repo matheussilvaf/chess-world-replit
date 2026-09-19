@@ -19,7 +19,7 @@ export interface TouchControlsConfig {
 }
 
 export const DEFAULT_TOUCH_CONTROLS: TouchControlsConfig = {
-  joystick: { enabled: true, opacity: 0.55, size: 130, position: { x: 95, y: 170 } },
+  joystick: { enabled: true, opacity: 0.55, size: 130, position: { x: 95, y: 200 } },
   attack: { size: 72, opacity: 1, position: null },
 };
 
