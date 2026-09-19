@@ -73,6 +73,34 @@ export class HuntingMapGeometry {
     return x >= z.x - margin && x <= z.x + z.width + margin && y >= z.y - margin && y <= z.y + z.height + margin;
   }
 
+  /** Distância euclidiana até o retângulo seguro (zero dentro dele). */
+  distanceToSafeZone(x: number, y: number): number {
+    const z = this.safeZone;
+    const dx = Math.max(z.x - x, 0, x - (z.x + z.width));
+    const dy = Math.max(z.y - y, 0, y - (z.y + z.height));
+    return Math.hypot(dx, dy);
+  }
+
+  /** Ponto fora da zona, a `distance` da borda, seguindo a direção que afasta `x,y`. */
+  safeZoneStandoffPoint(x: number, y: number, distance: number): { x: number; y: number } {
+    const z = this.safeZone;
+    const maxX = z.x + z.width, maxY = z.y + z.height;
+    let edgeX = Math.min(maxX, Math.max(z.x, x));
+    let edgeY = Math.min(maxY, Math.max(z.y, y));
+    let dx = x - edgeX, dy = y - edgeY;
+    if (dx === 0 && dy === 0) {
+      const edge = [
+        { gap: x - z.x, dx: -1, dy: 0, x: z.x, y },
+        { gap: maxX - x, dx: 1, dy: 0, x: maxX, y },
+        { gap: y - z.y, dx: 0, dy: -1, x, y: z.y },
+        { gap: maxY - y, dx: 0, dy: 1, x, y: maxY },
+      ].sort((a, b) => a.gap - b.gap)[0];
+      edgeX = edge.x; edgeY = edge.y; dx = edge.dx; dy = edge.dy;
+    }
+    const length = Math.hypot(dx, dy) || 1;
+    return { x: edgeX + dx / length * distance, y: edgeY + dy / length * distance };
+  }
+
   /** A point an animal may stand on: inside the map, outside walls and outside the safe zone. */
   isWalkableForAnimal(x: number, y: number, safeMargin = 24): boolean {
     return this.isInsideMap(x, y) && !this.inSafeZone(x, y, safeMargin) && !this.isBlocked(x, y);

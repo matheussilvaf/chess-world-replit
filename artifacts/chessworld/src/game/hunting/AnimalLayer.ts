@@ -180,9 +180,9 @@ export class AnimalLayer {
     const owner = this.owner();
     const detailsVisible = this.scene.cameras.main.zoom >= 0.9;
     for (const entry of this.entries.values()) {
-      const inView = entry.dying || cullState(
+      const inView = this.visibleTo(entry.view, owner) && (entry.dying || cullState(
         entry.view.x, entry.view.y, left, right, top, bottom, 200, entry.live,
-      );
+      ));
       if (!inView) {
         if (entry.live) {
           entry.live = false;
@@ -225,6 +225,15 @@ export class AnimalLayer {
 
   private owner(): string | null {
     return useHuntingStore.getState().active?.partyId ?? this.localUserId();
+  }
+
+  /**
+   * Animal de contrato de OUTRO jogador/grupo não existe para mim: não renderiza, não é
+   * acertável nem aparece na bússola (o servidor também ignora golpes/alvos de não-membros).
+   */
+  private visibleTo(view: AnimalView, owner: string | null): boolean {
+    if (!view.contractOwner) return true;
+    return view.contractOwner === owner || view.contractOwner === this.localUserId();
   }
 
   /**
@@ -302,8 +311,9 @@ export class AnimalLayer {
   }
 
   tryProjectileHit(rects: Phaser.Geom.Rectangle[]): boolean {
+    const owner = this.owner();
     for (const entry of this.entries.values()) {
-      if (entry.view.dead) continue;
+      if (entry.view.dead || !this.visibleTo(entry.view, owner)) continue;
       const direction = ANIMAL_DIRECTIONS[entry.playbackState.dir] ?? 'south';
       const columns = ANIMAL_ANIMATION_COLUMNS[entry.playbackState.anim];
       // Sem sprite (fora da tela / textura ainda carregando) o bicho continua acertável: hurtbox do 1º quadro.
@@ -325,6 +335,7 @@ export class AnimalLayer {
 
   flashHit(animalId: string, damage: number): void {
     const entry = this.entries.get(animalId);
+    if (entry && !this.visibleTo(entry.view, this.owner())) return; // não denunciar animal de contrato alheio
     const sprite = entry?.sprite;
     if (sprite) {
       sprite.setTint(0xff5b5b).setTintMode(Phaser.TintModes.FILL);
@@ -342,6 +353,7 @@ export class AnimalLayer {
   private fade(entry: Entry): void {
     if (entry.dying) return;
     entry.dying = true;
+    if (!this.visibleTo(entry.view, this.owner())) return; // some sem aparecer
     if (!entry.live) {
       entry.interpolator.reset(entry.view.x, entry.view.y);
       entry.container.setPosition(entry.view.x, entry.view.y);

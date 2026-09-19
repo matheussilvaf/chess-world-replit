@@ -125,6 +125,14 @@ describe('HuntingMapGeometry', () => {
     expect(geo.isWalkableForAnimal(z.x + z.width / 2, z.y + z.height / 2)).toBe(false);
     expect(geo.isWalkableForNpc(z.x + z.width / 2, z.y + z.height / 2) || geo.isBlocked(z.x + z.width / 2, z.y + z.height / 2)).toBe(true);
   });
+  it('measures the safe-zone distance and projects a standoff point', () => {
+    const z = CRAFTING_WORLD_MAP.safeZone;
+    const y = z.y + z.height / 2;
+    expect(geo.distanceToSafeZone(z.x - 40, y)).toBe(40);
+    expect(geo.distanceToSafeZone(z.x + z.width / 2, y)).toBe(0);
+    expect(geo.safeZoneStandoffPoint(z.x - 40, y, 260)).toEqual({ x: z.x - 260, y });
+    expect(geo.safeZoneStandoffPoint(z.x + 10, y, 260)).toEqual({ x: z.x - 260, y });
+  });
   it('treats rotated collision rectangles as rotated (not AABB)', () => {
     const rotated = CRAFTING_WORLD_MAP.collisionRects.find((r) => Math.abs(r[4] % 360) > 20 && Math.abs(r[4] % 360) < 160);
     expect(rotated).toBeDefined();

@@ -37,6 +37,7 @@ import { HuntingManager } from '../hunting/HuntingManager.js';
 import { HUNT_MSG } from '../shared/hunting/HuntingShapes.js';
 import { inviteCoop, respondCoop } from '../hunting/HuntingCoop.js';
 import { registerClient, unregisterClient } from '../realtime/userNotify.js';
+import { presenceService } from '../presence/presenceService.js';
 
 interface JoinOptions {
   /** Legado — IGNORADO para identidade (era spoofável). Mantido só por compat. */
@@ -114,6 +115,9 @@ export class WorldRoom extends Room<WorldState> {
   private progressUnsubs = new Map<string, () => void>();
   /** Último snapshot de progresso recebido por sessão (fome pendente, maxHp). */
   private progressBySession = new Map<string, ProgressSnapshot>();
+  /** HP já restaurado/observado nesta sessão, para gravar somente mudanças. */
+  private persistedHpBySession = new Map<string, number>();
+  private hpRestoreApplied = new Set<string>();
   /** Personagem jogável carregado por sessão (classe/aparência/arma). */
   private playerCharacters = new Map<string, PlayerCharacterConfigV1>();
   /** Last-request-wins para loads assíncronos do personagem. */
@@ -157,6 +161,14 @@ export class WorldRoom extends Room<WorldState> {
     // HP máximo global (config do admin) e morte por fome de quem estava
     // sentado/ocupado quando a energia zerou.
     this.clock.setInterval(() => void this.syncProgressState(), 30_000);
+    this.clock.setInterval(() => this.persistChangedHp(), 1_000);
+    this.clock.setInterval(() => {
+      const players: Array<{ userId: string; region: string }> = [];
+      this.state.players.forEach((player) => {
+        if (!isAnonId(player.id)) players.push({ userId: player.id, region: this.region });
+      });
+      presenceService.heartbeat(players);
+    }, 30_000);
 
     this.region = String(options.region || 'default');
     if (this.region.startsWith('craft:')) {
@@ -1030,6 +1042,19 @@ export class WorldRoom extends Room<WorldState> {
     if (!player || player.sessionId !== sessionId) return;
     this.progressBySession.set(sessionId, snapshot);
     this.applyMaxHp(player, snapshot.maxHp, initial);
+    if (initial) {
+      const userId = player.id;
+      void progressService.getPersistedHp(userId).then((savedHp) => {
+        const current = this.state.players.get(sessionId);
+        if (!current || current.id !== userId || this.hpRestoreApplied.has(sessionId)) return;
+        // Zero revive cheio no reload; valores positivos respeitam o novo teto.
+        if (!this.combatResolver.isDead(sessionId) && current.hp === current.maxHp && savedHp !== undefined && savedHp > 0) {
+          current.hp = Math.min(savedHp, current.maxHp);
+        }
+        this.hpRestoreApplied.add(sessionId);
+        this.persistedHpBySession.set(sessionId, current.hp);
+      }).catch(logProgressError);
+    }
     // Energia no estado público: os outros jogadores veem a barra acima do personagem.
     const energy = Math.max(0, Math.round(snapshot.energy));
     const maxEnergy = Math.max(0, Math.round(snapshot.maxEnergy));
@@ -1137,6 +1162,16 @@ export class WorldRoom extends Room<WorldState> {
       this.applyMaxHp(player, config.energy.maxHp, false);
       const snapshot = this.progressBySession.get(sessionId);
       if (snapshot) this.maybeStarve(sessionId, player, snapshot);
+    });
+  }
+
+  private persistChangedHp(): void {
+    this.state.players.forEach((player, sessionId) => {
+      if (isAnonId(player.id) || !this.hpRestoreApplied.has(sessionId)) return;
+      const hp = Math.max(0, Math.floor(player.hp));
+      if (this.persistedHpBySession.get(sessionId) === hp) return;
+      this.persistedHpBySession.set(sessionId, hp);
+      void progressService.setPersistedHp(player.id, hp).catch(logProgressError);
     });
   }
 
@@ -1399,6 +1434,7 @@ export class WorldRoom extends Room<WorldState> {
         const staleClient = this.clients.find(c => c.sessionId === existingSessionId);
         if (staleClient) {
           unregisterClient(existing.id, staleClient);
+          if (!isAnonId(existing.id)) presenceService.leave(existing.id, existingSessionId);
           staleClient.leave();
         }
       }
@@ -1424,6 +1460,7 @@ export class WorldRoom extends Room<WorldState> {
 
     this.state.players.set(client.sessionId, player);
     registerClient(playerId, client);
+    if (!isAnonId(playerId)) presenceService.join(playerId, client.sessionId, this.region);
     void this.hunting?.onJoin(client);
     this.movementGuards.set(client.sessionId, performance.now());
     console.log(`[WorldRoom] Player joined: ${player.username} (${client.sessionId}) | total: ${this.state.players.size}`);
@@ -1516,6 +1553,8 @@ export class WorldRoom extends Room<WorldState> {
 
     const playerId = player.id;
     unregisterClient(playerId, client);
+    if (!isAnonId(playerId)) presenceService.leave(playerId, client.sessionId);
+    const leavingHp = Math.max(0, Math.floor(player.hp));
     const username = player.username;
     this.hunting?.onLeave(client.sessionId, player.id);
     console.log(`[WorldRoom] Player leaving: ${username} (${client.sessionId}) | consented: ${consented}`);
@@ -1542,7 +1581,14 @@ export class WorldRoom extends Room<WorldState> {
     this.progressUnsubs.get(client.sessionId)?.();
     this.progressUnsubs.delete(client.sessionId);
     this.progressBySession.delete(client.sessionId);
+    this.persistedHpBySession.delete(client.sessionId);
+    this.hpRestoreApplied.delete(client.sessionId);
     console.log(`[WorldRoom] Player removed: ${username} | remaining: ${this.state.players.size}`);
+
+    if (!isAnonId(playerId)) {
+      await progressService.setPersistedHp(playerId, leavingHp).catch(logProgressError);
+      await progressService.flush(playerId).catch(logProgressError);
+    }
 
     const affected: [string, MatchState][] = [];
     this.state.matches.forEach((match, matchId) => {
@@ -1659,7 +1705,10 @@ export class WorldRoom extends Room<WorldState> {
   async onDispose() {
     for (const client of this.clients) {
       const player = this.state.players.get(client.sessionId);
-      if (player) unregisterClient(player.id, client);
+      if (player) {
+        unregisterClient(player.id, client);
+        if (!isAnonId(player.id)) presenceService.leave(player.id, client.sessionId);
+      }
     }
     this.huntingGeneration++;
     this.hunting?.destroy();

@@ -73,7 +73,7 @@ friendsRouter.get('/', async (req: Request, res: Response) => {
         username: p?.username ?? 'Jogador',
         chessRating: Math.round(p?.chess_rating ?? p?.rating ?? 1200),
         level: levels.get(id) ?? 9,
-        online: Boolean(onlineRow?.updated_at && Date.now() - new Date(onlineRow.updated_at).getTime() <= 90_000),
+        online: Boolean(onlineRow?.status !== 'offline' && onlineRow?.updated_at && Date.now() - new Date(onlineRow.updated_at).getTime() <= 90_000),
         region: onlineRow?.region ?? p?.current_region ?? null,
       };
     };
@@ -200,7 +200,7 @@ playersRouter.get('/:playerId/summary', async (req: Request, res: Response) => {
       draws: profile.draws ?? 0,
       friendship,
       ...(friendship.startsWith('pending') ? { requestId: relation.id } : {}),
-      online: Boolean(presenceResult.data?.updated_at && Date.now() - new Date(presenceResult.data.updated_at).getTime() <= 90_000),
+      online: Boolean(presenceResult.data?.status !== 'offline' && presenceResult.data?.updated_at && Date.now() - new Date(presenceResult.data.updated_at).getTime() <= 90_000),
       region: presenceResult.data?.region ?? profile.current_region ?? null,
     });
   } catch (error) {

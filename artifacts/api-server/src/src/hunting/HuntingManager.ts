@@ -58,7 +58,7 @@ import { getHuntingConfigCached } from './huntingConfigRepository.js';
 import { getPlayerHunting, updateIfActiveMatches } from './playerHuntingRepository.js';
 import { registerHunter, unregisterManager } from './HuntingCoop.js';
 
-type AiMode = 'rooted' | 'return' | 'wander' | 'alert' | 'chase' | 'attack' | 'retreat' | 'dodge';
+type AiMode = 'rooted' | 'return' | 'wander' | 'alert' | 'chase' | 'attack' | 'retreat' | 'dodge' | 'standoff';
 type Gait = 'walk' | 'run';
 interface RuntimeAnimal {
   state: AnimalState;
@@ -109,6 +109,7 @@ interface Shot {
   id: string;
   animalId: string;
   animalName: string;
+  contractOwner: string;
   damage: number;
   x: number;
   y: number;
@@ -122,6 +123,8 @@ interface Shot {
 const SHOT_TRACE_STEP = 8;
 /** The animal stops this far from the player (px) instead of walking into it. */
 const STANDOFF_FACTOR = 0.75;
+/** Distância que impede o animal de ficar preso na parede invisível da área segura. */
+const SAFE_STANDOFF = 260;
 
 export interface HuntingHost {
   state: WorldState;
@@ -335,8 +338,8 @@ export class HuntingManager {
     if (decide) this.lastDecisionAt = now;
     for (const animal of this.runtime.values()) {
       if (animal.state.dead) continue;
-      const near = this.nearestPlayer(animal.state.x, animal.state.y, FAR_AI_DISTANCE);
-      if (!near && !animal.targetSessionId) {
+      const near = this.nearestPlayer(animal, animal.state.x, animal.state.y, FAR_AI_DISTANCE);
+      if (!near && !animal.targetSessionId && animal.mode !== 'standoff' && this.geometry.distanceToSafeZone(animal.state.x, animal.state.y) >= SAFE_STANDOFF) {
         this.regen(animal, dtMs, now);
         continue;
       }
@@ -347,10 +350,10 @@ export class HuntingManager {
     this.moveNpc(dtMs / 1000, now);
   }
 
-  private nearestPlayer(x: number, y: number, max = Infinity): [string, PlayerState, number] | null {
+  private nearestPlayer(animal: RuntimeAnimal, x: number, y: number, max = Infinity): [string, PlayerState, number] | null {
     let found: [string, PlayerState, number] | null = null;
     this.host.state.players.forEach((p, sid) => {
-      if (p.currentBoardId || p.hp <= 0 || this.host.isDead(sid)) return;
+      if (p.currentBoardId || p.hp <= 0 || this.host.isDead(sid) || this.geometry.inSafeZone(p.x, p.y) || !this.isMemberOf(animal, sid)) return;
       const d = Math.hypot(p.x - x, p.y - y);
       if (d <= max && (!found || d < found[2])) found = [sid, p, d];
     });
@@ -358,6 +361,15 @@ export class HuntingManager {
   }
 
   private profileFor(animal: RuntimeAnimal): HuntingLevelProfile { return levelProfileFor(this.config, animal.variant); }
+
+  /** Contratos pertencem ao usuário ou à party ativa; animais selvagens continuam públicos. */
+  private isMemberOf(animal: RuntimeAnimal, sessionId: string): boolean {
+    const owner = animal.state.contractOwner;
+    if (!owner) return true;
+    const player = this.host.state.players.get(sessionId);
+    if (!player) return false;
+    return player.id === owner || (this.records.get(player.id)?.active?.partyId ?? player.id) === owner;
+  }
 
   private face(animal: RuntimeAnimal, dx: number, dy: number): void {
     if (Math.abs(dx) + Math.abs(dy) > 0.5) animal.state.dir = ANIMAL_DIRECTIONS.indexOf(animalDirectionFromVector(dx, dy));
@@ -390,7 +402,8 @@ export class HuntingManager {
     const entries: Array<{ sessionId: string; threat: number; distance: number; lastHitAt: number }> = [];
     for (const [sessionId, value] of animal.threat) {
       const player = this.host.state.players.get(sessionId);
-      if (!player || player.currentBoardId || player.hp <= 0 || this.host.isDead(sessionId)) {
+      if (!player || player.currentBoardId || player.hp <= 0 || this.host.isDead(sessionId) ||
+        this.geometry.inSafeZone(player.x, player.y) || !this.isMemberOf(animal, sessionId)) {
         animal.threat.delete(sessionId);
         continue;
       }
@@ -468,9 +481,24 @@ export class HuntingManager {
     const parsed = parseVariantId(animal.state.variantId);
     const profile = this.profileFor(animal);
     const isTree = parsed?.animalKey === MONSTER_TREE_ANIMAL_KEY;
+    if (animal.mode === 'standoff') return;
+    const current = animal.targetSessionId ? this.host.state.players.get(animal.targetSessionId) : undefined;
+    if (current && this.geometry.inSafeZone(current.x, current.y)) {
+      // Entrar na área segura encerra o combate e força espaço para não acampar na borda.
+      animal.targetSessionId = '';
+      animal.targetTrack = null;
+      animal.threat.clear();
+      animal.targetOutsideReachSince = 0;
+      animal.regenStartedAt = 0;
+      animal.regenStartHp = animal.state.hp;
+      this.beginSafeStandoff(animal, now);
+      this.regen(animal, 100, now);
+      return;
+    }
     this.selectThreatTarget(animal, now, profile);
     let target = animal.targetSessionId ? this.host.state.players.get(animal.targetSessionId) : undefined;
-    if (target && (target.currentBoardId || target.hp <= 0 || this.host.isDead(animal.targetSessionId))) target = undefined;
+    if (target && (target.currentBoardId || target.hp <= 0 || this.host.isDead(animal.targetSessionId) ||
+      this.geometry.inSafeZone(target.x, target.y) || !this.isMemberOf(animal, animal.targetSessionId))) target = undefined;
     if (target && Math.hypot(target.x - animal.state.x, target.y - animal.state.y) > animal.variant.combatBreakDistance * profile.persistence) target = undefined;
     if (!target) {
       animal.targetSessionId = '';
@@ -483,7 +511,12 @@ export class HuntingManager {
         this.regen(animal, 100, now);
         return;
       }
-      const nearest = this.nearestPlayer(animal.state.x, animal.state.y, parsed?.category === 'hunts' ? ANIMAL_HUNT_AGGRO_RADIUS : animal.variant.radius);
+      if (this.geometry.distanceToSafeZone(animal.state.x, animal.state.y) < SAFE_STANDOFF) {
+        this.beginSafeStandoff(animal, now);
+        this.regen(animal, 100, now);
+        return;
+      }
+      const nearest = this.nearestPlayer(animal, animal.state.x, animal.state.y, parsed?.category === 'hunts' ? ANIMAL_HUNT_AGGRO_RADIUS : animal.variant.radius);
       if (nearest && (parsed?.category === 'hunts' || animal.variant.reaction === 'radius')) {
         this.acquireTarget(animal, nearest[0], nearest[1], now, profile);
         target = nearest[1];
@@ -585,6 +618,12 @@ export class HuntingManager {
         const angle = Math.atan2(-dy, -dx) + 0.45 * animal.flankSide;
         animal.targetX = target.x + Math.cos(angle) * standoff;
         animal.targetY = target.y + Math.sin(angle) * standoff;
+        if (this.geometry.inSafeZone(animal.targetX, animal.targetY, SAFE_STANDOFF)) {
+          animal.targetSessionId = '';
+          animal.targetTrack = null;
+          animal.threat.clear();
+          this.beginSafeStandoff(animal, now);
+        }
       } else {
         animal.targetX = animal.state.x; animal.targetY = animal.state.y;
       }
@@ -597,6 +636,40 @@ export class HuntingManager {
     if (animal.flankSide && distance > 90) angle += 0.6 * animal.flankSide;
     animal.targetX = px + Math.cos(angle) * standoff;
     animal.targetY = py + Math.sin(angle) * standoff;
+    if (this.geometry.inSafeZone(animal.targetX, animal.targetY, SAFE_STANDOFF)) {
+      animal.targetSessionId = '';
+      animal.targetTrack = null;
+      animal.threat.clear();
+      this.beginSafeStandoff(animal, now);
+    }
+  }
+
+  private beginSafeStandoff(animal: RuntimeAnimal, now: number): void {
+    const base = this.geometry.safeZoneStandoffPoint(animal.state.x, animal.state.y, SAFE_STANDOFF);
+    const z = this.geometry.safeZone;
+    const edgeX = Math.min(z.x + z.width, Math.max(z.x, animal.state.x));
+    const edgeY = Math.min(z.y + z.height, Math.max(z.y, animal.state.y));
+    const angle = Math.atan2(base.y - edgeY, base.x - edgeX);
+    const walkable = (x: number, y: number) => this.geometry.isWalkableForAnimal(x, y);
+    for (const turn of [0, Math.PI / 6, -Math.PI / 6, Math.PI / 3, -Math.PI / 3]) {
+      // +1 evita cair exatamente na borda inclusiva do predicado de margem.
+      const radius = (SAFE_STANDOFF + 1) / Math.max(0.2, Math.cos(Math.abs(turn)));
+      const x = edgeX + Math.cos(angle + turn) * radius;
+      const y = edgeY + Math.sin(angle + turn) * radius;
+      if (this.geometry.inSafeZone(x, y, SAFE_STANDOFF) ||
+        !this.geometry.isWalkableForAnimal(x, y) ||
+        !this.geometry.segmentWalkable(animal.state.x, animal.state.y, x, y, walkable)) continue;
+      animal.mode = 'standoff';
+      animal.targetX = x; animal.targetY = y;
+      animal.pauseUntil = now + randomBetween(500, 1500);
+      animal.chaseGait = 'run';
+      return;
+    }
+    // Sem rota de fuga, espera antes de sortear outro destino válido.
+    animal.mode = 'wander';
+    animal.targetX = animal.state.x; animal.targetY = animal.state.y;
+    animal.pauseUntil = now + 2000;
+    this.stopRunning(animal);
   }
 
   private regen(animal: RuntimeAnimal, dtMs: number, now: number): void {
@@ -615,7 +688,7 @@ export class HuntingManager {
   private gaitFor(animal: RuntimeAnimal): Gait {
     switch (animal.mode) {
       case 'wander': case 'return': return 'walk';
-      case 'retreat': case 'dodge': return 'run';
+      case 'retreat': case 'dodge': case 'standoff': return 'run';
       default: return animal.chaseGait;
     }
   }
@@ -635,7 +708,9 @@ export class HuntingManager {
       if (now >= animal.pauseUntil) {
         const angle = Math.random() * Math.PI * 2, distance = randomBetween(150, 600);
         const x = animal.state.x + Math.cos(angle) * distance, y = animal.state.y + Math.sin(angle) * distance;
-        if (this.geometry.segmentWalkable(animal.state.x, animal.state.y, x, y, (px, py) => this.geometry.isWalkableForAnimal(px, py))) {
+        if (!this.geometry.inSafeZone(x, y, SAFE_STANDOFF) &&
+          this.geometry.isWalkableForAnimal(x, y) &&
+          this.geometry.segmentWalkable(animal.state.x, animal.state.y, x, y, (px, py) => this.geometry.isWalkableForAnimal(px, py))) {
           animal.targetX = x; animal.targetY = y;
         }
         animal.pauseUntil = now + randomBetween(1000, 4000);
@@ -644,6 +719,12 @@ export class HuntingManager {
     }
     const dx = animal.targetX - animal.state.x, dy = animal.targetY - animal.state.y;
     const len = Math.hypot(dx, dy);
+    if (len < 12 && animal.mode === 'standoff') {
+      animal.mode = animal.treeAnchorX !== undefined ? 'return' : 'wander';
+      animal.pauseUntil = now + randomBetween(500, 1500);
+      this.stopRunning(animal);
+      return;
+    }
     if (len < 8 && animal.mode === 'return') {
       animal.state.x = animal.treeAnchorX ?? animal.state.x;
       animal.state.y = animal.treeAnchorY ?? animal.state.y;
@@ -685,6 +766,13 @@ export class HuntingManager {
       (!target || Math.hypot(x - target.x, y - target.y) <= farthest) && this.geometry.segmentWalkable(animal.state.x, animal.state.y, x, y, walkable, 8);
     const move = ([[nx, ny], [nx, animal.state.y], [animal.state.x, ny]] as const).find(([x, y]) => allowed(x, y));
     if (!move) {
+      if (animal.mode === 'chase' && this.geometry.inSafeZone(nx, ny, 24)) {
+        animal.targetSessionId = '';
+        animal.targetTrack = null;
+        animal.threat.clear();
+        this.beginSafeStandoff(animal, now);
+        return;
+      }
       animal.pauseUntil = 0;
       if (animal.mode !== 'return') {
         animal.targetX = animal.state.x;
@@ -700,13 +788,17 @@ export class HuntingManager {
 
   private async bite(animal: RuntimeAnimal): Promise<void> {
     if (animal.state.dead) return;
-    const player = this.host.state.players.get(animal.targetSessionId);
-    if (!player || player.currentBoardId || this.host.isDead(animal.targetSessionId)) return;
+    const sessionId = animal.targetSessionId;
+    const player = this.host.state.players.get(sessionId);
+    if (!player || player.currentBoardId || player.hp <= 0 || this.host.isDead(sessionId) ||
+      this.geometry.inSafeZone(player.x, player.y) || !this.isMemberOf(animal, sessionId)) return;
     const parsed = parseVariantId(animal.state.variantId);
     if (!parsed) return;
     const rig = await getRigCached(rigIdForAnimal(parsed.category, parsed.animal));
     const playerConfig = player.characterId ? await getCharacterConfig(player.characterId) : null;
-    if (animal.state.dead || this.host.state.players.get(animal.targetSessionId) !== player) return;
+    if (animal.state.dead || animal.targetSessionId !== sessionId || this.host.state.players.get(sessionId) !== player ||
+      player.currentBoardId || player.hp <= 0 || this.host.isDead(sessionId) ||
+      this.geometry.inSafeZone(player.x, player.y) || !this.isMemberOf(animal, sessionId)) return;
     const frames = rig?.animationConfigs.attack?.directions[ANIMAL_DIRECTIONS[animal.state.dir]]?.frames ?? {};
     const local = Object.values(frames).flatMap((f) => f.hitbox.enabled ? f.hitbox.rectangles : []);
     const hitboxes = (local.length ? local : [ANIMAL_DEFAULT_HITBOX]).map((r) => this.worldRect(r, animal.state.x, animal.state.y));
@@ -715,7 +807,7 @@ export class HuntingManager {
       ? localPlayerHurt.map((r) => this.worldRect(r, player.x, player.y))
       : [{ x: player.x - 18, y: player.y - 48, width: 36, height: 48 }];
     if (hitboxes.some((r) => playerHurt.some((p) => rectanglesIntersect(r, p))) || Math.hypot(player.x - animal.state.x, player.y - animal.state.y) <= ANIMAL_BITE_RANGE + 16) {
-      this.host.damagePlayer(animal.targetSessionId, animal.variant.damage, animal.variant.name);
+      this.host.damagePlayer(sessionId, animal.variant.damage, animal.variant.name);
     }
   }
 
@@ -723,7 +815,8 @@ export class HuntingManager {
   private shoot(animal: RuntimeAnimal, profile: HuntingLevelProfile): void {
     if (animal.state.dead) return;
     const player = this.host.state.players.get(animal.targetSessionId);
-    if (!player || player.currentBoardId || this.host.isDead(animal.targetSessionId)) return;
+    if (!player || player.currentBoardId || this.host.isDead(animal.targetSessionId) ||
+      this.geometry.inSafeZone(player.x, player.y) || !this.isMemberOf(animal, animal.targetSessionId)) return;
     if (this.geometry.inSafeZone(player.x, player.y)) return;
     const aimX = player.x - animal.state.x, aimY = player.y - animal.state.y;
     const length = Math.hypot(aimX, aimY);
@@ -739,7 +832,8 @@ export class HuntingManager {
     }
     if (range <= 0) return;
     const shot: Shot = {
-      id: `shot-${Date.now().toString(36)}-${++this.idCounter}`, animalId: animal.state.id, animalName: animal.variant.name, damage: animal.variant.damage,
+      id: `shot-${Date.now().toString(36)}-${++this.idCounter}`, animalId: animal.state.id, animalName: animal.variant.name,
+      contractOwner: animal.state.contractOwner, damage: animal.variant.damage,
       x, y, dx, dy, speed: profile.shootSpeed, remaining: range,
     };
     this.shots.set(shot.id, shot);
@@ -775,6 +869,8 @@ export class HuntingManager {
       let found = null as { sessionId: string; x: number; y: number } | null;
       this.host.state.players.forEach((player, sessionId) => {
         if (found || player.currentBoardId || player.hp <= 0 || this.host.isDead(sessionId)) return;
+        if (shot.contractOwner && player.id !== shot.contractOwner &&
+          (this.records.get(player.id)?.active?.partyId ?? player.id) !== shot.contractOwner) return;
         if (this.geometry.inSafeZone(player.x, player.y)) return; // the shot stops at the border; a body leaning over it is still safe
         // ground-level point against the player's standing hurtbox (feet at y, body above), grown by the shot radius —
         // the same fallback rectangle the bite uses (composed characters carry no per-character hurtbox config)
@@ -823,6 +919,7 @@ export class HuntingManager {
     if (!animal || animal.state.dead || !player || !swing || swing.movement !== 'shoot' || Date.now() - swing.at > ARROW_WINDOW_MS) {
       return this.result(client, requestId, false, 'Flecha inválida ou fora de tempo');
     }
+    if (!this.isMemberOf(animal, client.sessionId)) return this.result(client, requestId, false, 'Animal reservado para outro grupo');
     if (this.consumedShots.get(client.sessionId) === swing.at) {
       return this.result(client, requestId, false, 'Esta flecha já atingiu um animal');
     }
@@ -875,9 +972,12 @@ export class HuntingManager {
 
   private async applyPlayerHit(animal: RuntimeAnimal, sessionId: string, shoot = false): Promise<boolean> {
     const player = this.host.state.players.get(sessionId);
-    if (!player || animal.state.dead) return false;
+    if (!player || animal.state.dead || this.geometry.inSafeZone(player.x, player.y) || !this.isMemberOf(animal, sessionId)) return false;
     const damage = await this.damageFor(player, shoot);
-    if (this.host.state.players.get(sessionId) !== player || animal.state.dead || damage === null || damage <= 0) return false;
+    if (this.host.state.players.get(sessionId) !== player || animal.state.dead ||
+      player.currentBoardId || player.hp <= 0 || this.host.isDead(sessionId) ||
+      this.geometry.inSafeZone(player.x, player.y) || !this.isMemberOf(animal, sessionId) ||
+      damage === null || damage <= 0) return false;
     animal.lastAttackerSessionId = sessionId;
     const priorThreat = animal.threat.get(sessionId);
     animal.threat.set(sessionId, {
@@ -1068,6 +1168,26 @@ export class HuntingManager {
   onPlayerDied(sessionId: string): void {
     const player = this.host.state.players.get(sessionId);
     if (player) void this.cancelContract(player, 'cancelled_death', '', this.client(sessionId));
+    const now = Date.now();
+    for (const animal of this.runtime.values()) {
+      if (animal.state.dead || (!animal.threat.has(sessionId) && animal.targetSessionId !== sessionId)) continue;
+      animal.threat.delete(sessionId);
+      if (animal.targetSessionId !== sessionId) continue;
+      animal.targetSessionId = '';
+      animal.targetTrack = null;
+      animal.targetOutsideReachSince = 0;
+      this.selectThreatTarget(animal, now, this.profileFor(animal));
+      if (animal.targetSessionId) continue; // co-op mantém o HP se ainda há alvo válido
+      animal.state.hp = animal.state.maxHp;
+      animal.threat.clear();
+      animal.regenStartedAt = 0;
+      animal.regenStartHp = animal.state.maxHp;
+      animal.mode = animal.treeAnchorX !== undefined ? 'return' : 'wander';
+      animal.targetX = animal.treeAnchorX ?? animal.state.x;
+      animal.targetY = animal.treeAnchorY ?? animal.state.y;
+      animal.pauseUntil = now + randomBetween(500, 1500);
+      this.stopRunning(animal);
+    }
   }
 
   private async cancelContract(player: PlayerState, type: 'abandoned' | 'expired' | 'cancelled_death' | 'cancelled_coop', requestId = '', client?: Client): Promise<void> {
@@ -1115,7 +1235,7 @@ export class HuntingManager {
     }
     const killerActive = this.records.get(killerId)?.active;
     if (!killerActive || (killerActive.partyId ?? killerId) !== owner) {
-      // stolen kill: the owner's quota is untouched, so the animal is replaced (back to the batch size) in 5 s
+      // Defesa residual para chamadores internos; golpes externos são barrados antes e não chegam aqui.
       this.schedule(`contract:${owner}`, 5000, () => this.topUpContract(owner, 'replace'));
       return;
     }

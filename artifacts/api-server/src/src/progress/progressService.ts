@@ -112,13 +112,38 @@ class ProgressService {
     });
     return () => {
       state.listeners.delete(listener);
-      if (state.listeners.size === 0) void this.flush(state);
+      if (state.listeners.size === 0) void this.flushState(state);
     };
   }
 
   async getSnapshot(userId: string): Promise<ProgressSnapshot> {
     const state = this.stateFor(userId);
     return this.run(state, async () => this.snapshot(state, await this.ensureLoaded(state), []));
+  }
+
+  async getPersistedHp(userId: string): Promise<number | undefined> {
+    const state = this.stateFor(userId);
+    return this.run(state, async () => {
+      await this.ensureLoaded(state);
+      const hp = state.record.counters.hp;
+      return Number.isFinite(hp) ? Math.max(0, Math.floor(hp)) : undefined;
+    });
+  }
+
+  setPersistedHp(userId: string, hp: number): Promise<void> {
+    const state = this.stateFor(userId);
+    return this.run(state, async () => {
+      const config = await this.ensureLoaded(state);
+      const next = Math.max(0, Math.min(config.energy.maxHp, Math.floor(hp)));
+      if (state.record.counters.hp === next) return;
+      state.record.counters.hp = next;
+      this.touch(state);
+    });
+  }
+
+  /** Força a gravação pendente antes de trocar de sala ou encerrar a sessão. */
+  flush(userId: string): Promise<void> {
+    return this.flushState(this.stateFor(userId));
   }
 
   // -------------------------------------------------------------- mutações
@@ -423,12 +448,12 @@ class ProgressService {
     if (!state.persisted || state.saveTimer) return;
     state.saveTimer = setTimeout(() => {
       state.saveTimer = null;
-      void this.flush(state);
+      void this.flushState(state);
     }, SAVE_DEBOUNCE_MS);
   }
 
   /** Grava o estado atual (dentro da fila, para não competir com uma mutação). */
-  private flush(state: PlayerProgressState): Promise<void> {
+  private flushState(state: PlayerProgressState): Promise<void> {
     return this.run(state, async () => {
       if (!state.dirty || !state.persisted || !state.loaded) return;
       if (state.saveTimer) {
@@ -464,7 +489,7 @@ class ProgressService {
       const now = Date.now();
       for (const [userId, state] of this.states) {
         if (state.listeners.size > 0 || now - state.lastTouched < IDLE_EVICT_MS) continue;
-        void this.flush(state).then(() => {
+        void this.flushState(state).then(() => {
           if (state.listeners.size === 0 && !state.dirty && this.states.get(userId) === state) this.states.delete(userId);
         });
       }
