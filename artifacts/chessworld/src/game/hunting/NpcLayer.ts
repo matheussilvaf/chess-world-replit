@@ -8,6 +8,7 @@ import {
   type NpcDirection,
 } from '../../shared/hunting/HuntingShapes';
 import { RemotePlayerInterpolator } from '../network/interpolation';
+import { cullState } from './animalPlayback';
 
 export interface NpcView { id: string; x: number; y: number; dir: number; isMoving: boolean }
 interface Entry {
@@ -16,6 +17,9 @@ interface Entry {
   sprite: Phaser.GameObjects.Sprite;
   zone: Phaser.GameObjects.Zone;
   interpolator: RemotePlayerInterpolator;
+  live: boolean;
+  pausedAnim: boolean;
+  depth: number;
 }
 
 const textureKey = (kind: 'idle' | 'walk') => `hunting:npc:${kind}`;
@@ -86,8 +90,10 @@ export class NpcLayer {
     for (const view of views) {
       const entry = this.entries.get(view.id);
       if (entry) {
+        const moved = entry.view.x !== view.x || entry.view.y !== view.y;
         entry.view = view;
-        entry.interpolator.pushSnapshot(view.x, view.y);
+        if (moved) entry.interpolator.pushSnapshot(view.x, view.y);
+        if (moved && !entry.live) entry.container.setPosition(view.x, view.y);
       } else {
         void this.add(view);
       }
@@ -105,6 +111,7 @@ export class NpcLayer {
     const moved = entry.view.x !== view.x || entry.view.y !== view.y;
     entry.view = view;
     if (moved) entry.interpolator.pushSnapshot(view.x, view.y);
+    if (moved && !entry.live) entry.container.setPosition(view.x, view.y);
   }
 
   removeNpc(id: string): void {
@@ -114,6 +121,7 @@ export class NpcLayer {
   private async add(view: NpcView): Promise<void> {
     if (!(await this.ready) || this.entries.has(view.id) || !this.scene.sys.displayList) return;
     const container = this.scene.add.container(view.x, view.y).setDepth(this.depthForY(view.y));
+    container.setVisible(false);
     const sprite = this.scene.add.sprite(0, 0, textureKey('idle')).setOrigin(0.5, SPRITE_ORIGIN_Y);
     const label = this.scene.add.text(0, LABEL_Y, 'Líder dos Caçadores', {
       fontFamily: 'monospace', fontSize: '10px', color: '#fde68a', stroke: '#000000', strokeThickness: 3,
@@ -124,13 +132,56 @@ export class NpcLayer {
       this.onTalk();
     });
     container.add([sprite, label, zone]);
-    this.entries.set(view.id, { view, container, sprite, zone, interpolator: new RemotePlayerInterpolator(view.x, view.y) });
+    this.entries.set(view.id, {
+      view,
+      container,
+      sprite,
+      zone,
+      interpolator: new RemotePlayerInterpolator(view.x, view.y),
+      live: false,
+      pausedAnim: false,
+      depth: this.depthForY(view.y),
+    });
   }
 
   tick(deltaMs: number): void {
+    const view = this.scene.cameras.main.worldView;
+    const left = view.x;
+    const right = view.right;
+    const top = view.y;
+    const bottom = view.bottom;
     for (const entry of this.entries.values()) {
+      const inView = cullState(entry.view.x, entry.view.y, left, right, top, bottom, 200, entry.live);
+      if (!inView) {
+        if (entry.live) {
+          entry.live = false;
+          entry.container.setVisible(false);
+          if (entry.sprite.anims.isPlaying) {
+            entry.sprite.anims.pause();
+            entry.pausedAnim = true;
+          }
+        }
+        if (entry.container.x !== entry.view.x || entry.container.y !== entry.view.y) {
+          entry.container.setPosition(entry.view.x, entry.view.y);
+        }
+        continue;
+      }
+      if (!entry.live) {
+        entry.live = true;
+        entry.interpolator.reset(entry.view.x, entry.view.y);
+        entry.container.setPosition(entry.view.x, entry.view.y).setVisible(true);
+        if (entry.pausedAnim) {
+          entry.sprite.anims.resume();
+          entry.pausedAnim = false;
+        }
+      }
       const pos = entry.interpolator.getPosition(deltaMs);
-      entry.container.setPosition(pos.x, pos.y).setDepth(this.depthForY(pos.y));
+      entry.container.setPosition(pos.x, pos.y);
+      const depth = this.depthForY(pos.y);
+      if (depth !== entry.depth) {
+        entry.depth = depth;
+        entry.container.setDepth(depth);
+      }
       const direction = NPC_DIRECTION_ORDER[entry.view.dir] ?? 'south';
       const key = animKey(entry.view.isMoving ? 'walk' : 'idle', direction);
       if (entry.sprite.anims.currentAnim?.key !== key) entry.sprite.play(key);
@@ -139,7 +190,9 @@ export class NpcLayer {
 
   hitTest(x: number, y: number): boolean {
     for (const entry of this.entries.values()) {
-      if (new Phaser.Geom.Rectangle(entry.container.x - HIT_W / 2, entry.container.y + HIT_TOP, HIT_W, HIT_H).contains(x, y)) return true;
+      const left = entry.container.x - HIT_W / 2;
+      const top = entry.container.y + HIT_TOP;
+      if (x >= left && x <= left + HIT_W && y >= top && y <= top + HIT_H) return true;
     }
     return false;
   }

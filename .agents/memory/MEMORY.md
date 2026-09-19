@@ -5,3 +5,4 @@
 - [Hunting system](hunting-system.md) — animais/contratos/NPC, co-op (partyId) e IA de ameaça: rig v2, geometria TMJ, HUNT_MSG, salto global `motion` editado só em /dev/caca (média = velocidade do nível), PUT /motion, tiros, lock só no resgate.
 - [Controles de toque](mobile-touch-controls.md) — analógico nipplejs (Phaser 4 → sem rex), camadas z do HUD móvel (ataque 150 < modais 500), store touchControls, verificar via /dev/controles.
 - [Sistema de amigos](friends-system.md) — friend_requests (requester_id/receiver_id, sem "visto"), escritas só via /api/friends, notifyUser em processo, teste com contas e2e.
+- [Performance do cliente](client-performance.md) — culling/LOD por câmera para animais/NPCs/remotos, dirty-check de Text (setColor re-renderiza!), materialização preguiçosa.

@@ -14,23 +14,29 @@ import { playerTagBus, type PlayerTagEntry } from '../../game/playerTagBus';
  */
 export function PlayerNameTags() {
   const containerRef = useRef<HTMLDivElement>(null);
-  const tagEls = useRef<Map<string, HTMLDivElement>>(new Map());
+  const tagEls = useRef<Map<string, {
+    wrap: HTMLDivElement;
+    name: HTMLSpanElement;
+    elo: HTMLSpanElement;
+  }>>(new Map());
+  const seenIds = useRef<Set<string>>(new Set());
 
   useEffect(() => {
     const unsub = playerTagBus.subscribe((entries: PlayerTagEntry[]) => {
       const container = containerRef.current;
       if (!container) return;
 
-      const seen = new Set<string>();
+      const seen = seenIds.current;
+      seen.clear();
 
       for (const entry of entries) {
         seen.add(entry.sessionId);
 
-        let el = tagEls.current.get(entry.sessionId);
+        let refs = tagEls.current.get(entry.sessionId);
 
-        if (!el) {
+        if (!refs) {
           // ── Build the tag element once ───────────────────────────────────
-          el = document.createElement('div');
+          const el = document.createElement('div');
           el.className = 'player-nametag-wrap';
 
           const inner = document.createElement('div');
@@ -46,25 +52,25 @@ export function PlayerNameTags() {
           inner.appendChild(eloSpan);
           el.appendChild(inner);
           container.appendChild(el);
-          tagEls.current.set(entry.sessionId, el);
+          refs = { wrap: el, name: nameSpan, elo: eloSpan };
+          tagEls.current.set(entry.sessionId, refs);
         }
 
-        // ── Update position (runs every frame at 60 fps) ──────────────────
+        // Atualiza em 30 Hz; refs diretas evitam querySelector no caminho quente.
         // translate(x - 50%, y) so the tag is horizontally centred on the
         // player. Use left:0;top:0 as the transform origin baseline.
-        el.style.transform = `translate(calc(${entry.x}px - 50%), ${entry.y}px)`;
+        refs.wrap.style.transform = `translate(calc(${entry.x}px - 50%), ${entry.y}px)`;
 
         // ── Update text (only if content changed) ─────────────────────────
-        const nameEl = el.querySelector('.player-nametag-name') as HTMLElement | null;
-        const eloEl  = el.querySelector('.player-nametag-elo')  as HTMLElement | null;
-        if (nameEl && nameEl.textContent !== entry.username)       nameEl.textContent = entry.username;
-        if (eloEl  && eloEl.textContent  !== String(entry.rating)) eloEl.textContent  = String(entry.rating);
+        if (refs.name.textContent !== entry.username) refs.name.textContent = entry.username;
+        const rating = String(entry.rating);
+        if (refs.elo.textContent !== rating) refs.elo.textContent = rating;
       }
 
       // ── Remove stale tags ─────────────────────────────────────────────────
-      for (const [sid, el] of tagEls.current.entries()) {
+      for (const [sid, refs] of tagEls.current.entries()) {
         if (!seen.has(sid)) {
-          el.remove();
+          refs.wrap.remove();
           tagEls.current.delete(sid);
         }
       }
@@ -72,8 +78,9 @@ export function PlayerNameTags() {
 
     return () => {
       unsub();
-      for (const el of tagEls.current.values()) el.remove();
+      for (const refs of tagEls.current.values()) refs.wrap.remove();
       tagEls.current.clear();
+      seenIds.current.clear();
     };
   }, []);
 

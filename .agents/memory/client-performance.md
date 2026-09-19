@@ -1,0 +1,8 @@
+---
+name: Performance do cliente (FPS no celular)
+description: Regras de culling/LOD do cliente Phaser e armadilhas que derrubavam FPS em áreas com muitos animais.
+---
+- **Regra:** nada fora da câmera (worldView + 200 px, histerese 40 px via `cullState` em `game/hunting/animalPlayback.ts`) roda por frame: sem interpolação, sem setDepth, sem redraw de texto/Graphics, animação pausada, container invisível. Vale para animais do servidor (AnimalLayer), NPCs (NpcLayer), remotos (WorldScene) e animais/drops locais (CraftingMapRuntime). A posição do container de um dormente segue o último snapshot do servidor (hit test de flecha e bússola continuam certos).
+- **Why (set/2026):** FPS caía em áreas com muitos animais. Causa nº 1: `Text.setColor()` do Phaser SEMPRE re-renderiza o canvas do texto e sobe a textura pra GPU, mesmo com a mesma cor — era chamado todo frame para cada animal visível. Regra: `setText/setColor/setY/clear+fill` só com dirty-check (cache do último valor por entidade). Também: visuais dos animais (Text/Graphics/Sprite) são criados só na primeira vez em que entram na vista (materialização preguiçosa); rótulos/barras somem com zoom < 0.9.
+- **Como aplicar:** ao criar qualquer entidade nova no mundo, ligar no mesmo esquema (estado live/dormant + dirty-check). Um `play()` disparado por evento (ataque/dano) enquanto dormente despausa a animação — re-pausar no tick dormente. Fila `AnimalPlayback` de dormente colapsa com `snapLatest()` (senão cresce sem limite). Bússola de caça emite a 15 Hz, name tags a 30 Hz e só dos remotos na tela; `getBoundingClientRect` do canvas é cacheado (resize/500 ms).
+- Servidor já "congela" animais sem jogador a 1400 px (FAR_AI_DISTANCE): só regen; não é preciso AOI no Colyseus 0.15 (sem StateView) por enquanto.

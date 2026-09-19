@@ -19,6 +19,7 @@ export function createPhaserGame(parent: HTMLElement): Phaser.Game {
     roundPixels: true,
     backgroundColor: '#2d5a27',
     render: {
+      powerPreference: 'high-performance',
       pixelArt: true,
       antialias: false,
       antialiasGL: false,

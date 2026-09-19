@@ -67,6 +67,7 @@ import { queueCollect, queueToolWear } from '../../stores/collectionInventorySto
 import { queueActivity } from '../../stores/progressStore';
 import { ENERGY_TOOL_KINDS } from '../../shared/progress/EnergySkillsShapes';
 import { gatherAudio } from '../audio/gatherAudio';
+import { cullState } from '../hunting/animalPlayback';
 
 /**
  * Runtime do Mundo de Coleta.
@@ -118,6 +119,8 @@ interface AnimalAgent {
   animLockUntilMs?: number;
   /** Abatido: update() ignora o bicho enquanto a animação de morte toca. */
   dead?: boolean;
+  /** Mantém a animação pausada fora da câmera, com histerese na borda. */
+  animationLive?: boolean;
 }
 
 /** Nó de recurso golpeável: HP (admin) − poder do item por golpe → quebra/coleta. */
@@ -149,6 +152,8 @@ interface DropItem {
   state: 'pop' | 'idle';
   /** Chave do item para o inventário (igual à chave do nó). */
   itemKey: string;
+  tween?: Phaser.Tweens.Tween;
+  live?: boolean;
 }
 
 /**
@@ -572,11 +577,20 @@ export class CraftingMapRuntime {
     for (const ag of this.animals) {
       const mySlot = slot++;
       if (!ag.sprite.active) continue;
+      const sx = ag.sprite.x;
+      const sy = ag.sprite.y;
+      const animationLive = ag.dead || (ag.animationLive
+        ? sx >= viewL - 40 && sx <= viewR + 40 && sy >= viewT - 40 && sy <= viewB + 40
+        : sx >= viewL && sx <= viewR && sy >= viewT && sy <= viewB);
+      if (animationLive !== ag.animationLive) {
+        ag.animationLive = animationLive;
+        if (animationLive) ag.sprite.anims.resume();
+      }
+      // Fora da tela a animação fica pausada — inclusive depois de um play() de troca de estado.
+      if (!animationLive && ag.sprite.anims.isPlaying) ag.sprite.anims.pause();
       if (ag.dead) continue; // abatido: parado até a animação de morte acabar
       let effDelta = deltaMs;
       if (ag.fleeUntilMs === undefined) {
-        const sx = ag.sprite.x;
-        const sy = ag.sprite.y;
         if (sx < viewL || sx > viewR || sy < viewT || sy > viewB) {
           if (((this.frameTick + mySlot) & 3) !== 0) continue;
           effDelta = deltaMs * 4; // compensa os 3 frames pulados
@@ -1247,9 +1261,9 @@ export class CraftingMapRuntime {
       spr.setOrigin(0.5, 0.5);
       spr.setDepth(this.depthForY(y) + 1);
       spr.setScale(0);
-      const item: DropItem = { sprite: spr, state: 'pop', itemKey };
+      const item: DropItem = { sprite: spr, state: 'pop', itemKey, live: true };
       this.drops.push(item);
-      scene.tweens.add({
+      item.tween = scene.tweens.add({
         targets: spr,
         x: x + Math.cos(ang) * rad,
         y: y - 8 + Math.sin(ang) * rad * 0.6,
@@ -1332,10 +1346,22 @@ export class CraftingMapRuntime {
   }
 
   private updateDrops(deltaMs: number, playerX?: number, playerY?: number): void {
-    if (!this.drops.length || playerX === undefined || playerY === undefined) return;
-    const py = playerY - 12; // alvo: canela do jogador, não o pé exato
+    if (!this.drops.length) return;
+    const view = this.scene.cameras.main.worldView;
+    const left = view.x;
+    const right = view.right;
+    const top = view.y;
+    const bottom = view.bottom;
+    const py = (playerY ?? 0) - 12; // alvo: canela do jogador, não o pé exato
     for (const d of this.drops) {
-      if (d.state !== 'idle' || !d.sprite.active) continue;
+      if (!d.sprite.active) continue;
+      const live = cullState(d.sprite.x, d.sprite.y, left, right, top, bottom, 160, d.live ?? true);
+      if (live !== d.live) {
+        d.live = live;
+        if (live) d.tween?.resume();
+        else d.tween?.pause();
+      }
+      if (!live || d.state !== 'idle' || playerX === undefined || playerY === undefined) continue;
       const dx = playerX - d.sprite.x;
       const dy = py - d.sprite.y;
       const dist = Math.hypot(dx, dy);
@@ -1343,7 +1369,7 @@ export class CraftingMapRuntime {
       if (dist <= RESOURCE_DROP.collectRadius) {
         d.state = 'pop'; // trava o imã enquanto some
         queueCollect(d.itemKey, 1); // inventário: otimista + lote pro servidor
-        this.scene.tweens.add({
+        d.tween = this.scene.tweens.add({
           targets: d.sprite,
           alpha: 0,
           scaleX: 0.2,

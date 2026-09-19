@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { AnimalPlayback } from './animalPlayback';
+import { AnimalPlayback, cullState } from './animalPlayback';
 
 describe('AnimalPlayback', () => {
   it('aplica pose somente depois do atraso', () => {
@@ -48,5 +48,19 @@ describe('AnimalPlayback', () => {
     playback.push('run', 0, 2, 20);
     playback.push('run', 0, 0, 30);
     expect(playback.update(80)).toMatchObject({ frame: 0, changed: true });
+  });
+});
+
+describe('cullState', () => {
+  it('entra na margem e só sai depois da faixa de histerese', () => {
+    expect(cullState(1199, 50, 0, 1000, 0, 100, 200, false)).toBe(true);
+    expect(cullState(1225, 50, 0, 1000, 0, 100, 200, false)).toBe(false);
+    expect(cullState(1225, 50, 0, 1000, 0, 100, 200, true)).toBe(true);
+    expect(cullState(1241, 50, 0, 1000, 0, 100, 200, true)).toBe(false);
+  });
+
+  it('aplica os limites nos dois eixos', () => {
+    expect(cullState(50, -201, 0, 100, 0, 100, 200, false)).toBe(false);
+    expect(cullState(-200, 300, 0, 100, 0, 100, 200, false)).toBe(true);
   });
 });

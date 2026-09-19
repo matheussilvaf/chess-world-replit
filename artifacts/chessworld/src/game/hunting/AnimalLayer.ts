@@ -14,7 +14,7 @@ import {
   ensureAnimalTexture,
   type AnimalRig,
 } from './huntingAssets';
-import { AnimalPlayback, type AnimalPlaybackState } from './animalPlayback';
+import { AnimalPlayback, cullState, type AnimalPlaybackState } from './animalPlayback';
 import { useHuntingStore } from '../../stores/huntingStore';
 
 export interface AnimalView {
@@ -38,13 +38,26 @@ interface Entry {
   view: AnimalView;
   container: Phaser.GameObjects.Container;
   sprite: Phaser.GameObjects.Sprite | null;
-  label: Phaser.GameObjects.Text;
-  bar: Phaser.GameObjects.Graphics;
+  label: Phaser.GameObjects.Text | null;
+  bar: Phaser.GameObjects.Graphics | null;
   interpolator: RemotePlayerInterpolator;
   playback: AnimalPlayback;
   playbackState: AnimalPlaybackState;
   rig: AnimalRig | null;
   dying: boolean;
+  live: boolean;
+  materialized: boolean;
+  loading: boolean;
+  pausedAnim: boolean;
+  depth: number;
+  lastLabelText: string;
+  lastLabelColor: string;
+  lastLabelY: number;
+  lastHp: number;
+  lastMaxHp: number;
+  lastAnimKey: string;
+  lastFrame: number | null;
+  detailsVisible: boolean;
 }
 
 const BAR_W = 42;
@@ -62,13 +75,16 @@ export class AnimalLayer {
 
   sync(views: AnimalView[]): void {
     const seen = new Set<string>();
+    const now = Date.now();
     for (const view of views) {
       seen.add(view.id);
       const entry = this.entries.get(view.id);
       if (entry) {
+        const moved = entry.view.x !== view.x || entry.view.y !== view.y;
         entry.view = view;
-        entry.interpolator.pushSnapshot(view.x, view.y);
-        entry.playback.push(view.anim, view.dir, view.frame, Date.now());
+        if (moved) entry.interpolator.pushSnapshot(view.x, view.y);
+        entry.playback.push(view.anim, view.dir, view.frame, now);
+        if (moved && !entry.live && !entry.dying) entry.container.setPosition(view.x, view.y);
         if (view.dead) this.fade(entry);
       } else {
         this.add(view);
@@ -87,6 +103,7 @@ export class AnimalLayer {
     const moved = entry.view.x !== view.x || entry.view.y !== view.y;
     entry.view = view;
     if (moved) entry.interpolator.pushSnapshot(view.x, view.y);
+    if (!entry.live && !entry.dying && moved) entry.container.setPosition(view.x, view.y);
     entry.playback.push(view.anim, view.dir, view.frame, Date.now());
     if (view.dead) this.fade(entry);
   }
@@ -97,44 +114,117 @@ export class AnimalLayer {
 
   private add(view: AnimalView): void {
     const container = this.scene.add.container(view.x, view.y).setDepth(this.depthForY(view.y));
-    const bar = this.scene.add.graphics();
-    const label = this.scene.add.text(0, -42, view.name, {
-      fontFamily: 'monospace', fontSize: '10px', color: '#ffffff', stroke: '#000000', strokeThickness: 3,
-    }).setOrigin(0.5, 1);
-    container.add([bar, label]);
+    container.setVisible(false);
     const playback = new AnimalPlayback();
-    playback.push(view.anim, view.dir, view.frame, Date.now());
+    const now = Date.now();
+    playback.push(view.anim, view.dir, view.frame, now);
+    const depth = this.depthForY(view.y);
     const entry: Entry = {
-      view, container, sprite: null, label, bar,
+      view, container, sprite: null, label: null, bar: null,
       interpolator: new RemotePlayerInterpolator(view.x, view.y),
       playback,
-      playbackState: playback.update(Date.now()),
+      playbackState: playback.update(now),
       rig: null,
       dying: false,
+      live: false,
+      materialized: false,
+      loading: false,
+      pausedAnim: false,
+      depth,
+      lastLabelText: '',
+      lastLabelColor: '',
+      lastLabelY: Number.NaN,
+      lastHp: Number.NaN,
+      lastMaxHp: Number.NaN,
+      lastAnimKey: '',
+      lastFrame: null,
+      detailsVisible: true,
     };
     this.entries.set(view.id, entry);
-    void Promise.all([ensureAnimalTexture(this.scene, view.variantId), ensureAnimalRig(view.variantId)]).then(([ok, rig]) => {
-      if (!ok || this.destroyed || !container.active || this.entries.get(view.id) !== entry) return;
-      entry.rig = rig;
-      const sprite = this.scene.add.sprite(0, 0, animalTextureKey(view.variantId));
-      sprite.setOrigin(rig.origin.x, rig.origin.y);
-      container.addAt(sprite, 0);
-      entry.sprite = sprite;
-      this.refresh(entry);
-    });
     if (view.dead) this.fade(entry);
+  }
+
+  private materialize(entry: Entry): void {
+    if (entry.materialized || entry.loading || this.destroyed) return;
+    entry.materialized = true;
+    const bar = this.scene.add.graphics();
+    const label = this.scene.add.text(0, -42, entry.view.name, {
+      fontFamily: 'monospace', fontSize: '10px', color: '#ffffff', stroke: '#000000', strokeThickness: 3,
+    }).setOrigin(0.5, 1);
+    entry.bar = bar;
+    entry.label = label;
+    entry.container.add([bar, label]);
+    entry.loading = true;
+    const id = entry.view.id;
+    const variantId = entry.view.variantId;
+    void Promise.all([ensureAnimalTexture(this.scene, variantId), ensureAnimalRig(variantId)]).then(([ok, rig]) => {
+      entry.loading = false;
+      if (!ok || this.destroyed || !entry.container.active || this.entries.get(id) !== entry) return;
+      entry.rig = rig;
+      const sprite = this.scene.add.sprite(0, 0, animalTextureKey(variantId));
+      sprite.setOrigin(rig.origin.x, rig.origin.y);
+      entry.container.addAt(sprite, 0);
+      entry.sprite = sprite;
+      if (!entry.live && !entry.dying) sprite.setVisible(false);
+      else this.refresh(entry, this.owner(), true, this.scene.cameras.main.zoom >= 0.9);
+    });
   }
 
   tick(deltaMs: number): void {
     const view = this.scene.cameras.main.worldView;
-    const bounds = Phaser.Geom.Rectangle.Inflate(new Phaser.Geom.Rectangle(view.x, view.y, view.width, view.height), 200, 200);
+    const left = view.x;
+    const right = view.right;
+    const top = view.y;
+    const bottom = view.bottom;
+    const now = Date.now();
+    const owner = this.owner();
+    const detailsVisible = this.scene.cameras.main.zoom >= 0.9;
     for (const entry of this.entries.values()) {
+      const inView = entry.dying || cullState(
+        entry.view.x, entry.view.y, left, right, top, bottom, 200, entry.live,
+      );
+      if (!inView) {
+        if (entry.live) {
+          entry.live = false;
+          entry.container.setVisible(false);
+          if (entry.sprite?.anims.isPlaying) {
+            entry.sprite.anims.pause();
+            entry.pausedAnim = true;
+          }
+        }
+        if (entry.container.x !== entry.view.x || entry.container.y !== entry.view.y) {
+          entry.container.setPosition(entry.view.x, entry.view.y);
+        }
+        entry.playback.snapLatest();
+        continue;
+      }
+      let force = false;
+      if (!entry.live) {
+        entry.live = true;
+        entry.interpolator.reset(entry.view.x, entry.view.y);
+        entry.container.setPosition(entry.view.x, entry.view.y).setVisible(true);
+        if (entry.sprite) entry.sprite.setVisible(true);
+        if (entry.pausedAnim) {
+          entry.sprite?.anims.resume();
+          entry.pausedAnim = false;
+        }
+        this.materialize(entry);
+        force = true;
+      }
       const pos = entry.interpolator.getPosition(deltaMs);
-      entry.playbackState = entry.playback.update(Date.now());
-      entry.container.setPosition(pos.x, pos.y).setDepth(this.depthForY(pos.y));
-      if (!bounds.contains(pos.x, pos.y) || entry.dying) continue;
-      this.refresh(entry);
+      entry.playbackState = entry.playback.update(now);
+      entry.container.setPosition(pos.x, pos.y);
+      const depth = this.depthForY(pos.y);
+      if (depth !== entry.depth) {
+        entry.depth = depth;
+        entry.container.setDepth(depth);
+      }
+      this.refresh(entry, owner, force, detailsVisible);
     }
+  }
+
+  private owner(): string | null {
+    return useHuntingStore.getState().active?.partyId ?? this.localUserId();
   }
 
   /**
@@ -153,38 +243,71 @@ export class AnimalLayer {
     return out;
   }
 
-  private refresh(entry: Entry): void {
+  private refresh(entry: Entry, owner: string | null, force = false, detailsVisible = true): void {
     const { view, sprite, playbackState } = entry;
-    const owner = useHuntingStore.getState().active?.partyId ?? this.localUserId();
-    entry.label.setText(view.name).setColor(view.contractOwner && view.contractOwner === owner ? '#facc15' : '#ffffff');
-    entry.label.setY(sprite ? -Math.max(34, sprite.displayHeight * (1 - sprite.originY) + 7) : -42);
-    entry.bar.setY(entry.label.y + 2);
-    entry.bar.clear();
-    if (view.hp < view.maxHp && view.maxHp > 0) {
-      entry.bar.fillStyle(0x111827, 0.9).fillRect(-BAR_W / 2, 0, BAR_W, 4);
-      entry.bar.fillStyle(view.hp / view.maxHp < 0.25 ? 0xef4444 : 0x22c55e, 1)
-        .fillRect(-BAR_W / 2 + 1, 1, (BAR_W - 2) * Math.max(0, view.hp / view.maxHp), 2);
+    const label = entry.label;
+    const bar = entry.bar;
+    if (label && bar) {
+      if (force || detailsVisible !== entry.detailsVisible) {
+        entry.detailsVisible = detailsVisible;
+        label.setVisible(detailsVisible);
+        bar.setVisible(detailsVisible);
+      }
+      const color = view.contractOwner && view.contractOwner === owner ? '#facc15' : '#ffffff';
+      if (force || entry.lastLabelText !== view.name) {
+        entry.lastLabelText = view.name;
+        label.setText(view.name);
+      }
+      if (force || entry.lastLabelColor !== color) {
+        entry.lastLabelColor = color;
+        label.setColor(color);
+      }
+      const labelY = sprite ? -Math.max(34, sprite.displayHeight * (1 - sprite.originY) + 7) : -42;
+      if (force || entry.lastLabelY !== labelY) {
+        entry.lastLabelY = labelY;
+        label.setY(labelY);
+        bar.setY(labelY + 2);
+      }
+      if (force || entry.lastHp !== view.hp || entry.lastMaxHp !== view.maxHp) {
+        entry.lastHp = view.hp;
+        entry.lastMaxHp = view.maxHp;
+        bar.clear();
+        if (view.hp < view.maxHp && view.maxHp > 0) {
+          bar.fillStyle(0x111827, 0.9).fillRect(-BAR_W / 2, 0, BAR_W, 4);
+          bar.fillStyle(view.hp / view.maxHp < 0.25 ? 0xef4444 : 0x22c55e, 1)
+            .fillRect(-BAR_W / 2 + 1, 1, (BAR_W - 2) * Math.max(0, view.hp / view.maxHp), 2);
+        }
+      }
     }
     if (!sprite) return;
     const direction = ANIMAL_DIRECTIONS[playbackState.dir] ?? 'south';
     if (playbackState.frame !== null) {
-      sprite.anims.stop();
-      const row = entry.rig?.config?.directions[direction] ?? ANIMAL_DIRECTIONS.indexOf(direction);
-      sprite.setFrame(row * 12 + ANIMAL_ANIMATION_COLUMNS.run[playbackState.frame]);
+      if (entry.lastFrame !== playbackState.frame || entry.lastAnimKey !== `run:${direction}`) {
+        entry.lastAnimKey = `run:${direction}`;
+        entry.lastFrame = playbackState.frame;
+        sprite.anims.stop();
+        const row = entry.rig?.config?.directions[direction] ?? ANIMAL_DIRECTIONS.indexOf(direction);
+        sprite.setFrame(row * 12 + ANIMAL_ANIMATION_COLUMNS.run[playbackState.frame]);
+      }
       return;
     }
     const key = animalAnimationKey(view.variantId, playbackState.anim, direction);
     // after a run (frames set by hand, animation stopped) the looping anims must restart even when the key is unchanged
     const restart = !sprite.anims.isPlaying && playbackState.anim !== 'attack';
-    if ((sprite.anims.currentAnim?.key !== key || restart) && this.scene.anims.exists(key)) sprite.play(key);
+    if ((entry.lastAnimKey !== key || restart) && this.scene.anims.exists(key)) {
+      entry.lastAnimKey = key;
+      entry.lastFrame = null;
+      sprite.play(key);
+    }
   }
 
   tryProjectileHit(rects: Phaser.Geom.Rectangle[]): boolean {
     for (const entry of this.entries.values()) {
-      if (entry.view.dead || !entry.sprite) continue;
+      if (entry.view.dead) continue;
       const direction = ANIMAL_DIRECTIONS[entry.playbackState.dir] ?? 'south';
       const columns = ANIMAL_ANIMATION_COLUMNS[entry.playbackState.anim];
-      const frameColumn = Number(entry.sprite.frame.name);
+      // Sem sprite (fora da tela / textura ainda carregando) o bicho continua acertável: hurtbox do 1º quadro.
+      const frameColumn = entry.sprite ? Number(entry.sprite.frame.name) : columns[0];
       const localFrame = Math.max(0, columns.indexOf(frameColumn % 12));
       const hurtboxes = animalHurtboxes(entry.rig ?? { origin: { x: 0.5, y: 0.8 }, config: null }, entry.playbackState.anim, direction, localFrame);
       for (const hurtbox of hurtboxes) {
@@ -219,6 +342,18 @@ export class AnimalLayer {
   private fade(entry: Entry): void {
     if (entry.dying) return;
     entry.dying = true;
+    if (!entry.live) {
+      entry.interpolator.reset(entry.view.x, entry.view.y);
+      entry.container.setPosition(entry.view.x, entry.view.y);
+      if (entry.sprite) entry.sprite.setVisible(true);
+      if (entry.pausedAnim) {
+        entry.sprite?.anims.resume();
+        entry.pausedAnim = false;
+      }
+    }
+    entry.live = true;
+    entry.container.setVisible(true);
+    this.materialize(entry);
     this.scene.tweens.add({ targets: entry.container, alpha: 0, duration: 400 });
   }
 

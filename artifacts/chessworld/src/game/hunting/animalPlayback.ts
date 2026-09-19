@@ -1,6 +1,25 @@
 import type { AnimalAnimation } from '../../shared/hunting/HuntingShapes';
 import { INTERPOLATION_DELAY_MS } from '../network/interpolation';
 
+/** Culling com uma faixa extra na saída para evitar alternância na borda. */
+export function cullState(
+  x: number,
+  y: number,
+  left: number,
+  right: number,
+  top: number,
+  bottom: number,
+  margin: number,
+  wasLive: boolean,
+  hysteresis = 40,
+): boolean {
+  const extra = wasLive ? hysteresis : 0;
+  return x >= left - margin - extra
+    && x <= right + margin + extra
+    && y >= top - margin - extra
+    && y <= bottom + margin + extra;
+}
+
 /**
  * Server pose (anim/dir/run frame) applied with the same delay as the interpolated position, so
  * the picture always matches the motion being shown (see shared/hunting/HuntingMotion).
@@ -30,6 +49,17 @@ export class AnimalPlayback {
     const last = this.queue.at(-1) ?? this.shown;
     if (last.anim === anim && last.dir === dir && last.frame === frame) return;
     this.queue.push({ anim, dir, frame, timestamp: now });
+  }
+
+  /**
+   * Bicho fora da tela: ninguém vê a fila de poses, então ela colapsa na última pose
+   * (senão um animal correndo fora da tela acumula poses sem limite até voltar à vista).
+   */
+  snapLatest(): void {
+    const last = this.queue.at(-1);
+    if (!last) return;
+    this.shown = last;
+    this.queue.length = 0;
   }
 
   update(now: number): AnimalPlaybackState {

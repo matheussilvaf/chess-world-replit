@@ -75,6 +75,7 @@ import {
 } from '../../shared/craft/PlaceableStations';
 import type { PlacedStationView } from '../../stores/placedStationsStore';
 import { AnimalLayer, type AnimalView } from '../hunting/AnimalLayer';
+import { cullState } from '../hunting/animalPlayback';
 import { AnimalShots } from '../hunting/AnimalShots';
 import type { HuntShotHitPayload, HuntShotPayload } from '../../shared/hunting/HuntingShapes';
 import { huntCompassBus } from '../hunting/huntCompassBus';
@@ -160,6 +161,8 @@ interface RemotePlayer {
   isMoving: boolean;
   /** Frames consecutivos sem deslocamento visível (histerese walk/idle). */
   stillFrames: number;
+  /** Fora da câmera: mantém posição de rede, mas não anima nem redesenha. */
+  renderCulled: boolean;
   sessionId: string;
   playerId: string;
   seated: boolean;
@@ -353,7 +356,7 @@ export class WorldScene extends Phaser.Scene {
   private canvasRectTop = 0;
   private canvasRectScaleX = 1;
   private canvasRectScaleY = 1;
-  private canvasRectFrame = -999;
+  private canvasRectRefreshAt = 0;
   /** Nº de tags emitidas no último frame (evita re-emitir lista vazia). */
   private lastTagCount = 0;
   /** Compass arrows emitted last frame (0 → the empty list was already sent, skip the work). */
@@ -560,7 +563,7 @@ export class WorldScene extends Phaser.Scene {
     // Resize: invalida o cache do rect do canvas e força a republicação dos
     // overlays HTML no próximo frame (são interativos — rect velho os desloca).
     const onScaleResize = () => {
-      this.canvasRectFrame = -999;
+      this.canvasRectRefreshAt = 0;
       this.lastCamPoseX = Number.NaN;
     };
     this.scale.on('resize', onScaleResize);
@@ -781,8 +784,30 @@ export class WorldScene extends Phaser.Scene {
     // salto de 3px na tela). roundPixels já arredonda no espaço da tela ao
     // desenhar, que é a granularidade certa.
     const frameDelta = this.game.loop.delta;
+    const view = this.cameras.main.worldView;
+    const cullMargin = 200;
     this.otherPlayers.forEach((remote) => {
       if (remote.seated) return;
+      // Histerese (folga extra de 40px quando já está vivo) para não piscar na borda.
+      const inView = cullState(
+        remote.container.x, remote.container.y, view.left, view.right, view.top, view.bottom, cullMargin, !remote.renderCulled,
+      );
+      if (remote.renderCulled && remote.sprite.anims.isPlaying) remote.sprite.anims.pause(); // play() de ataque/dano fora da tela
+      if (remote.renderCulled === inView) {
+        remote.renderCulled = !inView;
+        remote.container.setVisible(inView);
+        if (inView) {
+          remote.sprite.anims.resume();
+          if (this.craftingRuntime.active) {
+            const depth = this.craftingRuntime.depthForY(remote.container.y);
+            if (remote.container.depth !== depth) remote.container.setDepth(depth);
+          }
+        } else {
+          remote.sprite.anims.pause();
+        }
+      }
+      // Fora da tela a posição já é atualizada diretamente pelo patch de rede.
+      if (!inView) return;
       const pos = remote.interpolator.getPosition(frameDelta);
       const moved =
         Math.abs(pos.x - remote.container.x) + Math.abs(pos.y - remote.container.y) > 0.02;
@@ -801,7 +826,7 @@ export class WorldScene extends Phaser.Scene {
         this.lastTagCount = 0;
         playerTagBus.emit([]);
       }
-    } else {
+    } else if (this.game.loop.frame % 2 === 0) {
       const cam = this.cameras.main;
       this.refreshCanvasRectCache();
       const scaleX = this.canvasRectScaleX;
@@ -818,22 +843,30 @@ export class WorldScene extends Phaser.Scene {
 
       const tags: PlayerTagEntry[] = [];
       this.otherPlayers.forEach((remote) => {
+        if (remote.renderCulled) return;
         const wx = remote.container.x;
         const wy = remote.container.y - HEAD_OFFSET;
         const dx = wx - cx;
         const dy = wy - cy;
         const rx = dx * cos - dy * sin;
         const ry = dx * sin + dy * cos;
+        const x = (rx * zoom + cam.width * 0.5) * scaleX;
+        const y = (ry * zoom + cam.height * 0.5) * scaleY;
+        const margin = 48;
+        if (x < -margin || x > cam.width * scaleX + margin ||
+            y < -margin || y > cam.height * scaleY + margin) return;
         tags.push({
           sessionId: remote.sessionId,
           username:  remote.username,
           rating:    remote.rating,
-          x: (rx * zoom + cam.width  * 0.5) * scaleX,
-          y: (ry * zoom + cam.height * 0.5) * scaleY,
+          x,
+          y,
         });
       });
-      this.lastTagCount = tags.length;
-      playerTagBus.emit(tags);
+      if (tags.length !== 0 || this.lastTagCount !== 0) {
+        this.lastTagCount = tags.length;
+        playerTagBus.emit(tags);
+      }
     }
   }
 
@@ -878,14 +911,15 @@ export class WorldScene extends Phaser.Scene {
 
   /** Atualiza o cache do rect do canvas (~2x/s) — getBoundingClientRect força layout. */
   private refreshCanvasRectCache(): void {
-    if (this.canvasRectFrame >= 0 && this.game.loop.frame - this.canvasRectFrame <= 30) return;
+    const now = this.time.now;
+    if (this.canvasRectRefreshAt > now) return;
     const canvasEl = this.game.canvas;
     const r = canvasEl.getBoundingClientRect();
     this.canvasRectLeft = r.left;
     this.canvasRectTop = r.top;
     this.canvasRectScaleX = canvasEl.width > 0 ? r.width / canvasEl.width : 1;
     this.canvasRectScaleY = canvasEl.height > 0 ? r.height / canvasEl.height : 1;
-    this.canvasRectFrame = this.game.loop.frame;
+    this.canvasRectRefreshAt = now + 500;
   }
 
   /** true = texturas em LINEAR (zoom out): ver applyWorldTextureFilter. */
@@ -1623,27 +1657,41 @@ export class WorldScene extends Phaser.Scene {
   }
 
   private craftingRuntime = new CraftingMapRuntime(this);
+  /** Callback estável: evita criar uma closure de colisão por frame. */
+  private readonly collectionProjectileTester = (
+    rects: Phaser.Geom.Rectangle[],
+    x: number,
+    y: number,
+    damage: number,
+  ) => this.craftingRuntime.tryProjectileHit(rects, x, y, damage)
+    || (this.animalLayer?.tryProjectileHit(rects) ?? false)
+    || (this.bigChessLayer?.tryProjectileHit(rects) ?? false);
 
   update(_time: number = 0, delta: number = 16.7) {
     if (!this.player || !this.playerBody) return;
+    const now = Date.now();
     if (this.dropRadiusRing) this.dropRadiusRing.setPosition(this.player.x, this.player.y);
     if (this.placedStationLayer && _time - this.placedStationTickAt >= 250) {
       this.placedStationTickAt = _time;
-      this.placedStationLayer.tick(Date.now());
+      this.placedStationLayer.tick(now);
     }
 
     // Mundo de Coleta: profundidade por Y — player passa atrás/na frente de árvores etc.
     if (this.craftingRuntime.active) {
       this.craftingRuntime.update(delta, this.player?.x, this.player?.y);
-      this.player.setDepth(this.craftingRuntime.depthForY(this.player.y));
+      const playerDepth = this.craftingRuntime.depthForY(this.player.y);
+      if (this.player.depth !== playerDepth) this.player.setDepth(playerDepth);
       this.otherPlayers.forEach((remote) => {
-        remote.container.setDepth(this.craftingRuntime.depthForY(remote.container.y));
+        if (remote.renderCulled) return;
+        const depth = this.craftingRuntime.depthForY(remote.container.y);
+        if (remote.container.depth !== depth) remote.container.setDepth(depth);
       });
       this.animalLayer?.tick(delta);
       this.animalShots?.tick();
       this.npcLayer?.tick(delta);
-      this.emitHuntCompass();
-    } else if (this.lastCompassCount !== 0) {
+      // HUD React não precisa acompanhar o loop de renderização a 60 Hz.
+      if (this.game.loop.frame % 4 === 0) this.emitHuntCompass();
+    } else if (this.lastCompassCount !== 0 || this.compassInView.size !== 0) {
       this.lastCompassCount = 0;
       this.compassInView.clear();
       huntCompassBus.emit([]);
@@ -1652,19 +1700,14 @@ export class WorldScene extends Phaser.Scene {
     // Big Chess Board: golpe local (só ARMA principal) contra as casas com peça
     // e animação dos contra-ataques em curso (onda + tremor).
     if (this.craftingRuntime.active && this.bigChessLayer?.hasAnyPiece()) {
-      this.bigChessLayer.tick(Date.now());
+      this.bigChessLayer.tick(now);
       const swing = this.currentSwingState();
       if (swing && isBigChessWeaponRef(swing.toolRef)) this.bigChessLayer.pollSwing(swing);
     }
 
     // Flechas em voo: movem e (no mundo de coleta) testam contra os nós e as peças do tabuleiro.
     if (this.arrowProjectiles) {
-      const tester = this.craftingRuntime.active
-        ? (rects: Phaser.Geom.Rectangle[], x: number, y: number, damage: number) =>
-            this.craftingRuntime.tryProjectileHit(rects, x, y, damage)
-              || (this.animalLayer?.tryProjectileHit(rects) ?? false)
-              || (this.bigChessLayer?.tryProjectileHit(rects) ?? false)
-        : null;
+      const tester = this.craftingRuntime.active ? this.collectionProjectileTester : null;
       this.arrowProjectiles.update(delta, tester);
     }
 
@@ -1691,16 +1734,16 @@ export class WorldScene extends Phaser.Scene {
     // Player visual position and camera are updated in lateUpdate (postupdate)
     // to guarantee they read the FINAL physics position for this frame.
 
-    const barsNow = Date.now();
     this.otherPlayers.forEach((remote) => {
-      this.updateRemoteBar(remote, barsNow);
+      if (remote.renderCulled) return;
+      this.updateRemoteBar(remote, now);
       if (remote.seated) return;
-      if (Date.now() < remote.deadUntil) return; // death pose owns the sprite
-      if (remote.attackingUntil > 0 && Date.now() >= remote.attackingUntil) {
+      if (now < remote.deadUntil) return; // death pose owns the sprite
+      if (remote.attackingUntil > 0 && now >= remote.attackingUntil) {
         remote.attackingUntil = 0;
       }
       if (remote.attackingUntil > 0) return; // attack animation owns the sprite
-      if (remote.hurtUntil > 0 && Date.now() >= remote.hurtUntil) {
+      if (remote.hurtUntil > 0 && now >= remote.hurtUntil) {
         remote.hurtUntil = 0;
       }
       if (remote.hurtUntil > 0) return; // hurt animation owns the sprite
@@ -1710,26 +1753,29 @@ export class WorldScene extends Phaser.Scene {
       // movimento (histerese: sem isso a animação alternava walk/idle nos
       // degraus de patch e o remoto parecia "gaguejar").
       if (remote.isMoving || remote.stillFrames < 8) {
-        remote.sprite.anims.play(animKeyFor(remote.def.id, walk.movement, this.dirForDef(remote.def, remote.direction)), true);
+        const key = animKeyFor(remote.def.id, walk.movement, this.dirForDef(remote.def, remote.direction));
+        if (remote.sprite.anims.currentAnim?.key !== key || !remote.sprite.anims.isPlaying) {
+          remote.sprite.anims.play(key);
+        }
       } else {
         this.remoteIdle(remote);
       }
     });
 
     // Local attack animation finished → settle back to idle pose
-    if (this.attackingUntil > 0 && Date.now() >= this.attackingUntil) {
+    if (this.attackingUntil > 0 && now >= this.attackingUntil) {
       this.attackingUntil = 0;
       if (!this.target && !this.keyboardMoving) this.localIdle();
     }
     // Hurt animation finished → settle (hurt never blocks movement)
-    if (this.hurtUntil > 0 && Date.now() >= this.hurtUntil) {
+    if (this.hurtUntil > 0 && now >= this.hurtUntil) {
       this.hurtUntil = 0;
       if (!this.target && !this.keyboardMoving && this.attackingUntil <= 0) this.localIdle();
     }
     this.updateLocalHpBar();
     // Dead: the corpse pose owns everything — no input, no motion — until the
     // server revives us (deadUntil also self-expires as a safety net).
-    if (Date.now() < this.deadUntil) {
+    if (now < this.deadUntil) {
       if (this.playerBody.speed > 0.1) {
         this.matter.body.setVelocity(this.playerBody, { x: 0, y: 0 });
       }
@@ -1832,7 +1878,6 @@ export class WorldScene extends Phaser.Scene {
       this.localWalk(dir, speed / MAP_CONFIG.playerSpeed);
     }
 
-    const now = Date.now();
     if (now - this.lastSentTime >= this.SEND_INTERVAL) {
       this.emitMovement(true, dir);
       this.lastSentTime = now;
@@ -2097,6 +2142,12 @@ export class WorldScene extends Phaser.Scene {
     }
     if (remote.seated) return;
     remote.interpolator.pushSnapshot(state.x, state.y);
+    // Dormindo, salta ao patch mais recente: hit-tests continuam corretos sem interpolar.
+    if (remote.renderCulled) {
+      remote.container.x = state.x;
+      remote.container.y = state.y;
+      remote.interpolator.reset(state.x, state.y);
+    }
     remote.direction = (state.direction as Direction8) || 'down';
     remote.isMoving = state.isMoving;
   }
@@ -2114,6 +2165,9 @@ export class WorldScene extends Phaser.Scene {
     if (!anchor) return;
 
     remote.seated = true;
+    remote.renderCulled = false;
+    remote.container.setVisible(true);
+    remote.sprite.anims.resume();
     remote.seatedBoardId = tableId;
     remote.seatedSeat = seat;
     remote.isMoving = false;
@@ -2234,6 +2288,7 @@ export class WorldScene extends Phaser.Scene {
       direction,
       isMoving: p.isMoving,
       stillFrames: 999,
+      renderCulled: false,
       sessionId,
       playerId: p.id,
       seated: false,
@@ -3631,13 +3686,15 @@ export class WorldScene extends Phaser.Scene {
     if (def.movements.has('idle')) {
       const key = animKeyFor(def.id, 'idle', this.dirForDef(def, remote.direction));
       if (this.anims.exists(key)) {
-        remote.sprite.anims.play(key, true);
+        if (remote.sprite.anims.currentAnim?.key !== key || !remote.sprite.anims.isPlaying) {
+          remote.sprite.anims.play(key);
+        }
         return;
       }
     }
     const walk = movementOrFallback(def, 'walk');
     if (!walk || !this.textures.exists(walk.textureKey)) return;
-    remote.sprite.anims.stop();
+    if (remote.sprite.anims.isPlaying) remote.sprite.anims.stop();
     if (remote.sprite.texture.key !== walk.textureKey) remote.sprite.setTexture(walk.textureKey);
     remote.sprite.setFrame(firstFrameIndexFor(def, walk, this.dirForDef(def, remote.direction)));
   }
