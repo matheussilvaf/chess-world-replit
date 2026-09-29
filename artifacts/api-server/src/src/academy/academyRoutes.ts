@@ -9,7 +9,8 @@ import { buildDailyState, invalidateDailyCache, previewDailyPuzzles } from './pu
 import { deleteDailyConfig, getBattleRewards, listDailyConfigs, listDailyPins, resolveDailyConfigFor, saveBattleRewards, saveDailyConfig, saveDailyPin } from './puzzles/puzzleConfigRepository.js';
 import { checkPuzzleError, countPuzzles, drawPuzzle, getPuzzleById, listThemeCounts, puzzleClient, PuzzleStorageError } from './puzzles/puzzleRepository.js';
 import { buildLessonState } from './lessons/lessonRepository.js';
-import { academyBoard, academySummary, statsBoards, statsPeriods, type StatsBoard, type StatsPeriod } from './stats/academyStatsService.js';
+import { academyBoard, academyPointsConfig, academySummary, saveAcademyPoints, statsBoards, statsPeriods, STATS_SQL, type StatsBoard, type StatsPeriod } from './stats/academyStatsService.js';
+import { ACADEMY_POINT_ACTIONS, ACADEMY_POINTS_MAX, type AcademyPointKey } from '../shared/academy/StatsShapes.js';
 
 export const academyRouter = Router();
 export const academyAdminRouter = Router();
@@ -104,6 +105,10 @@ academyRouter.get('/stats/board', requireSupabaseAuth, route(async (req, res) =>
 academyRouter.get('/stats/summary', requireSupabaseAuth, route(async (req, res) => {
   res.json(await academySummary((req as Request & { userId: string }).userId));
 }));
+// Pesos do quadro "Pontos" (explicação "como conta" no painel de estatísticas).
+academyRouter.get('/stats/points', requireSupabaseAuth, route(async (_req, res) => {
+  res.json(await academyPointsConfig());
+}));
 academyRouter.get('/battles/me', requireSupabaseAuth, route(async (req, res) => {
   const id = (req as Request & { userId: string }).userId;
   const { data, error } = await puzzleClient().from('academy_puzzle_battles').select('*')
@@ -128,6 +133,26 @@ async function adminConfigDocument(): Promise<PuzzleAdminConfigResponse> {
 }
 academyAdminRouter.get('/puzzles/config', route(async (_req, res) => {
   res.json(await adminConfigDocument());
+}));
+academyAdminRouter.get('/points', route(async (_req, res) => {
+  res.json(await academyPointsConfig());
+}));
+academyAdminRouter.put('/points', route(async (req, res) => {
+  const points = (req.body as { points?: Record<string, unknown> } | undefined)?.points;
+  if (!points || typeof points !== 'object' || !ACADEMY_POINT_ACTIONS.every((action) => {
+    const value = points[action.key];
+    return Number.isInteger(value) && (value as number) >= 0 && (value as number) <= ACADEMY_POINTS_MAX;
+  })) { bad(res, `Informe um inteiro de 0 a ${ACADEMY_POINTS_MAX} para cada ação.`); return; }
+  const cleaned = Object.fromEntries(ACADEMY_POINT_ACTIONS.map((action) => [action.key, points[action.key] as number])) as Record<AcademyPointKey, number>;
+  try {
+    res.json(await saveAcademyPoints(cleaned));
+  } catch (e) {
+    if (e instanceof PuzzleStorageError && e.schemaMissing) {
+      res.status(503).json({ error: `Tabela de pontos ausente: execute ${STATS_SQL} no Supabase.`, schemaMissing: true, sql: STATS_SQL });
+      return;
+    }
+    throw e;
+  }
 }));
 academyAdminRouter.put('/puzzles/config/daily', route(async (req, res) => {
   const body = req.body as DailyConfigUpsertRequest;

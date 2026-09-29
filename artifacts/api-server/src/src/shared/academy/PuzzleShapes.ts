@@ -229,7 +229,7 @@ export interface PuzzleFeedbackPayload {
   themes?: string[];
   /** Batalha: o puzzle foi encerrado para este jogador (errou / adversário resolveu antes / prazo). */
   puzzleOver?: boolean;
-  puzzleOverReason?: 'wrong' | 'opponent_first' | 'timeout';
+  puzzleOverReason?: 'wrong' | 'opponent_first' | 'opponent_wrong' | 'timeout';
 }
 
 // ---------------------------------------------------------------------------
@@ -260,9 +260,9 @@ export interface BattleModeInfo {
 export const BATTLE_MODE_INFO: Record<BattleMode, BattleModeInfo> = {
   race: { label: 'Corrida', description: '3 minutos. Vence quem resolver mais puzzles.', durationMs: 3 * 60_000 },
   streak: { label: 'Sequência', description: 'A dificuldade sobe a cada acerto. Um erro encerra a sua vez. Vence quem for mais longe.', durationMs: 10 * 60_000 },
-  best_of_5: { label: 'Melhor de 5', description: 'Um puzzle por vez, os dois veem ao mesmo tempo. Cada puzzle é de quem resolver primeiro.', bestOf: 5 },
-  best_of_10: { label: 'Melhor de 10', description: 'Um puzzle por vez, os dois veem ao mesmo tempo. Cada puzzle é de quem resolver primeiro.', bestOf: 10 },
-  best_of_15: { label: 'Melhor de 15', description: 'Um puzzle por vez, os dois veem ao mesmo tempo. Cada puzzle é de quem resolver primeiro.', bestOf: 15 },
+  best_of_5: { label: 'Melhor de 5', description: 'Quem resolver primeiro leva a rodada; errar dá o ponto ao adversário.', bestOf: 5 },
+  best_of_10: { label: 'Melhor de 10', description: 'Quem resolver primeiro leva a rodada; errar dá o ponto ao adversário.', bestOf: 10 },
+  best_of_15: { label: 'Melhor de 15', description: 'Quem resolver primeiro leva a rodada; errar dá o ponto ao adversário.', bestOf: 15 },
   survival: { label: 'Survival', description: '3 vidas e 3 minutos. Errar tira uma vida; quem zerar as vidas perde. Desempate: vidas, acertos e tempo.', durationMs: 3 * 60_000, lives: 3 },
   pressure: { label: 'Pressão', description: 'Os dois começam com 2 minutos. Cada acerto tira 10 segundos do relógio do adversário. Vence quem zerar o relógio do outro.', clockMs: 2 * 60_000, penaltyMs: 10_000 },
 };
@@ -273,6 +273,8 @@ export const BATTLE_CHALLENGE_TTL_MS = 10 * 60_000;
 export const BATTLE_COUNTDOWN_MS = 3_000;
 /** Melhor de N: prazo por puzzle (ninguém resolveu → sem ponto). */
 export const BATTLE_BEST_OF_PUZZLE_MS = 90_000;
+/** Pausa para mostrar o resultado da rodada antes do próximo puzzle. */
+export const BATTLE_ROUND_RESULT_MS = 2_500;
 /** Sequência: incremento de rating alvo a cada puzzle (a partir do mínimo da faixa). */
 export const BATTLE_STREAK_RATING_STEP = 50;
 /** Puzzles que o servidor mantém pré-sorteados à frente de cada jogador. */
@@ -366,7 +368,7 @@ export interface BattleStatePayload {
   /** Fim programado (modos com duração). */
   endsAt?: number;
   /** Melhor de N: puzzle atual (0-based) e prazo dele. */
-  bestOf?: { total: number; current: number; deadlineAt: number };
+  bestOf?: { total: number; current: number; deadlineAt: number; roundResult?: { index: number; winnerId: string; reason: 'solved' | 'wrong' | 'timeout'; until: number } };
   me: BattlePlayerView;
   opponent: BattlePlayerView;
   result?: BattleResultView;

@@ -150,7 +150,10 @@ export function TableBoardOverlay({
   }, [animateMove?.key]);
 
   // Posição nova ou tabuleiro travado: limpa seleção/arraste.
-  useEffect(() => { setSelected(null); setValidMoves([]); setPromotion(null); }, [fen, interactive]);
+  useEffect(() => {
+    setSelected(null); setValidMoves([]); setPromotion(null);
+    if (!interactive) { setIsDragging(false); setDragPiece(null); }
+  }, [fen, interactive]);
 
   // Pinça no tabuleiro = zoom do mapa (mesmo comportamento do ChessBoardOverlay).
   useEffect(() => {
@@ -223,7 +226,7 @@ export function TableBoardOverlay({
   const handleDragEnd = useCallback((e: MouseEvent | TouchEvent) => {
     const pos = 'changedTouches' in e ? { x: e.changedTouches[0].clientX, y: e.changedTouches[0].clientY } : { x: e.clientX, y: e.clientY };
     setIsDragging(false);
-    if (!dragPiece) return;
+    if (!dragPiece || !interactive) { setDragPiece(null); return; }
     const rect = containerRef.current?.getBoundingClientRect();
     if (rect) {
       const fileIdx = Math.floor((pos.x - rect.left) / (rect.width / 8));
@@ -235,7 +238,7 @@ export function TableBoardOverlay({
     }
     // Soltou fora: mantém a seleção para completar com um clique.
     setDragPiece(null);
-  }, [dragPiece, validMoves, commit]);
+  }, [dragPiece, validMoves, commit, interactive]);
 
   useEffect(() => {
     if (!isDragging) return;
@@ -283,7 +286,8 @@ export function TableBoardOverlay({
   return <>
     <style>{`@keyframes cw-board-error { 0%, 100% { background-color: ${ERROR_SQ}; } 50% { background-color: #ffb3ad; } }`}</style>
     <div ref={containerRef} data-testid="table-board" data-board-id={boardId} className="fixed z-[100] select-none"
-      style={{ left: screenRect.x, top: screenRect.y, width: screenRect.width, height: screenRect.height, pointerEvents: 'auto', touchAction: 'none' }}>
+      style={{ left: screenRect.x, top: screenRect.y, width: screenRect.width, height: screenRect.height,
+        pointerEvents: interactive || promotion ? 'auto' : 'none', touchAction: interactive || promotion ? 'none' : 'auto' }}>
       <div className="relative h-full w-full overflow-hidden rounded-sm border border-amber-900/40 shadow-xl">
         <div className="grid h-full w-full grid-cols-8 grid-rows-8">
           {ranks.map((rank) => files.map((file) => {

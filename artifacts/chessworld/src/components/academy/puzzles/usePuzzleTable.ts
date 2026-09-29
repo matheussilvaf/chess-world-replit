@@ -22,8 +22,8 @@ export function usePuzzleTable(): PuzzleTable | null {
   const puzzle = usePuzzleSessionStore((s) => s.puzzle);
   // Batalha encerrada (resultado aberto, jogador já de pé) cede a vez a uma cadeira nova.
   if (battle && !(battle.phase === 'finished' && dailySeat)) {
-    const playerColor = puzzle?.boardId === battle.boardId && puzzle.context.kind === 'battle' &&
-      puzzle.context.index === battle.me.index ? puzzle.playerColor : battle.me.color;
+    const playerColor = puzzle?.boardId === battle.boardId && puzzle.context.kind === 'battle'
+      ? puzzle.playerColor : battle.me.color;
     return { kind: 'battle', boardId: battle.boardId, seat: battle.mySeat, battle, dailySeat: null,
       orientation: playerColor ?? (battle.mySeat === 'top' ? 'b' : 'w') };
   }

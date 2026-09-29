@@ -9,6 +9,7 @@ import { embedExternalTilesets } from '../config/externalTilesets';
 import { ACADEMY_MAP_KEY, academyTableIdFromFolder } from '../../shared/academy/AcademyShapes';
 import { puzzleThemeLabel } from '../../shared/academy/PuzzleShapes';
 import { AcademyStatsBoard } from '../academy/AcademyStatsBoard';
+import { useAcademyStatsStore } from '../../stores/academyStatsStore';
 import { ArenaModuleManager } from '../map/ArenaModuleManager';
 import {
   getSelectedCharacter,
@@ -2745,7 +2746,8 @@ export class WorldScene extends Phaser.Scene {
               this.academyStatsBoard?.destroy();
               this.academyStatsBoard = new AcademyStatsBoard(this, {
                 x: obj.x, y: obj.y, width: obj.width, height: obj.height,
-              });
+              }, undefined, { onOpen: (board, period, page) =>
+                useAcademyStatsStore.getState().openModal({ board, period, page }) });
             }
           }
         }

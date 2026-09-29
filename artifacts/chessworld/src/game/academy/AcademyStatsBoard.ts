@@ -1,6 +1,7 @@
 import Phaser from 'phaser';
 import { puzzleThemeLabel } from '../../shared/academy/PuzzleShapes';
 import { supabase } from '../../lib/supabase';
+import { STATS_BOARD_INFO } from '../../shared/academy/StatsShapes';
 import { statsClient } from './academyStatsClient';
 import { BOARDS, PERIODS, PAGE_SIZE, pageCount, truncateName,
   type BoardId, type PeriodId, type BoardResponse, type SummaryResponse } from './academyStatsLayout';
@@ -12,7 +13,7 @@ const COLORS = { bg: 0x111c26, inset: 0x1c2a34, gold: 0xdab66b, muted: 0x899ca5,
 export class AcademyStatsBoard {
   readonly container: Phaser.GameObjects.Container;
   private regions: Rect[] = [];
-  private board: BoardId = 'solved';
+  private board: BoardId = 'points';
   private period: PeriodId = 'week';
   private page = 1;
   private boardData: BoardResponse | null = null;
@@ -23,10 +24,11 @@ export class AcademyStatsBoard {
   private revision = 0;
   private destroyed = false;
   private currentUserId = '';
+  private lastDrawKey = '';
 
   constructor(private scene: Phaser.Scene, private bounds: Bounds, private mock?: {
     board: BoardResponse; summary: SummaryResponse; userId: string;
-  }) {
+  }, private options?: { onOpen?: (board: BoardId, period: PeriodId, page: number) => void }) {
     this.container = scene.add.container(bounds.x, bounds.y).setDepth(20);
     this.draw();
     if (mock) {
@@ -45,8 +47,7 @@ export class AcademyStatsBoard {
 
   private async refresh() {
     const revision = ++this.revision;
-    this.status = 'loading';
-    this.draw();
+    if (!this.boardData) { this.status = 'loading'; this.draw(); }
     try {
       const [board, summary] = await Promise.all([
         statsClient.board(this.board, this.period, this.page), statsClient.summary(),
@@ -67,17 +68,20 @@ export class AcademyStatsBoard {
   private chooseBoard(board: BoardId) {
     if (board === this.board) return;
     this.board = board; this.page = 1;
+    if (!this.mock) this.boardData = null;
     if (this.mock) this.draw(); else void this.refresh();
   }
   private choosePeriod(period: PeriodId) {
     if (period === this.period) return;
     this.period = period; this.page = 1;
+    if (!this.mock) this.boardData = null;
     if (this.mock) this.draw(); else void this.refresh();
   }
   private turn(delta: number) {
     const next = Math.max(1, Math.min(pageCount(this.boardData?.totalPlayers ?? 0), this.page + delta));
     if (next === this.page) return;
     this.page = next;
+    if (!this.mock) this.boardData = null;
     if (this.mock) this.draw(); else void this.refresh();
   }
 
@@ -91,7 +95,8 @@ export class AcademyStatsBoard {
     const localX = x - this.bounds.x, localY = y - this.bounds.y;
     const region = this.regions.find((r) =>
       localX >= r.x && localX <= r.x + r.w && localY >= r.y && localY <= r.y + r.h);
-    region?.action();
+    if (region) region.action();
+    else this.options?.onOpen?.(this.board, this.period, this.page);
     return true;
   }
   destroy() {
@@ -101,6 +106,10 @@ export class AcademyStatsBoard {
   }
 
   private draw() {
+    const drawKey = JSON.stringify([this.board, this.period, this.page, this.boardData, this.summaryData,
+      this.status, this.error, this.currentUserId]);
+    if (drawKey === this.lastDrawKey) return;
+    this.lastDrawKey = drawKey;
     this.container.removeAll(true);
     this.regions = [];
     const w = this.bounds.width, h = this.bounds.height;
@@ -125,9 +134,9 @@ export class AcademyStatsBoard {
     text('Estatísticas', 13, 23, 12, '#fff1cb', true);
     g.lineStyle(1, COLORS.gold, 0.6).lineBetween(10, 44, w - 10, 44);
 
-    const gap = 4, tabW = (w - 24 - gap * 2) / 3;
+    const gap = 3, tabW = (w - 20 - gap * 3) / 4;
     BOARDS.forEach((item, index) => {
-      const x = 10 + index % 3 * (tabW + gap), y = 51 + Math.floor(index / 3) * 25;
+      const x = 10 + index % 4 * (tabW + gap), y = 51 + Math.floor(index / 4) * 25;
       box(x, y, tabW, 22, item.id === this.board ? 0x55472f : COLORS.inset,
         item.id === this.board ? COLORS.gold : 0x43515a);
       const label = text(item.label, x + tabW / 2, y + 5, 9,
@@ -136,31 +145,36 @@ export class AcademyStatsBoard {
       this.regions.push({ x, y, w: tabW, h: 22, action: () => this.chooseBoard(item.id) });
     });
     PERIODS.forEach((item, index) => {
-      const cw = (w - 28) / 3, x = 10 + index * (cw + 4), y = 107;
+      const cw = (w - 28) / 3, x = 10 + index * (cw + 4), y = 104;
       box(x, y, cw, 20, item.id === this.period ? 0x725330 : COLORS.inset,
         item.id === this.period ? COLORS.gold : 0x43515a);
       text(item.label, x + cw / 2, y + 4, 9,
         item.id === this.period ? '#fff0c2' : '#aab9bb').setOrigin(0.5, 0);
       this.regions.push({ x, y, w: cw, h: 20, action: () => this.choosePeriod(item.id) });
     });
-    text('POS.', 17, 136, 8, '#a69a7c', true);
-    text('JOGADOR', 54, 136, 8, '#a69a7c', true);
-    text('PTS', w - 34, 136, 8, '#a69a7c', true);
-    g.lineStyle(1, 0x6f613f, 0.55).lineBetween(11, 150, w - 11, 150);
+    const description = this.scene.add.text(12, 129, STATS_BOARD_INFO[this.board].description, {
+      fontFamily: 'Georgia, serif', fontSize: '8px', color: '#aab9bb', resolution: 2,
+      wordWrap: { width: w - 24 },
+    });
+    this.container.add(description);
+    text('POS.', 17, 157, 8, '#a69a7c', true);
+    text('JOGADOR', 54, 157, 8, '#a69a7c', true);
+    text(STATS_BOARD_INFO[this.board].unit.toUpperCase(), w - 18, 157, 8, '#a69a7c', true).setOrigin(1, 0);
+    g.lineStyle(1, 0x6f613f, 0.55).lineBetween(11, 169, w - 11, 169);
 
     if (this.status !== 'ready') {
       const message = this.status === 'loading' ? 'Consultando os registros…' :
         this.status === 'missing' ? 'Estatísticas indisponíveis\nExecute tactics_academy_stats.sql' :
         `Não foi possível carregar\n${truncateName(this.error, 37)}`;
-      text(message, w / 2, 223, 10, '#d3bb88').setOrigin(0.5, 0.5).setAlign('center');
+      text(message, w / 2, 245, 10, '#d3bb88').setOrigin(0.5, 0.5).setAlign('center');
     } else if (!this.boardData?.rows.length) {
-      text('Ninguém pontuou ainda', w / 2, 230, 11, '#bac4bd').setOrigin(0.5, 0.5);
+      text('Ninguém pontuou ainda', w / 2, 245, 11, '#bac4bd').setOrigin(0.5, 0.5);
     } else {
       this.boardData.rows.slice(0, PAGE_SIZE).forEach((row, index) => {
-        const y = 154 + index * 18;
+        const y = 172 + index * 16;
         const mine = row.userId === (this.mock?.userId ?? this.userId());
         g.fillStyle(mine ? 0x594529 : index % 2 ? 0x1d2b34 : 0x17242d, 0.92)
-          .fillRoundedRect(11, y, w - 22, 17, 2);
+          .fillRoundedRect(11, y, w - 22, 15, 2);
         const medal = row.rank === 1 ? '#f4c55c' : row.rank === 2 ? '#cbd6dc' :
           row.rank === 3 ? '#ca9163' : '#879aa0';
         text(row.rank <= 3 ? `◆${row.rank}` : `${row.rank}.`, 17, y + 4, 10, medal, row.rank <= 3);
@@ -194,6 +208,7 @@ export class AcademyStatsBoard {
     text(`MEU TREINO   ${training?.lessonsCompleted ?? 0}/${training?.lessonsTotal ?? 26} lições  ·  ${percent}% 1ª tentativa`,
       18, footer + 35, 9, '#efcf94');
     text(`Ponto forte: ${strongest ? puzzleThemeLabel(strongest) : '—'}`, 18, footer + 46, 8, '#a7b5b4');
+    text('toque para ampliar', w - 14, 26, 8, '#aab9bb').setOrigin(1, 0);
   }
   private userId(): string {
     return this.currentUserId;

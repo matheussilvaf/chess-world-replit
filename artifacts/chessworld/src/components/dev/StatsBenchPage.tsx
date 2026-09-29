@@ -2,6 +2,9 @@ import { useEffect, useRef } from 'react';
 import Phaser from 'phaser';
 import { AcademyStatsBoard } from '../../game/academy/AcademyStatsBoard';
 import type { BoardResponse, SummaryResponse } from '../../game/academy/academyStatsLayout';
+import { ACADEMY_POINT_ACTIONS } from '../../shared/academy/StatsShapes';
+import { AcademyStatsModal, type StatsModalSource } from '../academy/stats/AcademyStatsModal';
+import { useAcademyStatsStore } from '../../stores/academyStatsStore';
 
 const board: BoardResponse = {
   rows: [
@@ -22,9 +25,20 @@ const summary: SummaryResponse = {
     solvedFirstTry: 38, strongest: [{ theme: 'fork' }] },
   schemaMissing: false,
 };
+const source: StatsModalSource = {
+  board: async (_board, _period, page) => ({
+    ...board, page, rows: page === 1 ? board.rows : [],
+  }),
+  summary: async () => summary,
+  points: async () => ({ items: ACADEMY_POINT_ACTIONS.map((item) => ({ ...item, points: item.defaultPoints })), schemaMissing: false }),
+};
 
 export function StatsBenchPage() {
   const host = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (new URLSearchParams(window.location.search).get('modal') === '1') useAcademyStatsStore.getState().openModal();
+    return () => useAcademyStatsStore.getState().close();
+  }, []);
   useEffect(() => {
     if (!host.current) return;
     const width = Math.min(window.innerWidth - 16, 600);
@@ -40,7 +54,8 @@ export function StatsBenchPage() {
           for (let x = 0; x < width; x += 32) g.lineBetween(x, 0, x, 690);
           const offset = (width - 320.5) / 2;
           const stats = new AcademyStatsBoard(this, { x: offset, y: 100, width: 320.5, height: 420.3 },
-            { board, summary, userId: 'me' });
+            { board, summary, userId: 'me' }, { onOpen: (selectedBoard, period, page) =>
+              useAcademyStatsStore.getState().openModal({ board: selectedBoard, period, page }) });
           // Silhueta acima do painel, como o jogador no mundo (depth 100).
           const player = this.add.graphics().setDepth(100);
           player.fillStyle(0x14151d).fillEllipse(width / 2, 455, 22, 8);
@@ -58,7 +73,10 @@ export function StatsBenchPage() {
     fontFamily: 'Georgia, serif' }}>
     <h1 style={{ fontSize: 20, margin: '8px 0' }}>Tactics Academy · Estatísticas</h1>
     <p style={{ fontSize: 12, color: '#a6afac', margin: '0 0 12px' }}>Bancada visual · jogador acima do painel · clique nas abas</p>
+    <button type="button" onClick={() => useAcademyStatsStore.getState().openModal()}
+      style={{ background: '#b48a45', color: '#111c26', borderRadius: 8, padding: '8px 16px', marginBottom: 12, fontWeight: 700 }}>Abrir modal</button>
     <div ref={host} style={{ width: 'fit-content', maxWidth: '100%', overflow: 'hidden',
       boxShadow: '0 15px 60px #0008', border: '1px solid #79623d' }} />
+    <AcademyStatsModal source={source} />
   </main>;
 }

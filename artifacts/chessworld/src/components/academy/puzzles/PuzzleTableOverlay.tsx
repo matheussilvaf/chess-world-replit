@@ -59,11 +59,11 @@ export function PuzzleTableOverlay({ onMove, rectOverride }: {
   if (table.kind === 'battle' && table.battle?.phase === 'finished') return null;
   const hasPuzzle = !!puzzle && puzzle.boardId === table.boardId;
   const secondsLeft = countdown && battle ? Math.max(0, Math.ceil((battle.startsAt - battleServerTime({ battle, receivedAt }, now)) / 1000)) : 0;
-  const dimmed = !hasPuzzle || countdown || battle?.phase === 'finished';
+  const dimmed = !hasPuzzle || countdown || !!battle?.bestOf?.roundResult || battle?.phase === 'finished';
 
   return <TableBoardOverlay boardId={table.boardId} rectOverride={rectOverride}
     fen={hasPuzzle ? fen : INITIAL_FEN} orientation={table.orientation}
-    interactive={hasPuzzle && phase === 'ready' && battle?.phase !== 'finished'}
+    interactive={hasPuzzle && phase === 'ready' && battle?.phase !== 'finished' && !battle?.bestOf?.roundResult}
     lastMove={hasPuzzle ? last : null} errorSquares={hasPuzzle ? error : null}
     animateMove={hasPuzzle ? animation : null} onAnimationEnd={() => usePuzzleSessionStore.getState().animationDone()}
     dimmed={dimmed}

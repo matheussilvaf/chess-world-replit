@@ -25,6 +25,10 @@ description: Lições não óbvias das fases 1–3 da academia — Stockfish no 
 ## Sala Colyseus com um único humano
 - A janela de reconexão do jogo usa timers próprios (não `allowReconnection`), então dependia do adversário manter a sala viva. Com um só cliente, o `autoDispose` padrão fecha a sala na queda e perde partida + W.O. + persistência → desligar `autoDispose` enquanto houver grace timer pendente e religar (o setter agenda `_disposeIfEmpty`) quando zerar.
 
+- **Regra (melhor de N):** a rodada acaba no PRIMEIRO desfecho — acerto dá o ponto a quem acertou, erro dá o ponto ao adversário (`opponent_wrong`), prazo sem ponto — e entra um intervalo `BATTLE_ROUND_RESULT_MS` (2,5 s, `bestOf.roundResult` no estado) antes do próximo puzzle OU do resultado final (o `finish` só roda depois do intervalo). Nesse intervalo os dois estão `done`: `startSession`/reconexão/`puzzleMove` checam `me.done`. **Why:** o usuário quer ver o erro piscar e o placar da rodada de forma explícita antes de trocar de puzzle; "aguardando o adversário" após errar era confundido com travamento. No cliente o cartão só aparece quando `phase !== 'wrong'` (o piscar termina primeiro).
+- **Regra (pontos):** quadro "Pontos" = soma ponderada (SQL `academy_rank_all`, CTE `weights` lê `academy_points_config`, COALESCE nos padrões de `StatsShapes.ts` — manter os dois iguais). Admin altera pesos em /admin/academy → `PUT /api/admin/academy/points` limpa o cache de 30 s do serviço. Se o SQL do Supabase for antigo, a função devolve "Filtro de ranking inválido" para `points`: o serviço converte em `schemaMissing` (mesmo aviso de "execute o SQL").
+- **Regra (lance de batalha):** um único `now = Date.now()` serve para `tick` de validação e `playerMove`; feedback é enviado antes do `playerMove`, e isso só é seguro porque o mesmo relógio impede o engine de descartar o lance por prazo.
+
 ## Supabase/PostgREST
 - `select(..., { head: true, count })` NÃO revela tabela ausente de forma confiável; testar existência com uma query real e tratar `42P01`/`PGRST205` como `schemaMissing` explícito (o usuário roda o SQL manualmente).
 

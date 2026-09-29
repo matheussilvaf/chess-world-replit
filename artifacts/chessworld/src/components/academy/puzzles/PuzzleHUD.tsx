@@ -34,7 +34,7 @@ function phaseText(phase: PuzzlePhase, moveNumber: number, total: number, overRe
     case 'wrong': return { text: 'Lance errado', tone: 'text-red-400' };
     case 'solved': return { text: 'Resolvido!', tone: 'text-emerald-400' };
     case 'solution': return { text: 'Sem vidas — veja a solução', tone: 'text-red-400' };
-    case 'over': return { text: overReason === 'opponent_first' ? 'Adversário resolveu antes' : overReason === 'timeout' ? 'Tempo esgotado' : 'Errou', tone: 'text-red-400' };
+    case 'over': return { text: overReason === 'opponent_first' ? 'Adversário resolveu antes' : overReason === 'opponent_wrong' ? 'Adversário errou — rodada sua' : overReason === 'timeout' ? 'Tempo esgotado' : 'Errou', tone: overReason === 'opponent_wrong' ? 'text-emerald-400' : 'text-red-400' };
     default: return { text: `Sua vez · lance ${moveNumber} de ${total}`, tone: 'text-emerald-400' };
   }
 }
@@ -64,7 +64,7 @@ function PlayerCard({ active, clickable, onClick, children, testId, color, name,
 
 /** Linha da base: meu cartão à esquerda, adversário à direita, cada um com no máximo metade da largura. */
 function BottomRow({ left, right }: { left: ReactNode; right?: ReactNode }) {
-  return <div className="pointer-events-none fixed inset-x-3 bottom-3 z-[200] flex items-end justify-between gap-2 sm:inset-x-4 sm:bottom-4">
+  return <div className="pointer-events-none fixed inset-x-3 bottom-3 z-[220] flex items-end justify-between gap-2 sm:inset-x-4 sm:bottom-4">
     <div className="pointer-events-auto flex min-w-0 flex-1 basis-0 justify-start sm:max-w-[18rem]">{left}</div>
     {right && <div className="pointer-events-auto flex min-w-0 flex-1 basis-0 justify-end sm:max-w-[18rem]">{right}</div>}
   </div>;
@@ -241,6 +241,18 @@ export function PuzzleHUD({ onLeaveDaily = leaveDailyTable, onOpenDaily, onForfe
   const finished = battle.phase === 'finished';
   const timer = battle.endsAt !== undefined ? clock(battle.endsAt - serverTime)
     : battle.bestOf ? `${battle.bestOf.current + 1}/${battle.bestOf.total} · ${clock(battle.bestOf.deadlineAt - serverTime)}` : '';
+  // O piscar vermelho do lance errado termina antes do cartão de rodada aparecer por cima do tabuleiro.
+  const roundResult = battle.phase === 'running' && phase !== 'wrong' ? battle.bestOf?.roundResult : undefined;
+  const roundWon = roundResult?.winnerId === battle.me.playerId;
+  const roundsLeft = roundResult && battle.bestOf ? battle.bestOf.total - roundResult.index - 1 : 0;
+  const [myPoints, opponentPoints] = [battle.me.points ?? 0, battle.opponent.points ?? 0];
+  // Mesma regra do servidor (nextBestOf): sem rodadas restantes, maioria alcançada ou vantagem irrecuperável.
+  const battleDecided = !!roundResult && !!battle.bestOf && (roundsLeft <= 0 ||
+    Math.max(myPoints, opponentPoints) >= Math.floor(battle.bestOf.total / 2) + 1 || Math.abs(myPoints - opponentPoints) > roundsLeft);
+  const roundTitle = roundResult?.winnerId === '' ? 'Tempo esgotado' : roundWon ? 'Rodada sua!' : 'Rodada perdida';
+  const roundSubtitle = roundResult?.reason === 'timeout' ? 'Ninguém resolveu a tempo'
+    : roundResult?.reason === 'wrong' ? roundWon ? 'O adversário errou' : 'Você errou'
+      : roundWon ? 'Você resolveu primeiro' : 'O adversário resolveu primeiro';
   const outcome = battle.result?.winnerId === '' ? 'Empate' : battle.result?.winnerId === battle.me.playerId ? 'Você venceu!' : 'Você perdeu';
   const themes = hasPuzzle && battle.showThemes ? puzzleMainThemes(puzzle.themes) : [];
    const requestedTheme = hasPuzzle && puzzle.themeFallback
@@ -248,7 +260,7 @@ export function PuzzleHUD({ onLeaveDaily = leaveDailyTable, onOpenDaily, onForfe
      : battle.theme ? puzzleThemeLabel(battle.theme) : '';
    const title = [BATTLE_MODE_INFO[battle.mode].label, PUZZLE_BAND_INFO[battle.band].label, requestedTheme].filter(Boolean).join(' · ');
   const meta = hasPuzzle && !finished
-    ? [`Puzzle ${battle.me.index + 1}`, `${puzzleDifficultyLabel(puzzle.rating)} (${puzzle.rating})`, ...(themes.length ? [themes.map(puzzleThemeLabel).join(', ')] : [])].join(' · ')
+    ? [`Puzzle ${puzzle.context.kind === 'battle' ? puzzle.context.index + 1 : battle.me.index + 1}`, `${puzzleDifficultyLabel(puzzle.rating)} (${puzzle.rating})`, ...(themes.length ? [themes.map(puzzleThemeLabel).join(', ')] : [])].join(' · ')
     : undefined;
   return <>
     <TopCard testId="puzzle-hud-battle" title={title} timer={!finished && timer ? timer : undefined} meta={meta} status={!finished ? status : null} />
@@ -261,7 +273,7 @@ export function PuzzleHUD({ onLeaveDaily = leaveDailyTable, onOpenDaily, onForfe
           {finished && <button type="button" onClick={() => { setShowOptions(false); onDismissBattle(); }} className={`${optionButton} bg-amber-500 text-slate-950 hover:bg-amber-400`}>
             <LogOut className="h-4 w-4 flex-shrink-0" />Levantar</button>}
         </OptionsCard>}
-         <PlayerCard active={!finished && hasPuzzle && phase === 'ready'} clickable onClick={() => setShowOptions((v) => !v)} testId="puzzle-me-chip" color={battle.me.color} name={myName} tag={battle.me.color === 'w' ? '(Brancas)' : '(Pretas)'}>
+          <PlayerCard active={!finished && hasPuzzle && phase === 'ready'} clickable onClick={() => setShowOptions((v) => !v)} testId="puzzle-me-chip" color={myColor} name={myName} tag={myColor === 'w' ? '(Brancas)' : '(Pretas)'}>
           <BattleStats player={battle.me} elapsed={elapsed} />
         </PlayerCard>
       </div>}
@@ -274,14 +286,22 @@ export function PuzzleHUD({ onLeaveDaily = leaveDailyTable, onOpenDaily, onForfe
        <section role="dialog" aria-modal="true" aria-label="Desistir da batalha?" className="w-full max-w-sm space-y-3 rounded-2xl border border-red-500/50 bg-slate-900 p-5 text-center text-white shadow-2xl">
          <h3 className="text-xl font-bold">Desistir da batalha?</h3>
          <p className="text-sm text-slate-300">Você perderá esta batalha.</p>
-         <div className="flex gap-2"><button type="button" onClick={() => setConfirmForfeit(false)} className={`${ghostButton} flex-1`}>Cancelar</button>
-           <button type="button" onClick={() => { setConfirmForfeit(false); onForfeit(battle.battleId); }} className="flex-1 rounded-xl bg-red-600 px-4 py-2 text-xs font-bold text-white hover:bg-red-500">Desistir</button></div>
+          <div className="flex gap-2"><button type="button" onClick={() => setConfirmForfeit(false)} className={`${ghostButton} min-h-11 flex-1`}>Cancelar</button>
+            <button type="button" onClick={() => { setConfirmForfeit(false); onForfeit(battle.battleId); }} className="min-h-11 flex-1 rounded-xl bg-red-600 px-4 py-2 text-xs font-bold text-white hover:bg-red-500">Desistir</button></div>
        </section>
      </div>}
 
-    {!finished && hasPuzzle && (phase === 'wrong' || phase === 'over' || phase === 'solved') && status && <Toast tone={phase === 'solved' ? 'border-emerald-500/50' : 'border-red-500/50'} testId="battle-toast">
+     {roundResult && <div className="pointer-events-none fixed inset-0 z-[225] flex items-center justify-center p-4" data-testid="battle-round-result">
+       <div className={`w-full max-w-sm rounded-2xl border bg-slate-900/95 p-6 text-center text-white shadow-2xl backdrop-blur-md ${roundWon ? 'border-emerald-500/70' : 'border-amber-500/60'}`}>
+         <h3 className={`text-3xl font-black ${roundWon ? 'text-emerald-300' : 'text-amber-300'}`}>{roundTitle}</h3>
+         <p className="mt-2 text-sm text-slate-200">{roundSubtitle}</p>
+         <p className="mt-3 font-mono text-xl font-bold tabular-nums">{myPoints} × {opponentPoints}</p>
+         <p className="mt-2 text-xs text-slate-300">{battleDecided ? 'Resultado' : 'Próximo puzzle'} em {Math.max(0, Math.ceil((roundResult.until - serverTime) / 1000))}s</p>
+       </div>
+     </div>}
+     {!finished && !roundResult && hasPuzzle && (phase === 'wrong' || phase === 'over' || phase === 'solved') && status && <Toast tone={phase === 'solved' || feedback?.puzzleOverReason === 'opponent_wrong' ? 'border-emerald-500/50' : 'border-red-500/50'} testId="battle-toast">
       <p className={`text-xs font-semibold ${status.tone}`}>{status.text}</p>
-      {battle.me.done ? <p className="text-[10px] text-slate-400">Você terminou — aguardando o adversário</p> : <p className="text-[10px] text-slate-400">Próximo puzzle…</p>}
+       {battle.me.done ? <p className="text-[10px] text-slate-400">Você terminou — aguardando o adversário</p> : <p className="text-[10px] text-slate-400">Próximo puzzle…</p>}
     </Toast>}
 
     {finished && <div className="fixed inset-0 z-[230] flex items-center justify-center p-4 pointer-events-none">
@@ -295,7 +315,7 @@ export function PuzzleHUD({ onLeaveDaily = leaveDailyTable, onOpenDaily, onForfe
           </div>)}
         </div>
         <p className="text-lg font-bold text-emerald-300">{battle.result?.myRewardGambits ? `+${battle.result.myRewardGambits} Gambitos` : 'Sem recompensa'}</p>
-        <button type="button" data-testid="battle-dismiss" onClick={onDismissBattle} className="w-full rounded-xl bg-amber-500 py-2.5 font-bold text-slate-950 hover:bg-amber-400">Fechar</button>
+         <button type="button" data-testid="battle-dismiss" onClick={onDismissBattle} className="min-h-11 w-full touch-manipulation rounded-xl bg-amber-500 py-2.5 font-bold text-slate-950 hover:bg-amber-400">Fechar</button>
       </section>
     </div>}
   </>;

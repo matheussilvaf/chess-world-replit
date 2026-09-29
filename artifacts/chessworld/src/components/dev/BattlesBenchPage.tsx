@@ -74,7 +74,7 @@ export default function BattlesBenchPage() {
     for (const event of events) {
       if (event.type === 'puzzle_over' && event.playerId === 'bench-me') {
         const p = useBattleStore.getState().puzzle;
-        if (p) {
+         if (p && !(event.reason === 'wrong' && usePuzzleSessionStore.getState().feedback?.sessionId === p.sessionId)) {
           const feedback = { sessionId: p.sessionId, ok: false, solved: false, moveIndex: moveIndex.current, puzzleOver: true, puzzleOverReason: event.reason };
           useBattleStore.getState().setFeedback(feedback);
           usePuzzleSessionStore.getState().applyFeedback(feedback);
@@ -108,7 +108,8 @@ export default function BattlesBenchPage() {
   useEffect(() => {
     if (!engine.current || engine.current.phase === 'finished') return;
     const bot = () => {
-      if (!engine.current || engine.current.phase !== 'running') return;
+       if (!engine.current || engine.current.phase !== 'running') return;
+       if (config.current?.mode.startsWith('best_of_')) return; // controles manuais para testar cada resultado
       applyEvents(engine.current.playerMove('bench-bot', { ok: Math.random() > 0.28, solved: true }, Date.now()));
       botTimer.current = window.setTimeout(bot, 2000 + Math.random() * 4000);
     };
@@ -117,7 +118,8 @@ export default function BattlesBenchPage() {
   }, [waiting]);
   const move = (sessionId: string, uci: string) => {
     const active = useBattleStore.getState().puzzle;
-    if (!active || active.sessionId !== sessionId || !engine.current || engine.current.phase !== 'running') return;
+     if (!active || active.sessionId !== sessionId || !engine.current || engine.current.phase !== 'running' ||
+       engine.current.view('bench-me', Date.now()).me.done) return;
     const p = validPuzzles[active.context.kind === 'battle' ? active.context.index % validPuzzles.length : 0] as PuzzleMoves;
     const evaluation = evaluatePlayerMove(p, moveIndex.current, uci);
     if (!evaluation.legal) return;
@@ -129,8 +131,7 @@ export default function BattlesBenchPage() {
     useBattleStore.getState().setFeedback(feedback);
     usePuzzleSessionStore.getState().applyFeedback(feedback);
     if (evaluation.ok && !evaluation.solved) { moveIndex.current += 1; return; }
-    // Deixa o tabuleiro animar o feedback (acerto/erro) antes do próximo puzzle.
-    window.setTimeout(() => { if (engine.current) applyEvents(engine.current.playerMove('bench-me', evaluation, Date.now())); }, 850);
+     applyEvents(engine.current.playerMove('bench-me', evaluation, Date.now()));
   };
   const battleOpen = useBattleStore((s) => s.screenOpen && !!s.battle);
   return <main className="min-h-screen bg-slate-950 p-6 text-slate-100">
@@ -147,7 +148,13 @@ export default function BattlesBenchPage() {
     </div>}
     {modal && <BattleChallengeModal boardId={BOARD_ID} myId="bench-me" initialMode={mode} initialBand={band} onClose={() => setModal(false)} onCreate={(payload) => start(payload)}
       onCancel={() => { if (acceptTimer.current) window.clearTimeout(acceptTimer.current); board('idle'); setWaiting(false); setModal(false); }} />}
-    {battleOpen && <BenchTableFrame>{(rect) => <>
+     {battleOpen && <div className="pointer-events-auto fixed left-2 top-24 z-[226] flex flex-col gap-2">
+       <button type="button" data-testid="bench-bot-solve" onClick={() => { if (engine.current) applyEvents(engine.current.playerMove('bench-bot', { ok: true, solved: true }, Date.now())); }}
+         className="min-h-11 rounded-lg bg-emerald-700 px-3 text-xs font-bold text-white">Adversário resolveu</button>
+       <button type="button" data-testid="bench-bot-wrong" onClick={() => { if (engine.current) applyEvents(engine.current.playerMove('bench-bot', { ok: false, solved: false }, Date.now())); }}
+         className="min-h-11 rounded-lg bg-red-700 px-3 text-xs font-bold text-white">Adversário errou</button>
+     </div>}
+     {battleOpen && <BenchTableFrame>{(rect) => <>
       <PuzzleTableOverlay rectOverride={rect} onMove={move} />
       <PuzzleHUD onDismissBattle={() => { engine.current = null; board('idle'); useBattleStore.getState().clear(); usePuzzleSessionStore.getState().clear(); }}
         onForfeit={() => { if (engine.current) applyEvents(engine.current.forfeit('bench-me', Date.now())); }} />

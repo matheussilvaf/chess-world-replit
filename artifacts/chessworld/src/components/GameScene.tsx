@@ -10,6 +10,7 @@ import { PuzzleTableOverlay } from './academy/puzzles/PuzzleTableOverlay';
 import { HouseModal } from './game/HouseModal';
 import { FriendRequests } from './game/FriendRequests';
 import { SettingsModal } from './game/SettingsModal';
+import { AcademyStatsModal } from './academy/stats/AcademyStatsModal';
 import { VoiceChatPanel } from './game/VoiceChatPanel';
 import { TableWaitingOverlays } from './game/TableWaitingOverlays';
 import { BotTableLabels } from './academy/BotTableLabels';
@@ -104,6 +105,7 @@ export default function GameScene() {
       <FriendRequests />
       <PlayerSummaryModal />
       <SettingsModal />
+      <AcademyStatsModal />
       <VoiceChatPanel />
       <InteractionDebugModal />
       <ProximityButton />

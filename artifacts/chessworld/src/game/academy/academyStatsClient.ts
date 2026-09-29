@@ -1,6 +1,7 @@
 import { getColyseusHttpUrl } from '../../config/colyseus';
 import { supabase } from '../../lib/supabase';
 import { parseBoardResponse, type BoardId, type PeriodId, type SummaryResponse } from './academyStatsLayout';
+import type { AcademyPointsResponse } from '../../shared/academy/StatsShapes';
 
 async function get(path: string): Promise<unknown> {
   const base = getColyseusHttpUrl();
@@ -24,4 +25,6 @@ export const statsClient = {
     const value = await get('summary') as SummaryResponse;
     return value;
   },
+  points: async (): Promise<AcademyPointsResponse> => get('points') as Promise<AcademyPointsResponse>,
 };
+export const fetchPointsConfig = statsClient.points;
