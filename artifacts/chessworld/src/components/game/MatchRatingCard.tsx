@@ -3,6 +3,7 @@ import { Star, Swords, X } from 'lucide-react';
 import { useAuthStore } from '../../stores/authStore';
 import { useRatingStore } from '../../stores/ratingStore';
 import type { RatingUpdatePlayer } from '../../shared/rating/RatingShapes';
+import { isBotPlayerId } from '../../shared/academy/AcademyShapes';
 
 const AUTO_DISMISS_MS = 15_000;
 
@@ -26,18 +27,23 @@ function formatDelta(delta: number): string {
 
 /** Card pós-partida: rating antes → depois (Δ) dos dois jogadores + gambits ganhos. */
 export function MatchRatingCard() {
+  const trainingEndAt = useRatingStore((s) => s.trainingEndAt);
   const update = useRatingStore((s) => s.update);
   const receivedAt = useRatingStore((s) => s.receivedAt);
   const dismiss = useRatingStore((s) => s.dismiss);
   const myId = useAuthStore((s) => s.user?.id ?? null);
 
   useEffect(() => {
-    if (!update) return;
-    const remaining = Math.max(1_000, AUTO_DISMISS_MS - (Date.now() - receivedAt));
+    if (!update && !trainingEndAt) return;
+    const remaining = Math.max(1_000, AUTO_DISMISS_MS - (Date.now() - (trainingEndAt || receivedAt)));
     const timer = setTimeout(dismiss, remaining);
     return () => clearTimeout(timer);
-  }, [update, receivedAt, dismiss]);
+  }, [update, receivedAt, trainingEndAt, dismiss]);
 
+  if (trainingEndAt) return <div role="status" className="fixed left-1/2 top-24 z-[230] w-[min(22rem,calc(100vw-1.5rem))] -translate-x-1/2 rounded-2xl border border-amber-500/40 bg-slate-950/95 p-4 text-amber-200 shadow-2xl">
+    <button type="button" onClick={dismiss} aria-label="Fechar" className="float-right text-slate-400"><X className="h-4 w-4" /></button>
+    Partida de treino — sem alteração de rating
+  </div>;
   if (!update) return null;
   // Eu primeiro, adversário depois.
   const players = [...update.players].sort((a, b) => (a.playerId === myId ? -1 : b.playerId === myId ? 1 : 0));
@@ -67,7 +73,7 @@ export function MatchRatingCard() {
 
       {update.rated && (
         <ul className="space-y-2">
-          {players.map((p) => {
+          {players.filter((p) => !isBotPlayerId(p.playerId)).map((p) => {
             const mine = p.playerId === myId;
             const positive = p.ratingDelta >= 0;
             return (

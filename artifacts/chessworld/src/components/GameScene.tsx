@@ -9,6 +9,8 @@ import { FriendRequests } from './game/FriendRequests';
 import { SettingsModal } from './game/SettingsModal';
 import { VoiceChatPanel } from './game/VoiceChatPanel';
 import { TableWaitingOverlays } from './game/TableWaitingOverlays';
+import { BotTableLabels } from './academy/BotTableLabels';
+import { useBotMatchDriver } from '../game/bots/useBotMatchDriver';
 import { TournamentPanelOverlays } from './game/TournamentPanelOverlays';
 import { InteractionDebugModal } from './game/InteractionDebugModal';
 import { MatchHUD } from './game/MatchHUD';
@@ -25,6 +27,7 @@ import { leaveWorldRoom } from '../game/network/colyseusClient';
 import { Loader2, WifiOff, RefreshCw } from 'lucide-react';
 
 export default function GameScene() {
+  useBotMatchDriver();
   useColyseusConnection();
   const { phase, error } = useColyseusStore();
 
@@ -104,6 +107,7 @@ export default function GameScene() {
       <MatchRatingCard />
       <ChessBoardOverlay />
       <TableWaitingOverlays />
+      <BotTableLabels />
       <TournamentPanelOverlays />
       <TouchControlsPositioner />
     </div>

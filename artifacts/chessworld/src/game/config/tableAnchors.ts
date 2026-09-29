@@ -171,15 +171,18 @@ export function getExitAnchor(
 }
 
 function findObjectLayer(layers: any[], name: string): any[] | null {
+  const objects: any[] = [];
+  let found = false;
   for (const l of layers) {
     if (l.type === 'group') {
-      const found = findObjectLayer(l.layers || [], name);
-      if (found) return found;
+      const nested = findObjectLayer(l.layers || [], name);
+      if (nested) { objects.push(...nested); found = true; }
     } else if (l.type === 'objectgroup' && l.name === name) {
-      return l.objects || [];
+      objects.push(...(l.objects || []));
+      found = true;
     }
   }
-  return null;
+  return found ? objects : null;
 }
 
 function getProps(obj: any): Record<string, string | number | boolean> {

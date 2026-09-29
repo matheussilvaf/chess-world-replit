@@ -1,5 +1,6 @@
 import { Client, Room } from 'colyseus.js';
 import { getColyseusWsUrl, isColyseusConfigured as checkConfigured } from '../../config/colyseus';
+import { ACADEMY_ROOM_NAME } from '../../shared/academy/AcademyShapes';
 
 export function isColyseusConfigured(): boolean {
   return checkConfigured();
@@ -20,14 +21,15 @@ function getClient(): Client {
 
 let worldRoom: Room<any> | null = null;
 let arenaRoom: Room<any> | null = null;
-let activeRoomType: 'world' | 'arena' = 'world';
+let activeRoomType: 'world' | 'arena' | 'academy' = 'world';
+let interiorRoomType: 'arena' | 'academy' | null = null;
 let joinInProgress: Promise<Room<any>> | null = null;
 
 export function getActiveRoom(): Room<any> | null {
-  return activeRoomType === 'arena' ? arenaRoom : worldRoom;
+  return activeRoomType === 'world' ? worldRoom : arenaRoom;
 }
 
-export function getActiveRoomType(): 'world' | 'arena' {
+export function getActiveRoomType(): 'world' | 'arena' | 'academy' {
   return activeRoomType;
 }
 
@@ -115,22 +117,26 @@ export async function joinArenaRoom(options: {
   region: string;
   x: number;
   y: number;
-}): Promise<Room<any>> {
+}, roomName: 'arena' | 'academy' = 'arena'): Promise<Room<any>> {
   if (!isColyseusConfigured()) {
     throw new Error('VITE_COLYSEUS_URL is not configured');
   }
 
   if (arenaRoom) {
-    console.log('[Colyseus] Already connected to arena, reusing');
-    activeRoomType = 'arena';
-    return arenaRoom;
+    if (interiorRoomType === roomName) {
+      console.log(`[Colyseus] Already connected to ${roomName}, reusing`);
+      activeRoomType = roomName;
+      return arenaRoom;
+    }
+    await leaveArenaRoom();
   }
 
-  console.log(`[Colyseus] joining arena region: ${options.region}`);
-  const room = await getClient().joinOrCreate('arena', options);
+  console.log(`[Colyseus] joining ${roomName} region: ${options.region}`);
+  const room = await getClient().joinOrCreate(roomName === 'academy' ? ACADEMY_ROOM_NAME : 'arena', options);
   arenaRoom = room;
-  activeRoomType = 'arena';
-  console.log(`[Colyseus] arena roomId: ${room.roomId}, sessionId: ${room.sessionId}`);
+  interiorRoomType = roomName;
+  activeRoomType = roomName;
+  console.log(`[Colyseus] ${roomName} roomId: ${room.roomId}, sessionId: ${room.sessionId}`);
   return room;
 }
 
@@ -138,6 +144,7 @@ export async function leaveArenaRoom(): Promise<void> {
   if (arenaRoom) {
     const room = arenaRoom;
     arenaRoom = null;
+    interiorRoomType = null;
     console.log(`[Colyseus] Leaving arena room: ${room.roomId}`);
     try {
       await room.leave(true);

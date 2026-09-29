@@ -66,6 +66,9 @@ const BigChessAdminPage = lazy(() =>
 const HuntingControllerPage = lazy(() =>
   import('./components/admin/hunting/HuntingControllerPage.tsx'),
 );
+const AcademyAdminPage = lazy(() =>
+  import('./components/admin/academy/AcademyAdminPage.tsx').then((m) => ({ default: m.AcademyAdminPage })),
+);
 
 // Bancadas DEV (inventário: DnD/durabilidade; controles: configurações e
 // teclas) sem Phaser. Fora do DEV o `import.meta.env.DEV` é substituído
@@ -91,6 +94,7 @@ const HuntingBenchPage = lazy(() =>
     default: m.HuntingBenchPage,
   })),
 );
+const BotsBenchPage = lazy(() => import('./components/dev/BotsBenchPage.tsx'));
 
 function RouteFallback() {
   return (
@@ -113,6 +117,7 @@ createRoot(document.getElementById('root')!).render(
         <Route path="/admin/skills-energy" element={<SkillsEnergyPage />} />
         <Route path="/admin/bigchess" element={<BigChessAdminPage />} />
         <Route path="/admin/hunting" element={<HuntingControllerPage />} />
+        <Route path="/admin/academy" element={<AcademyAdminPage />} />
         <Route path="/admin/rating-gambits" element={<RatingGambitsPage />} />
         <Route path="/admin/chess-matches" element={<ChessMatchesPage />} />
         {/* Old editor URL — kept as a permanent redirect (spec §3) */}
@@ -122,6 +127,7 @@ createRoot(document.getElementById('root')!).render(
         {InventoryBenchPage && <Route path="/dev/inventario" element={<InventoryBenchPage />} />}
         {ControlsBenchPage && <Route path="/dev/controles" element={<ControlsBenchPage />} />}
         <Route path="/dev/caca" element={<HuntingBenchPage />} />
+        <Route path="/dev/bots" element={<BotsBenchPage />} />
         <Route path="*" element={<App />} />
       </Routes>
     </Suspense>

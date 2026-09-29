@@ -55,6 +55,8 @@ export const WORLD_TILESETS: TilesetEntry[] = [
 
 /** Additional tilesets needed by sub-maps (not in the main world). Loaded on demand. */
 export const EXTRA_TILESETS: TilesetEntry[] = [
+  { tiledName: 'puzzle_icon', textureKey: 'wv2-puzzle-icon', image: 'sprites/tilesets/puzzle-icon.png', firstgid: 0, isSingleImage: true },
+  { tiledName: 'puzzle_icon_2', textureKey: 'wv2-puzzle-icon-2', image: 'sprites/tilesets/puzzle_icon_2.png', firstgid: 0, isSingleImage: true },
   { tiledName: 'Gothic_C', textureKey: 'wv2-gothic-c', image: 'sprites/tilesets/Gothic_C.png', firstgid: 0, isSingleImage: false },
   { tiledName: 'non-rm-a3', textureKey: 'wv2-non-rm-a3', image: 'sprites/tilesets/non-rm-a3.png', firstgid: 0, isSingleImage: false },
   { tiledName: 'carpet-and-stuff', textureKey: 'wv2-carpet-and-stuff', image: 'sprites/tilesets/carpet-and-stuff.png', firstgid: 0, isSingleImage: false },

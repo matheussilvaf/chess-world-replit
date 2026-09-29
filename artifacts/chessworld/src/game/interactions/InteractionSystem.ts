@@ -124,15 +124,18 @@ export class InteractionSystem {
   }
 
   private findObjectLayer(layers: any[], name: string): any[] | null {
+    const objects: any[] = [];
+    let found = false;
     for (const l of layers) {
       if (l.type === 'group') {
-        const found = this.findObjectLayer(l.layers || [], name);
-        if (found) return found;
+        const nested = this.findObjectLayer(l.layers || [], name);
+        if (nested) { objects.push(...nested); found = true; }
       } else if (l.type === 'objectgroup' && l.name === name) {
-        return l.objects || [];
+        objects.push(...(l.objects || []));
+        found = true;
       }
     }
-    return null;
+    return found ? objects : null;
   }
 
   private getProps(obj: any): Record<string, string | number | boolean> {

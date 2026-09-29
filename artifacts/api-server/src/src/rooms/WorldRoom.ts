@@ -38,6 +38,9 @@ import { HUNT_MSG } from '../shared/hunting/HuntingShapes.js';
 import { inviteCoop, respondCoop } from '../hunting/HuntingCoop.js';
 import { registerClient, unregisterClient } from '../realtime/userNotify.js';
 import { presenceService } from '../presence/presenceService.js';
+import { ACADEMY_MSG, ACADEMY_ROOM_NAME, botIdForTable, botPlayerId, isBotPlayerId, type CreateBotChallengePayload, type BotMovePayload, type AcademyBot } from '../shared/academy/AcademyShapes.js';
+import { getBots } from '../academy/academyBotsRepository.js';
+import { insertBotGame } from '../academy/botGamesRepository.js';
 
 interface JoinOptions {
   /** Legado — IGNORADO para identidade (era spoofável). Mantido só por compat. */
@@ -86,6 +89,7 @@ export class WorldRoom extends Room<WorldState> {
   /** Dados de abertura de cada partida (praça e torneio) para fechar a linha em `matches` no fim. */
   /** Partidas abertas em `matches`: o fechamento espera o insert de abertura terminar (sem linha duplicada em partidas relâmpago). */
   private matchStartRecords = new Map<string, { record: MatchStartRecord; persisted: Promise<unknown> }>();
+  private botMatchInfo = new Map<string, { bot: AcademyBot; startedAt: string; humanId: string; timeMinutes: number; incrementSeconds: number; timeLabel: string; movesCount: number }>();
   /** Server-authoritative combat (client only sends attack intents). */
   private combatResolver = new CombatResolver(this, {
     // Energia/XP de combate: golpe que conecta custa energia ao atacante e ao
@@ -288,6 +292,10 @@ export class WorldRoom extends Room<WorldState> {
       };
       const player = this.state.players.get(client.sessionId);
       if (!player) return;
+      if (botIdForTable(boardId)) {
+        client.send(ACADEMY_MSG.error, { code: 'bot_table', message: 'Use o desafio de bot nesta mesa.' });
+        return;
+      }
       if (this.combatResolver.isDead(client.sessionId)) return; // dead players can't challenge
 
       const board = this.state.boards.get(boardId);
@@ -328,6 +336,10 @@ export class WorldRoom extends Room<WorldState> {
       const { boardId } = data as { boardId: string };
       const player = this.state.players.get(client.sessionId);
       if (!player) return;
+      if (botIdForTable(boardId)) {
+        client.send(ACADEMY_MSG.error, { code: 'bot_table', message: 'Esta mesa é reservada para bots.' });
+        return;
+      }
       if (this.combatResolver.isDead(client.sessionId)) return; // dead players can't accept
 
       const board = this.state.boards.get(boardId);
@@ -342,6 +354,20 @@ export class WorldRoom extends Room<WorldState> {
       }
 
       this.startMatch(board, player, client);
+    });
+
+    this.onMessage(ACADEMY_MSG.createBotChallenge, (client, data) => void this.createBotMatch(client, data as CreateBotChallengePayload));
+    this.onMessage(ACADEMY_MSG.botMove, (client, data) => {
+      const payload = data as BotMovePayload;
+      const match = this.state.matches.get(payload?.matchId);
+      const player = this.state.players.get(client.sessionId);
+      if (this.roomName !== ACADEMY_ROOM_NAME || !match?.botId || match.status !== 'playing' ||
+        !player || (match.whitePlayerId !== player.id && match.blackPlayerId !== player.id) ||
+        match.turn !== (isBotPlayerId(match.whitePlayerId) ? 'w' : 'b') || match.clockPausedAt > 0) {
+        client.send(ACADEMY_MSG.error, { code: 'invalid_bot_move', message: 'Lance do bot não permitido nesta partida.' });
+        return;
+      }
+      this.applyChessMove(match, payload, (message) => client.send(ACADEMY_MSG.error, { code: 'invalid_move', message }));
     });
 
     this.onMessage('cancel_waiting', (client, data) => {
@@ -410,14 +436,15 @@ export class WorldRoom extends Room<WorldState> {
 
       const match = this.state.matches.get(matchId);
       if (!match || match.status !== 'playing') return;
+      if (match.botId && match.turn === (isBotPlayerId(match.whitePlayerId) ? 'w' : 'b')) {
+        client.send(ACADEMY_MSG.error, { code: 'not_your_turn', message: 'É a vez do bot.' });
+        return;
+      }
 
       if (match.clockPausedAt > 0) {
         client.send('error', { message: 'Partida pausada — aguardando reconexão do adversário' });
         return;
       }
-
-      const game = activeGames.get(matchId);
-      if (!game) return;
 
       const isWhite = match.whitePlayerId === player.id;
       const isBlack = match.blackPlayerId === player.id;
@@ -427,35 +454,7 @@ export class WorldRoom extends Room<WorldState> {
         return;
       }
 
-      const moveResult = game.move({ from, to, promotion: promotion || 'q' });
-      if (!moveResult) {
-        client.send('error', { message: 'Invalid move' });
-        return;
-      }
-
-      const now = Date.now();
-      const elapsed = now - match.lastMoveAt;
-
-      if (match.turn === 'w') {
-        match.whiteTimeMs = Math.max(0, match.whiteTimeMs - elapsed + match.incrementMs);
-      } else {
-        match.blackTimeMs = Math.max(0, match.blackTimeMs - elapsed + match.incrementMs);
-      }
-
-      match.fen = game.fen();
-      match.pgn = game.pgn();
-      match.turn = game.turn();
-      match.lastMoveAt = now;
-      match.lastMoveSan = moveResult.san;
-      match.lastMoveFrom = moveResult.from;
-      match.lastMoveTo = moveResult.to;
-
-      // A move on the board voids any outstanding draw offer
-      this.pendingDrawOffers.delete(matchId);
-
-      if (game.isGameOver()) {
-        this.endMatch(matchId, game);
-      }
+      this.applyChessMove(match, { from, to, promotion }, (message) => client.send('error', { message }));
     });
 
     this.onMessage('chess_resign', async (client, data) => {
@@ -499,6 +498,11 @@ export class WorldRoom extends Room<WorldState> {
 
       const match = this.state.matches.get(matchId);
       if (!match || match.status !== 'playing') return;
+      if (match.botId) {
+        client.send(ACADEMY_MSG.error, { code: 'bot_draw', message: 'Não é possível oferecer empate a um bot.' });
+        client.send('draw_offer_rejected', { reason: 'bot_match' });
+        return;
+      }
 
       const isWhite = match.whitePlayerId === player.id;
       const isBlack = match.blackPlayerId === player.id;
@@ -554,6 +558,10 @@ export class WorldRoom extends Room<WorldState> {
 
       const match = this.state.matches.get(matchId);
       if (!match || match.status !== 'playing') return;
+      if (match.botId) {
+        client.send(ACADEMY_MSG.error, { code: 'bot_draw', message: 'Não há oferta de empate nesta partida.' });
+        return;
+      }
 
       const isWhite = match.whitePlayerId === player.id;
       const isBlack = match.blackPlayerId === player.id;
@@ -581,6 +589,10 @@ export class WorldRoom extends Room<WorldState> {
 
       const match = this.state.matches.get(matchId);
       if (!match || match.status !== 'playing') return;
+      if (match.botId) {
+        client.send(ACADEMY_MSG.error, { code: 'bot_draw', message: 'Não há oferta de empate nesta partida.' });
+        return;
+      }
 
       const isWhite = match.whitePlayerId === player.id;
       const isBlack = match.blackPlayerId === player.id;
@@ -1133,7 +1145,7 @@ export class WorldRoom extends Room<WorldState> {
    */
   private respawnAfterStarvation(sessionId: string, player: PlayerState): void {
     const client = this.clients.find((c) => c.sessionId === sessionId);
-    if (this.region.startsWith('craft:') || this.roomName === 'arena') {
+    if (this.region.startsWith('craft:') || this.roomName !== 'world') {
       client?.send('starvation_respawn', { world: 'main' });
       return;
     }
@@ -1510,9 +1522,9 @@ export class WorldRoom extends Room<WorldState> {
     this.state.matches.forEach((match, matchId) => {
       if (match.status !== 'playing') return;
       if (match.whitePlayerId === playerId) {
-        client.send('match_started', { matchId, boardId: match.boardId, color: 'w' });
+        client.send('match_started', { matchId, boardId: match.boardId, color: 'w', botId: match.botId || undefined });
       } else if (match.blackPlayerId === playerId) {
-        client.send('match_started', { matchId, boardId: match.boardId, color: 'b' });
+        client.send('match_started', { matchId, boardId: match.boardId, color: 'b', botId: match.botId || undefined });
       }
     });
 
@@ -1545,6 +1557,7 @@ export class WorldRoom extends Room<WorldState> {
       const opponentClient = this.clients.find(c => c.sessionId === opponentSession);
       opponentClient?.send('opponent_reconnected', { matchId, boardId: match.boardId });
     });
+    this.syncGraceHold();
   }
 
   async onLeave(client: Client, consented: boolean) {
@@ -1585,11 +1598,6 @@ export class WorldRoom extends Room<WorldState> {
     this.hpRestoreApplied.delete(client.sessionId);
     console.log(`[WorldRoom] Player removed: ${username} | remaining: ${this.state.players.size}`);
 
-    if (!isAnonId(playerId)) {
-      await progressService.setPersistedHp(playerId, leavingHp).catch(logProgressError);
-      await progressService.flush(playerId).catch(logProgressError);
-    }
-
     const affected: [string, MatchState][] = [];
     this.state.matches.forEach((match, matchId) => {
       if (match.status !== 'playing') return;
@@ -1597,11 +1605,18 @@ export class WorldRoom extends Room<WorldState> {
         affected.push([matchId, match]);
       }
     });
-    if (affected.length === 0) return;
 
-    // Freeze both clocks immediately (synchronously) for every affected match
-    // so nobody's time burns while their opponent is offline.
+    // Freeze both clocks immediately (synchronously, BEFORE any await) for
+    // every affected match so nobody's time burns while their opponent is
+    // offline — persistência lenta não pode derrubar a bandeira de quem caiu.
     for (const [, match] of affected) this.pauseMatchClock(match);
+
+    if (!isAnonId(playerId)) {
+      await progressService.setPersistedHp(playerId, leavingHp).catch(logProgressError);
+      await progressService.flush(playerId).catch(logProgressError);
+    }
+
+    if (affected.length === 0) return;
 
     // Reconnect window length (W.O. timeout from config; default 30s)
     let woGraceMs = 30_000;
@@ -1632,7 +1647,7 @@ export class WorldRoom extends Room<WorldState> {
       // immediate abandon — the player chose to leave. Tournament matches
       // always get the reconnect window; so do accidental drops in friendlies
       // (mobile screen lock, network blip).
-      if (!isTournamentMatch && consented) {
+      if (!isTournamentMatch && !match.botId && consented) {
         const m = this.state.matches.get(matchId);
         if (!m || m.status !== 'playing') continue;
         m.status = 'finished';
@@ -1670,6 +1685,7 @@ export class WorldRoom extends Room<WorldState> {
         const m = this.state.matches.get(matchId);
         if (!m || m.status !== 'playing') {
           if (byPlayer && byPlayer.size === 0) this.disconnectTimers.delete(matchId);
+          this.syncGraceHold();
           return;
         }
         // Belt & suspenders: if a reconnect slipped past timer cancellation,
@@ -1680,6 +1696,7 @@ export class WorldRoom extends Room<WorldState> {
             this.resumeMatchClock(m);
           }
           console.log(`[WorldRoom] Grace timer expired for ${playerId} but they are present — no W.O.`);
+          this.syncGraceHold();
           return;
         }
         // If the opponent is ALSO inside their own grace window, nobody wins.
@@ -1700,6 +1717,20 @@ export class WorldRoom extends Room<WorldState> {
       timers.set(playerId, timer);
       console.log(`[WorldRoom] Disconnect grace timer started for ${playerId} in match ${matchId} (${woGraceMs / 1000}s)`);
     }
+    this.syncGraceHold();
+  }
+
+  /**
+   * Mantém a sala viva enquanto houver janela de reconexão pendente. Numa
+   * partida contra bot (sala `academy`) o humano é o único cliente: com o
+   * autoDispose padrão o Colyseus fecharia a sala no instante da queda —
+   * perdendo a partida, o W.O. e o registro em `bot_games`. Sem timers
+   * pendentes o autoDispose volta e a sala vazia é descartada normalmente.
+   */
+  private syncGraceHold(): void {
+    let pending = false;
+    this.disconnectTimers.forEach((timers) => { if (timers.size > 0) pending = true; });
+    this.autoDispose = !pending;
   }
 
   async onDispose() {
@@ -2002,6 +2033,7 @@ export class WorldRoom extends Room<WorldState> {
       timers.forEach((t) => clearTimeout(t));
       this.disconnectTimers.delete(match.id);
     }
+    this.syncGraceHold();
   }
 
   private async broadcastMatchEnd(match: MatchState): Promise<void> {
@@ -2010,7 +2042,35 @@ export class WorldRoom extends Room<WorldState> {
       boardId: match.boardId,
       result: match.result,
       winnerId: match.winnerId,
+      unrated: !!match.botId,
+      botId: match.botId,
     });
+    if (match.botId) {
+      const info = this.botMatchInfo.get(match.id);
+      this.botMatchInfo.delete(match.id);
+      if (info) {
+        const humanColor = match.whitePlayerId === info.humanId ? 'w' : 'b';
+        const decisive = !!match.winnerId;
+        const result = !decisive ? (match.result === 'aborted' ? '*' : '1/2-1/2') :
+          match.winnerId === match.whitePlayerId ? '1-0' : '0-1';
+        const outcome = result === '*' ? 'aborted' : !decisive ? 'draw' :
+          match.winnerId === info.humanId ? 'win' : 'loss';
+        if (!isAnonId(info.humanId)) {
+          void insertBotGame({
+            userId: info.humanId, botId: info.bot.id, botName: info.bot.name,
+            botLevel: info.bot.level, playerColor: humanColor, result, outcome,
+            reason: match.result, timeMinutes: info.timeMinutes,
+            incrementSeconds: info.incrementSeconds, timeLabel: info.timeLabel,
+            movesCount: info.movesCount,
+            pgn: match.pgn, finalFen: match.fen, startedAt: info.startedAt,
+            finishedAt: new Date().toISOString(),
+          }).then((saved) => { if (!saved.ok) console.error(`[academy] falha ao salvar partida ${match.id}: ${saved.error}`); })
+            .catch((e) => console.error('[academy] falha ao salvar partida:', e));
+        }
+        console.log(`[academy] partida finalizada ${match.id}: ${result} (${match.result})`);
+      }
+      return;
+    }
     const isTournament = !!match.boardId && match.boardId.includes('_table_');
     const start = this.matchStartRecords.get(match.id)?.record;
     const startPersisted = this.matchStartRecords.get(match.id)?.persisted ?? Promise.resolve();
@@ -2122,6 +2182,93 @@ export class WorldRoom extends Room<WorldState> {
     } catch (err: any) {
       console.error(`[WorldRoom] Failed to report tournament result:`, err.message);
     }
+  }
+
+  private async createBotMatch(client: Client, data: CreateBotChallengePayload): Promise<void> {
+    const reject = (code: string, message: string) => client.send(ACADEMY_MSG.error, { code, message });
+    if (this.roomName !== ACADEMY_ROOM_NAME) return reject('wrong_room', 'Desafios de bot apenas na Academia.');
+    const player = this.state.players.get(client.sessionId);
+    if (!player || isAnonId(player.id) || this.combatResolver.isDead(client.sessionId)) return reject('auth_required', 'Entre com sua conta para desafiar um bot.');
+    const botId = botIdForTable(data?.boardId);
+    const board = this.state.boards.get(data?.boardId);
+    if (!botId || !board || board.status !== 'idle') return reject('board_unavailable', 'Mesa indisponível.');
+    if (player.currentBoardId || Array.from(this.state.matches.values()).some((m) =>
+      m.status === 'playing' && (m.whitePlayerId === player.id || m.blackPlayerId === player.id)) ||
+      Array.from(this.state.boards.values()).some((b) => b.status === 'waiting' && b.waitingPlayerId === player.id)) {
+      return reject('already_seated', 'Você já está em outra mesa.');
+    }
+    if (!Number.isFinite(data.baseMinutes) || data.baseMinutes < 1 || data.baseMinutes > 180 ||
+      !Number.isInteger(data.incrementSeconds) || data.incrementSeconds < 0 || data.incrementSeconds > 180 ||
+      typeof data.timeCategory !== 'string' || typeof data.timeLabel !== 'string' ||
+      !['w', 'b', 'random'].includes(data.side)) return reject('invalid_time', 'Controle de tempo ou cor inválidos.');
+    let bot: AcademyBot | undefined;
+    try { bot = (await getBots()).bots.find((b) => b.id === botId); }
+    catch (error) { return reject('config_unavailable', error instanceof Error ? error.message : String(error)); }
+    if (!bot || board.status !== 'idle' || !this.state.players.has(client.sessionId) || player.currentBoardId) return reject('board_unavailable', 'Mesa indisponível.');
+    const humanColor = data.side === 'random' ? (Math.random() < 0.5 ? 'w' : 'b') : data.side;
+    const match = new MatchState();
+    const now = Date.now();
+    const chess = new Chess();
+    match.id = nanoid();
+    match.botId = bot.id;
+    match.boardId = board.id;
+    match.region = player.region;
+    match.whitePlayerId = humanColor === 'w' ? player.id : botPlayerId(bot.id);
+    match.blackPlayerId = humanColor === 'b' ? player.id : botPlayerId(bot.id);
+    match.whitePlayerName = humanColor === 'w' ? player.username : bot.name;
+    match.blackPlayerName = humanColor === 'b' ? player.username : bot.name;
+    match.whitePlayerElo = humanColor === 'w' ? player.rating : 0;
+    match.blackPlayerElo = humanColor === 'b' ? player.rating : 0;
+    match.fen = chess.fen();
+    match.pgn = '';
+    match.status = 'playing';
+    match.turn = 'w';
+    match.whiteTimeMs = data.baseMinutes * 60_000;
+    match.blackTimeMs = match.whiteTimeMs;
+    match.incrementMs = data.incrementSeconds * 1000;
+    match.lastMoveAt = now;
+    board.status = 'playing';
+    board.timeCategory = data.timeCategory;
+    board.baseMinutes = data.baseMinutes;
+    board.incrementSeconds = data.incrementSeconds;
+    board.timeLabel = data.timeLabel;
+    board.whitePlayerId = match.whitePlayerId;
+    board.blackPlayerId = match.blackPlayerId;
+    board.matchId = match.id;
+    player.currentBoardId = board.id;
+    activeGames.set(match.id, chess);
+    this.state.matches.set(match.id, match);
+    this.botMatchInfo.set(match.id, { bot, humanId: player.id, startedAt: new Date(now).toISOString(),
+      timeMinutes: data.baseMinutes, incrementSeconds: data.incrementSeconds, timeLabel: data.timeLabel, movesCount: 0 });
+    client.send('match_started', { matchId: match.id, boardId: board.id, color: humanColor, botId: bot.id });
+    console.log(`[academy] partida iniciada ${match.id}: ${player.id} vs ${bot.id}`);
+  }
+
+  private applyChessMove(match: MatchState, data: { from: string; to: string; promotion?: string }, reject: (message: string) => void): void {
+    const game = activeGames.get(match.id);
+    if (!game || !data || typeof data.from !== 'string' || typeof data.to !== 'string') return reject('Lance inválido.');
+    const now = Date.now();
+    const elapsed = Math.max(0, now - match.lastMoveAt);
+    // Bandeira caída: o lance não vale; o tick adjudica o timeout.
+    const remaining = match.turn === 'w' ? match.whiteTimeMs : match.blackTimeMs;
+    if (match.clockPausedAt === 0 && remaining - elapsed <= 0) return reject('Tempo esgotado.');
+    let moveResult;
+    try { moveResult = game.move({ from: data.from, to: data.to, promotion: data.promotion || 'q' }); }
+    catch { return reject('Lance inválido.'); }
+    if (!moveResult) return reject('Lance inválido.');
+    if (match.turn === 'w') match.whiteTimeMs = Math.max(0, match.whiteTimeMs - elapsed + match.incrementMs);
+    else match.blackTimeMs = Math.max(0, match.blackTimeMs - elapsed + match.incrementMs);
+    match.fen = game.fen();
+    match.pgn = game.pgn();
+    match.turn = game.turn();
+    match.lastMoveAt = now;
+    match.lastMoveSan = moveResult.san;
+    match.lastMoveFrom = moveResult.from;
+    match.lastMoveTo = moveResult.to;
+    const botInfo = this.botMatchInfo.get(match.id);
+    if (botInfo) botInfo.movesCount++;
+    this.pendingDrawOffers.delete(match.id);
+    if (game.isGameOver()) void this.endMatch(match.id, game);
   }
 
   private startMatch(board: BoardState, joiningPlayer: PlayerState, joiningClient: Client) {

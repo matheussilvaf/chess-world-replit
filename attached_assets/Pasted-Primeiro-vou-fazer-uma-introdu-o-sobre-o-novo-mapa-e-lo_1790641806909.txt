@@ -1,0 +1,373 @@
+Primeiro vou fazer uma introdução sobre o novo mapa e logo abaixo eu vou explicar o que eu quero. Adicionei um novo mapa chamado tactics-academy.tmj dentro de world-v2. Este vai ser a área interna da tactics academy quando o jogador clicar para adentrar. Este mapa esta composto por 3 salas: Sala dos bots, onde tem 4 tabuleiros, que sao 4 bots e ao lado direito uma área onde futuramente vou pedir pra você adicionar estatisticas, mas por enquanto nao faça nada nessa parte. A sala do meio é a sala dos puzzles, onde temos um tabuleiro central, com os puzzle diário, e os outros 4 tabuleiros ao reador sao tabuleiros onde o jogador pode criar desafios de puzzle. A ultima sala de cima é a lesson room, uma sala de lições. onde o jogador vai poder aprender e praticar. Todos os tabuleiros dessa mapa seguem a mesma estrutura dos outros tabuleiros do mapa, então voce vai apenas replicar toda a funcionalidade jogavel de xadrez. Como voce pode ver na segunda imagem, eu criei uma pasta para cada tabuleiro, e dentro de cada pasta tem exatamente as object layers que voce vê na terceira imagem. Você já sabe como implementar o xadrez no tabuleiro, pois isso já existe no jogo, entao nao preciso explicar mais nada.  Tem a object layer building_interactions onde tem um objeto retangular chamado tactics_academy_exit_interactios, onde o jogador vai poder sair de lá e retornar ao mapa anterior. A object layer spawns tem o pin tactics_academy_entry_spawn, que é o spawn do jogador ao entrar. A object layer collisions tem todas as colisões do mapa, faça funcionar. 
+
+
+
+
+
+
+SALA DOS BOTS
+
+Quatro bots de xadrez jogáveis. Cada um tem nome de pessoa exibido no
+tabuleiro, com um rótulo de nível ao lado (Iniciante, Fácil,
+Intermediário, Avançado). O rating numérico nunca aparece ao jogador.
+
+O rótulo de nível nao deve ser textual, mas sim visual. Por exemplo: o nível máximo é representado por 4 barrinhas verticais, enquanto que o nível mínimo é apenas 1 barrinha, mude as cores de acordo com a subida do nível. Mas se você tiver outra ideia melhor, use a ideia melhor.
+Os nomes dos bots podem ser: Leo, Victor, Catarina e Marta, em ordem respectiva do iniciante até o avançado. 
+
+Engine: pacote npm "stockfish", build stockfish-19-lite-single,
+em Web Worker. Carregar só quando o jogador entrar na sala e encerrar
+o worker quando ele sair.
+
+Força dos bots — usar UCI_LimitStrength com UCI_Elo:
+  Iniciante     — UCI_Elo 1320, e sortear entre os 3 melhores lances
+  Fácil         — UCI_Elo 1500
+  Intermediário — UCI_Elo 1900
+  Avançado      — UCI_Elo 2400
+  movetime 800 em todos.
+
+Eu gostaria que você também criasse uma pagina de configurações desses bots em /admin, pra que eu possao mudar o nome deles e também definir os níveis deles dinamicamente.
+
+Não há opção de oferecer empate a um bot, claro.
+
+Os tabuleiros estarão sempre em status de aguardando um jogador aceitar um desafio. Mas quando o jogador clicar, o jogador vai poder escolher qual tipo de jogo quer jogar, assim como a cor que ele quer jogar.
+
+IMPORTANTE: não enfraquecer o bot reduzindo profundidade ou tempo.
+Isso produz um bot que joga perfeito e de repente entrega uma peça.
+UCI_Elo abaixo de 1320 não é calibrado pelo engine — por isso o
+Iniciante usa o sorteio entre os 3 melhores lances.
+
+Regras e validação de lances: chess.js.
+
+Partidas contra bot não alteram o rating Glicko e não geram Gambitos.
+Salvar o PGN de cada partida no histórico do jogador, no Supabase.
+
+Entregar primeiro uma página de teste isolada com um tabuleiro simples.
+Só integrar ao Phaser depois que os quatro bots estiverem jogando.
+
+
+
+----------
+
+SALA DE PUZZLES — Tactics Academy
+
+Banco: tabela "puzzles" no Supabase, importada do banco aberto do
+Lichess. Colunas: puzzle_id, fen, moves, rating, popularity, nb_plays,
+themes.
+
+FORMATO DOS DADOS — regra obrigatória:
+O campo "fen" é a posição ANTES do lance do adversário. O primeiro
+lance da coluna "moves" deve ser aplicado automaticamente, com
+animação, antes de o jogador poder jogar. A solução começa no segundo
+lance. Ao abrir o puzzle, informar ao jogador qual cor ele joga. Após
+cada lance correto dele, o lance seguinte da sequência é executado
+automaticamente pelo adversário.
+
+--- TABULEIRO CENTRAL: 3 PUZZLES DIÁRIOS ---
+
+Três puzzles por dia, iguais para todo o servidor, sorteados às 00:00.
+
+Resolução: cada puzzle dá 3 vidas. Lance errado tira uma vida e
+reinicia o puzzle do começo. Sem vidas, reprova no dia: mostra a
+solução e não paga nada.
+
+Recompensa proporcional às vidas restantes ao acertar:
+  3 vidas = 100% | 2 vidas = 70% | 1 vida = 40%
+
+Um jogador só pode tentar cada puzzle diário uma vez por dia.
+
+--- PÁGINA DE ADMINISTRAÇÃO ---
+
+Criar uma página na área de administração para configurar os 3 puzzles
+diários. Deve permitir, para cada um dos três slots:
+  - faixa de rating (mínimo e máximo)
+  - tema, escolhido numa lista com os temas disponíveis no banco
+  - recompensa base em Gambitos e em XP
+  - sortear agora, para pré-visualizar o puzzle que sairia
+  - fixar um puzzle específico pelo puzzle_id, sobrescrevendo o sorteio
+  - agendar a configuração para uma data futura
+
+Mostrar também quantos puzzles existem no banco que atendem à
+combinação de tema e faixa escolhida, para eu saber se o filtro está
+restritivo demais.
+
+--- 4 TABULEIROS DE DESAFIO ---
+
+Cada um dos quatro tabuleiros laterais aceita um desafio aberto entre
+dois jogadores. 
+
+Fluxo: o jogador clica num tabuleiro livre, escolhe o modo e a faixa de
+dificuldade, e o desafio fica visível no tabuleiro até alguém aceitar
+ou até expirar em 10 minutos. Quem aceita entra na mesma sala e a
+partida começa após contagem regressiva de 3 segundos.
+
+Os dois jogadores recebem exatamente os mesmos puzzles, você deve garantir isso, na mesma ordem.
+
+Cinco modos:
+  CORRIDA: 3 minutos. Vence quem resolver mais puzzles.
+
+  SEQUÊNCIA: A dificuldade sobe a cada acerto. Um erro encerra a vez do jogador. Vence quem for mais longe.
+
+  MELHOR DE 5, 10 ou 15:  um por vez, ambos veem ao mesmo tempo. Cada puzzle é vencido por quem resolver primeiro.
+  
+  SURVIVAL: Each player starts with: 3 lives. Same puzzle sequence. Wrong move lose 1 life and advance to next puzzle. Correct complete solution keep all lives and advance to next puzzle. A player reaching 0 lives loses. match lasts 3 min. If necessar use: remaining lives -> solved puzzles -> solving time as tie breakers. When one player solves
+
+
+  PRESSÃO: Ambos começam com 2 minutos. Cada acerto tira 10 segundos do relógio do adversário. Vence quem zerar o relógio do outro.
+
+Add a short description for every mode during the choice
+
+
+
+Faixas de dificuldade, escolhidas por quem cria o desafio:
+  Iniciante 600-1100 | Intermediário 1100-1600
+  Avançado 1600-2100 | Mestre 2100-2600
+
+
+During the creating of the puzzle battle, add a toggle that asks if the player wants to inform the theme of the puzzle for players to see what the puzzle is about. if yes, so you show it for every puzzle.
+
+Durante a batalha, cada jogador vê o progresso do adversário em tempo
+real, mas não vê o tabuleiro dele.
+
+Resultado das batalhas: XP e moedas. Não geram Gambitos. Registrar o
+histórico de batalhas de cada jogador no Supabase.
+
+
+
+
+
+-------
+Sala de lições:
+
+Ao clicar em qualquer tabuleiro da sala, abrir um painel com duas abas:
+LIÇÕES e PROBLEMAS.
+
+Mesmo banco e mesma regra de FEN do prompt da sala de puzzles: aplicar
+automaticamente o primeiro lance de "moves" antes de o jogador jogar,
+informar a cor que ele joga, e executar os lances do adversário
+automaticamente após cada acerto.
+
+--- ABA 1: LIÇÕES ---
+
+Lista de temas agrupados em categorias:
+
+  MATES
+    Mate em 1 · Mate em 2 · Mate em 3
+    Mate do Corredor · Mate Sufocado
+  TÁTICAS FUNDAMENTAIS
+    Garfo · Cravada · Espeto · Ataque Descoberto · Xeque Duplo
+    Peça Pendurada · Peça Presa
+  TÁTICAS AVANÇADAS
+    Sacrifício · Desvio · Atração · Interferência
+    Ataque em Raio-X · Zugzwang
+  PEÕES E PROMOÇÃO
+    Peão Avançado · Promoção · Subpromoção
+  FINAIS
+    Final de Peões · Final de Torres · Final de Damas
+    Final de Cavalos · Final de Bispos
+
+Cada tema abre uma tela de três partes, nesta ordem:
+
+  1. EXPLICAÇÃO — texto curto definindo o conceito, 3 a 5 frases.
+     Este texto é conteúdo fixo. quero que voce crie as explicações previamente.
+
+  2. EXEMPLOS — 2 posições resolvidas, executadas passo a passo com
+     animação e comentário em cada lance, sem o jogador jogar. Botão
+     de avançar lance a lance. quero que voce crie as explicacoes e comentários.
+
+  3. PRÁTICA — 10 posições do banco, filtradas por aquele tema e pela
+     dificuldade escolhida pelo jogador. Aqui ele joga. Ao final,
+     mostrar quantas acertou e permitir refazer com 10 posições novas.
+
+Nível de dificuldade escolhido pelo jogador antes da prática:
+  Iniciante 600-1100 | Intermediário 1100-1600
+  Avançado 1600-2100 | Expert 2100-2600
+
+Marcar como concluído o tema em que o jogador acertar 8 das 10 na
+prática, em qualquer dificuldade. Tema concluído acende uma vela sobre
+a carteira correspondente no mapa da sala.
+
+
+
+BA 2: PROBLEMAS ---
+
+Create a clean filter interface.
+
+THEME
+
+Grouped using the Lichess theme organization:
+
+Mixed
+
+Game Phase:
+Opening
+Middlegame
+Endgame
+Rook Endgame
+Bishop Endgame
+Pawn Endgame
+Knight Endgame
+Queen Endgame
+Queen + Rook Endgame
+
+Tactical Motifs:
+Fork
+Pin
+Skewer
+Discovered Attack
+Double Check
+Hanging Piece
+Capturing Defender
+Trapped Piece
+Exposed King
+Sacrifice
+etc.
+
+Advanced:
+Attraction
+Deflection
+Interference
+Clearance
+Intermezzo
+Quiet Move
+Defensive Move
+X-Ray Attack
+Zugzwang
+etc.
+
+Checkmates:
+Mate
+Mate in 1
+Mate in 2
+Mate in 3
+Mate in 4
+Mate in 5+
+checkmate patterns
+
+Special:
+Castling
+En Passant
+Promotion
+Underpromotion
+
+Origin:
+Master
+Master vs Master
+Super GM
+
+==================================================
+DIFFICULTY
+==================================================
+
+Use exactly:
+
+Beginner < 1000
+Easy 1000–1399
+Intermediate 1400–1799
+Advanced 1800–2199
+Expert 2200–2599
+Master 2600+
+
+Allow:
+
+Any Difficulty
+
+as well.
+
+ADDITIONAL FILTERS
+==================================================
+
+Allow optional filtering by:
+
+Game Phase
+Puzzle Length:
+Any
+One Move
+Short
+Long
+Very Long
+
+Opening Tag
+
+Do not show technical database names like:
+
+mateIn2
+discoveredAttack
+
+to the player.
+
+Use readable UI labels.
+
+Reuse the exact existing Lichess puzzle execution logic.
+
+Remember:
+
+Lichess FEN is BEFORE the setup move.
+
+Apply Moves[0].
+
+Show the resulting position.
+
+Moves[1] is the player's first move.
+
+After every correct player move:
+automatically play the next opponent move.
+
+Continue until the solution ends.
+
+Automatically orient the board toward the solver.
+
+Display:
+
+White to move
+
+or
+
+Black to move.
+
+Do not expose future solution moves to the client before they are needed.
+
+Show useful training statistics:
+
+Lessons completed / total
+Total puzzles attempted
+Total puzzles solved on first attempt
+Overall first-attempt accuracy
+
+Accuracy by theme
+
+Examples:
+
+Fork 82%
+Pin 74%
+Skewer 61%
+Deflection 44%
+
+Show:
+
+Strongest Themes
+
+and
+
+Needs Practice
+
+Do not create a new game currency.
+
+Do not create a new player level system.
+
+This is training information only.
+
+==================================================
+PUZZLE HISTORY
+==================================================
+
+Store enough player puzzle history to avoid obvious repetition.
+
+For normal practice, do not intentionally show a recently completed puzzle again when other matching puzzles are available.
+
+Never load hundreds of thousands of puzzles into Node memory.
+
+Never scan the full table for every request.
+
+Never use ORDER BY RANDOM() over the complete puzzle table.
+
+Reuse the random_key selection mechanism created in the Puzzle Room implementation.

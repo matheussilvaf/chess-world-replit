@@ -4,8 +4,8 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "vite --config vite.config.ts --host 0.0.0.0",
-    "build": "vite build --config vite.config.ts",
+    "dev": "node scripts/copy-stockfish.mjs && vite --config vite.config.ts --host 0.0.0.0",
+    "build": "node scripts/copy-stockfish.mjs && vite build --config vite.config.ts",
     "serve": "vite preview --config vite.config.ts --host 0.0.0.0",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run"
@@ -89,6 +89,7 @@
     "poly-decomp": "^0.3.0",
     "react-router-dom": "^7.18.1",
     "socket.io-client": "^4.8.3",
+    "stockfish": "19.0.0",
     "zustand": "^5.0.14"
   }
 }

@@ -5,6 +5,8 @@ import { CRAFTING_MAP, isBelowPlayerLayer } from '../config/craftingMapConfig';
 import { CraftingMapRuntime } from '../world/CraftingMapRuntime';
 import { tmjCollisionShape } from '../world/tmjCollisionShapes';
 import { WORLD_TILESETS, ALL_TILESETS, EXTRA_TILESETS, findTilesetForGid, findTilesetForGidInMap, getTextureKeyForTileset } from '../config/worldAssets';
+import { embedExternalTilesets } from '../config/externalTilesets';
+import { ACADEMY_MAP_KEY, academyTableIdFromFolder } from '../../shared/academy/AcademyShapes';
 import { ArenaModuleManager } from '../map/ArenaModuleManager';
 import {
   getSelectedCharacter,
@@ -1228,15 +1230,18 @@ export class WorldScene extends Phaser.Scene {
   }
 
   private findTMJObjectLayer(layers: any[], name: string): any[] | null {
+    const objects: any[] = [];
+    let found = false;
     for (const l of layers) {
       if (l.type === 'group') {
-        const found = this.findTMJObjectLayer(l.layers || [], name);
-        if (found) return found;
+        const nested = this.findTMJObjectLayer(l.layers || [], name);
+        if (nested) { objects.push(...nested); found = true; }
       } else if (l.type === 'objectgroup' && l.name === name) {
-        return l.objects || [];
+        objects.push(...(l.objects || []));
+        found = true;
       }
     }
-    return null;
+    return found ? objects : null;
   }
 
   private setupCollisionsFromTMJ(mapKey?: string) {
@@ -1244,8 +1249,10 @@ export class WorldScene extends Phaser.Scene {
     const tmjData = this.cache.tilemap.get(key)?.data;
     if (!tmjData) return;
 
-    const collisionObjects = this.findObjectLayerInTMJ(tmjData.layers, 'collisions');
-    if (!collisionObjects) return;
+    const collisionObjects = [
+      ...(this.findObjectLayerInTMJ(tmjData.layers, 'collisions') || []),
+      ...(this.findObjectLayerInTMJ(tmjData.layers, 'chessboard_collisions') || []),
+    ];
 
     for (const obj of collisionObjects) {
       const label = obj.name || `collision_${obj.id}`;
@@ -1282,15 +1289,18 @@ export class WorldScene extends Phaser.Scene {
   }
 
   private findObjectLayerInTMJ(layers: any[], name: string): any[] | null {
+    const objects: any[] = [];
+    let found = false;
     for (const l of layers) {
       if (l.type === 'group') {
-        const found = this.findObjectLayerInTMJ(l.layers || [], name);
-        if (found) return found;
+        const nested = this.findObjectLayerInTMJ(l.layers || [], name);
+        if (nested) { objects.push(...nested); found = true; }
       } else if (l.type === 'objectgroup' && l.name.toLowerCase() === name.toLowerCase()) {
-        return l.objects || [];
+        objects.push(...(l.objects || []));
+        found = true;
       }
     }
-    return null;
+    return found ? objects : null;
   }
 
   private createPolygonCollision(absoluteVerts: { x: number; y: number }[], label: string) {
@@ -3382,6 +3392,27 @@ export class WorldScene extends Phaser.Scene {
       return;
     }
 
+    embedExternalTilesets(tmjData);
+    if (mapKey === ACADEMY_MAP_KEY && !tmjData.__academyTablesNormalized) {
+      const normalize = (layers: any[], tableId: string | null = null): void => {
+        for (const layer of layers) {
+          if (layer.type === 'group') {
+            normalize(layer.layers || [], academyTableIdFromFolder(layer.name) ?? tableId);
+          } else if (layer.type === 'objectgroup' && tableId) {
+            if (layer.name === 'ui anchors') layer.name = 'ui_anchors';
+            for (const obj of layer.objects || []) {
+              obj.properties ??= [];
+              const property = obj.properties.find((p: any) => p.name === 'tableId');
+              if (property) property.value = tableId;
+              else obj.properties.push({ name: 'tableId', type: 'string', value: tableId });
+            }
+          }
+        }
+      };
+      normalize(tmjData.layers || []);
+      tmjData.__academyTablesNormalized = true;
+    }
+
     // Create Phaser tilemap
     const map = this.make.tilemap({ key: mapKey });
     this.currentTilemap = map;
@@ -3499,14 +3530,12 @@ export class WorldScene extends Phaser.Scene {
       return;
     }
 
-    let spawnObj: any = null;
-    for (const obj of spawns) {
-      const props: any[] = obj.properties || [];
-      const sid = props.find((p: any) => p.name === 'spawnId')?.value;
-      if (sid === spawnId || obj.name === spawnId) {
-        spawnObj = obj;
-        break;
-      }
+    const byId = (id: string) => spawns.find((obj: any) =>
+      (obj.properties || []).find((p: any) => p.name === 'spawnId')?.value === id);
+    const byName = (id: string) => spawns.find((obj: any) => obj.name === id);
+    let spawnObj: any = byId(spawnId) ?? byName(spawnId);
+    if (!spawnObj && this.currentMapKey === ACADEMY_MAP_KEY && spawnId === 'main_entrance') {
+      console.warn('[WorldScene] Spawn main_entrance ausente; usando o primeiro spawn da academia.');
     }
 
     if (!spawnObj) {
@@ -3516,6 +3545,7 @@ export class WorldScene extends Phaser.Scene {
         console.warn('[WorldScene] positionAtSpawn: spawn not found:', spawnId);
         return;
       }
+      console.warn('[WorldScene] Spawn não encontrado, usando primeiro:', spawnId);
     }
 
     const props: any[] = spawnObj.properties || [];

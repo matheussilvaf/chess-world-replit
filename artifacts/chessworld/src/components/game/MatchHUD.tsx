@@ -1,6 +1,9 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { useChessStore } from '../../stores/chessStore';
 import { Flag, Handshake, X, ChevronsLeft, ChevronLeft, ChevronRight, ChevronsRight } from 'lucide-react';
+import { botIdFromPlayerId, isBotPlayerId, type BotLevel } from '../../shared/academy/AcademyShapes';
+import { useAcademyStore } from '../../stores/academyStore';
+import { LevelBars } from '../academy/LevelBars';
 
 const INITIAL_FEN = 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1';
 
@@ -137,6 +140,7 @@ function truncNick(name: string): string {
 interface CompactTimerProps {
   name: string;
   elo: number;
+  botLevel?: BotLevel;
   timeMs: number;
   isActive: boolean;
   isLow: boolean;
@@ -149,6 +153,7 @@ interface CompactTimerProps {
 function CompactTimer({
   name,
   elo,
+  botLevel,
   timeMs,
   isActive,
   isLow,
@@ -183,9 +188,8 @@ function CompactTimer({
         <span className="text-white font-semibold text-[11px] leading-none truncate">
           {nick}
         </span>
-        <span className="text-slate-400 text-[10px] leading-none whitespace-nowrap flex-shrink-0">
-          ({elo})
-        </span>
+        {botLevel ? <span className="scale-[0.55] origin-left whitespace-nowrap"><LevelBars level={botLevel} /></span> :
+          <span className="text-slate-400 text-[10px] leading-none whitespace-nowrap flex-shrink-0">({elo})</span>}
       </div>
 
       {/* Row 2: clock + active pulse */}
@@ -256,6 +260,10 @@ export function MatchHUD() {
   const blackPlayerName = useChessStore(s => s.blackPlayerName);
   const whitePlayerElo = useChessStore(s => s.whitePlayerElo);
   const blackPlayerElo = useChessStore(s => s.blackPlayerElo);
+  const whitePlayerId = useChessStore(s => s.whitePlayerId);
+  const blackPlayerId = useChessStore(s => s.blackPlayerId);
+  const botId = useChessStore(s => s.botId);
+  const bots = useAcademyStore(s => s.bots);
   const drawOfferPending = useChessStore(s => s.drawOfferPending);
   const drawOfferedByUs = useChessStore(s => s.drawOfferedByUs);
   const drawNotice = useChessStore(s => s.drawNotice);
@@ -342,12 +350,16 @@ export function MatchHUD() {
 
   // From my perspective: opponent is on top, I am on the bottom
   const oppName = isBlack ? whitePlayerName : blackPlayerName;
+  const oppId = isBlack ? whitePlayerId : blackPlayerId;
+  const oppBot = bots.find(b => b.id === botIdFromPlayerId(oppId));
   const oppElo = isBlack ? whitePlayerElo : blackPlayerElo;
   const oppTime = isBlack ? displayWhite : displayBlack;
   const oppActive = isBlack ? turn === 'w' : turn === 'b';
   const oppColor: 'white' | 'black' = isBlack ? 'white' : 'black';
 
   const myName = isBlack ? blackPlayerName : whitePlayerName;
+  const myId = isBlack ? blackPlayerId : whitePlayerId;
+  const myBot = bots.find(b => b.id === botIdFromPlayerId(myId));
   const myElo = isBlack ? blackPlayerElo : whitePlayerElo;
   const myTime = isBlack ? displayBlack : displayWhite;
   const myActive = isBlack ? turn === 'b' : turn === 'w';
@@ -373,8 +385,9 @@ export function MatchHUD() {
       {/* ── Opponent timer — snug in the top-left corner, captures below ── */}
       <div className="fixed top-3 left-3 z-[200] flex flex-col items-start gap-1.5 pointer-events-none">
         <CompactTimer
-          name={oppName}
+          name={oppBot?.name ?? oppName}
           elo={oppElo}
+          botLevel={isBotPlayerId(oppId) ? oppBot?.level ?? 1 : undefined}
           timeMs={oppTime}
           isActive={oppActive}
           isLow={isLow(oppTime)}
@@ -424,7 +437,7 @@ export function MatchHUD() {
                     Resign
                   </button>
                   {/* Draw — solid blue */}
-                  <button
+                  {!botId && <button
                     onClick={handleDrawOffer}
                     disabled={drawOfferedByUs}
                     className={`w-full flex items-center gap-3 px-4 py-2.5 rounded-xl transition-colors text-sm font-semibold shadow-md ${
@@ -435,7 +448,7 @@ export function MatchHUD() {
                   >
                     <Handshake className="w-4 h-4 flex-shrink-0" />
                     {drawOfferedByUs ? 'Offered…' : 'Offer Draw'}
-                  </button>
+                  </button>}
                 </div>
               </div>
             </div>
@@ -443,8 +456,9 @@ export function MatchHUD() {
 
           {/* My timer (tap to open actions) */}
           <CompactTimer
-            name={myName}
+            name={myBot?.name ?? myName}
             elo={myElo}
+            botLevel={isBotPlayerId(myId) ? myBot?.level ?? 1 : undefined}
             timeMs={myTime}
             isActive={myActive}
             isLow={isLow(myTime)}

@@ -3,15 +3,17 @@ import { useGameStore } from '../../stores/gameStore';
 import { useAuthStore } from '../../stores/authStore';
 import { sendCreateChallenge, sendAcceptChallenge, sendBoardCancel } from '../../game/network/colyseusClient';
 import { X, Loader2, Swords, Zap, Timer, Clock, Eye, Crown } from 'lucide-react';
+import { botIdForTable } from '../../shared/academy/AcademyShapes';
+import { BotChallengeModal } from '../academy/BotChallengeModal';
 
-interface TimeControl {
+export interface TimeControl {
   label: string;
   time: number;
   increment: number;
   category: string;
 }
 
-const TIME_CONTROLS: { category: string; icon: React.ReactNode; controls: TimeControl[] }[] = [
+export const TIME_CONTROLS: { category: string; icon: React.ReactNode; controls: TimeControl[] }[] = [
   {
     category: 'Bullet',
     icon: <Zap className="w-4 h-4 text-yellow-400" />,
@@ -51,6 +53,8 @@ export function BoardModal() {
   const [submitting, setSubmitting] = useState(false);
 
   if (!selectedBoard) return null;
+  const botId = botIdForTable(selectedBoard.id);
+  if (botId) return <BotChallengeModal key={selectedBoard.id} botId={botId} boardId={selectedBoard.id} />;
 
   const boardState = colyseusBoards.find(b => b.id === selectedBoard.id || b.name === selectedBoard.name);
   const colyseusStatus = boardState?.status || 'idle';

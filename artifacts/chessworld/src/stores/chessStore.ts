@@ -21,6 +21,9 @@ interface ChessState {
   gameOver: boolean;
   result: string | null;
   winnerId: string | null;
+  botId: string;
+  unrated: boolean;
+  status: string;
   isSpectating: boolean;
   whiteTimeMs: number;
   blackTimeMs: number;
@@ -50,7 +53,7 @@ interface ChessState {
   syncFromColyseus: (matchData: any) => void;
   selectSquare: (square: string) => void;
   makeMove: (from: string, to: string, promotion?: string) => void;
-  finishMatchFromServer: (payload: { matchId: string; boardId?: string; result: string; winnerId?: string }) => void;
+  finishMatchFromServer: (payload: { matchId: string; boardId?: string; result: string; winnerId?: string; unrated?: boolean; botId?: string }) => void;
   resign: () => void;
   sendDrawOffer: () => void;
   acceptDraw: () => void;
@@ -85,6 +88,9 @@ export const useChessStore = create<ChessState>((set, get) => ({
   gameOver: false,
   result: null,
   winnerId: null,
+  botId: '',
+  unrated: false,
+  status: '',
   isSpectating: false,
   whiteTimeMs: 600000,
   blackTimeMs: 600000,
@@ -130,6 +136,9 @@ export const useChessStore = create<ChessState>((set, get) => ({
       gameOver: matchData ? matchData.status !== 'playing' : false,
       result: matchData?.result || null,
       winnerId: matchData?.winnerId || null,
+      botId: matchData?.botId || '',
+      unrated: !!matchData?.botId,
+      status: matchData?.status || 'playing',
       isSpectating: false,
       whiteTimeMs: matchData?.whiteTimeMs || 600000,
       blackTimeMs: matchData?.blackTimeMs || 600000,
@@ -178,6 +187,9 @@ export const useChessStore = create<ChessState>((set, get) => ({
       gameOver: matchData.status !== 'playing',
       result: matchData.result || null,
       winnerId: matchData.winnerId || null,
+      botId: matchData.botId || '',
+      unrated: !!matchData.botId,
+      status: matchData.status,
       isSpectating: true,
       whiteTimeMs: matchData.whiteTimeMs,
       blackTimeMs: matchData.blackTimeMs,
@@ -267,6 +279,8 @@ export const useChessStore = create<ChessState>((set, get) => ({
       gameOver: newGameOver,
       result: matchData.result || null,
       winnerId: matchData.winnerId || null,
+      botId: matchData.botId || get().botId,
+      status: matchData.status,
       whiteTimeMs: matchData.whiteTimeMs,
       blackTimeMs: matchData.blackTimeMs,
       lastMoveAt: matchData.lastMoveAt,
@@ -284,8 +298,8 @@ export const useChessStore = create<ChessState>((set, get) => ({
       // so they must not overwrite existing data.
       ...(matchData.whitePlayerName ? { whitePlayerName: matchData.whitePlayerName } : {}),
       ...(matchData.blackPlayerName ? { blackPlayerName: matchData.blackPlayerName } : {}),
-      ...(matchData.whitePlayerElo ? { whitePlayerElo: matchData.whitePlayerElo } : {}),
-      ...(matchData.blackPlayerElo ? { blackPlayerElo: matchData.blackPlayerElo } : {}),
+      ...(matchData.whitePlayerElo !== undefined ? { whitePlayerElo: matchData.whitePlayerElo } : {}),
+      ...(matchData.blackPlayerElo !== undefined ? { blackPlayerElo: matchData.blackPlayerElo } : {}),
       ...(matchData.whitePlayerId ? { whitePlayerId: matchData.whitePlayerId } : {}),
       ...(matchData.blackPlayerId ? { blackPlayerId: matchData.blackPlayerId } : {}),
     });
@@ -358,19 +372,24 @@ export const useChessStore = create<ChessState>((set, get) => ({
   finishMatchFromServer: (payload) => {
     const { matchId, gameOver } = get();
     if (!payload.matchId || payload.matchId !== matchId) return;
-    if (gameOver) return;
+    if (gameOver && !payload.unrated) return;
 
     const result = payload.result || 'unknown';
-    if (result === 'checkmate') {
-      chessAudio.play('checkmate');
-    } else {
-      chessAudio.play('gameOver');
+    if (!gameOver) {
+      if (result === 'checkmate') {
+        chessAudio.play('checkmate');
+      } else {
+        chessAudio.play('gameOver');
+      }
     }
 
     set({
       gameOver: true,
       result,
       winnerId: payload.winnerId || null,
+      status: 'finished',
+      botId: payload.botId || get().botId,
+      unrated: !!payload.unrated,
       isMyTurn: false,
       selectedSquare: null,
       validMoves: [],
@@ -384,8 +403,8 @@ export const useChessStore = create<ChessState>((set, get) => ({
   },
 
   sendDrawOffer: () => {
-    const { matchId, drawOfferPending, drawOfferedByUs, gameOver, isSpectating } = get();
-    if (!matchId || gameOver || isSpectating) return;
+    const { matchId, drawOfferPending, drawOfferedByUs, gameOver, isSpectating, botId } = get();
+    if (!matchId || gameOver || isSpectating || botId) return;
     // If an incoming offer is pending, it must be answered (Accept/Decline)
     // instead of sending a new one; if we already offered, wait for the reply.
     if (drawOfferPending || drawOfferedByUs) return;
@@ -471,7 +490,7 @@ export const useChessStore = create<ChessState>((set, get) => ({
     set({
       matchId: null, boardId: null, game: null, playerColor: null,
       selectedSquare: null, validMoves: [], isMyTurn: false, gameOver: false,
-      result: null, winnerId: null, isSpectating: false, showBoard: false,
+      result: null, winnerId: null, botId: '', unrated: false, status: '', isSpectating: false, showBoard: false,
       drawOfferPending: false, drawOfferedByUs: false, drawNotice: null,
       whiteTimeMs: 600000, blackTimeMs: 600000, lastMoveAt: Date.now(), clockPausedAt: 0,
       incrementMs: 0, turn: 'w', whitePlayerName: '', blackPlayerName: '',

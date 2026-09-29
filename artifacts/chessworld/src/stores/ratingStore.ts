@@ -18,6 +18,8 @@ import {
  *    chegar (ou sem rede) valem os defaults.
  */
 interface RatingState {
+  trainingEndAt: number;
+  setTrainingEnd: () => void;
   update: ChessRatingUpdateMessage | null;
   receivedAt: number;
   rules: RatingRulesConfig;
@@ -31,12 +33,14 @@ interface RatingState {
 let rulesRequest: Promise<void> | null = null;
 
 export const useRatingStore = create<RatingState>((set, get) => ({
+  trainingEndAt: 0,
+  setTrainingEnd: () => set({ trainingEndAt: Date.now(), update: null }),
   update: null,
   receivedAt: 0,
   rules: DEFAULT_RATING_GAMBITS_CONFIG.rating,
   rulesLoaded: false,
   setUpdate: (update) => set({ update, receivedAt: Date.now() }),
-  dismiss: () => set({ update: null, receivedAt: 0 }),
+  dismiss: () => set({ update: null, receivedAt: 0, trainingEndAt: 0 }),
   loadRules: async () => {
     if (get().rulesLoaded) return;
     if (rulesRequest) return rulesRequest;

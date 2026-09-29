@@ -26,6 +26,7 @@ Multiplayer chess world: players walk around a 2D world (Phaser), challenge each
 - `artifacts/api-server/src/src/` — espelho byte a byte de `server/src/` para rodar o servidor localmente dentro do monorepo. **Toda mudança de código Colyseus deve ser aplicada nas DUAS pastas** (`diff -rq server/src artifacts/api-server/src/src` deve sair vazio antes do commit).
 - `artifacts/chessworld/` — cliente web (React + Phaser), conecta no Colyseus via `VITE_COLYSEUS_URL`.
 - Dados persistentes (contas, ratings, histórico, config de torneio) — Supabase (Postgres), acessado pelo servidor Colyseus e pelo cliente.
+- **Tactics Academy** (mapa interno `public/assets/world-v2/tactics-academy.tmj`, sala Colyseus `academy` = mesma `WorldRoom`): contrato em `server/src/shared/academy/AcademyShapes.ts` (espelhado ×3), servidor em `server/src/academy/` (`GET /api/academy/bots`, `PUT /api/admin/academy/bots`, `GET /api/academy/bot-games/me`) + `createBotMatch`/`bot_move` na `WorldRoom`; SQL das tabelas `academy_bots`/`bot_games` em `server/supabase/tactics_academy_phase1.sql`. Cliente: engine Stockfish em Web Worker (`src/game/bots/`, assets copiados para `public/engine/` pelo `scripts/copy-stockfish.mjs` no dev/build), bancada isolada em `/dev/bots`, admin em `/admin/academy`.
 
 ## Architecture decisions
 
@@ -43,7 +44,9 @@ _Describe the high-level user-facing capabilities of this app once they exist._
 
 ## Gotchas
 
-_Populate as you build — sharp edges, "always run X before Y" rules._
+- Academia: força dos bots SÓ via `UCI_LimitStrength`+`UCI_Elo` (`BOT_ENGINE_PARAMS`), nível sempre em barras (nunca rating numérico); o lance do bot é calculado no navegador do humano e validado no servidor; partidas contra bot não mexem em Glicko/Gambitos e vão para `bot_games` (não `matches`).
+- O TMJ da academia usa tilesets externos (`.tsx`) e `tableId` duplicado por copiar/colar: `externalTilesets.ts` embute os tilesets em runtime e `WorldScene.switchMap` reescreve o `tableId` de cada mesa pelo nome da pasta do Tiled (`Bot_1` → `academy_bot_1`).
+- Numa sala com um único humano (academia), a `WorldRoom` desliga o `autoDispose` enquanto houver janela de reconexão pendente (`syncGraceHold`) — senão o Colyseus descarta a sala na queda e a partida some.
 
 ## Pointers
 

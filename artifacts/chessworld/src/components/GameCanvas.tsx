@@ -1,5 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { CRAFTING_MAP, CRAFT_REGION_PREFIX } from '../game/config/craftingMapConfig';
+import { ACADEMY_EXIT_SPAWN, ACADEMY_MAP_PATH, ACADEMY_TARGET_MAP, ACADEMY_MSG, botIdForTable } from '../shared/academy/AcademyShapes';
+import { useAcademyStore } from '../stores/academyStore';
+import { botEngine } from '../game/bots/botEngine';
 import Phaser from 'phaser';
 import { createPhaserGame, getWorldScene } from '../game/PhaserGame';
 import { useGameStore } from '../stores/gameStore';
@@ -9,6 +12,7 @@ import { useGameSettingsStore } from '../stores/gameSettingsStore';
 import { useInteractionStore } from '../stores/interactionStore';
 import {
   getActiveRoom,
+  getActiveRoomType,
   joinArenaRoom,
   leaveArenaRoom,
   joinWorldRoom,
@@ -173,6 +177,7 @@ export function GameCanvas() {
           if (!user || !profile || !region) return;
           const tableId = obj.properties.tableId as string;
           if (!tableId) return;
+          if (obj.category === 'player_seat' && botIdForTable(tableId) && obj.properties.position === 'top') return;
           const state = useGameStore.getState();
           if (state.selectedBoard || state.boardLocked) return;
 
@@ -220,12 +225,16 @@ export function GameCanvas() {
           const targetMap = obj.properties.targetMap as string;
           const targetSpawn = obj.properties.targetSpawn as string;
           let mapPath = '';
-          if (targetMap === 'tournament_arena_interior') {
+          let roomType: 'arena' | 'academy' = 'arena';
+          if (targetMap === ACADEMY_TARGET_MAP) {
+            mapPath = ACADEMY_MAP_PATH;
+            roomType = 'academy';
+          } else if (targetMap === 'tournament_arena_interior') {
             mapPath = '/assets/world-v2/tournament_reception.tmj';
           }
           if (mapPath && targetSpawn) {
             useInteractionStore.getState().setProximityObject(null);
-            transitionToRoom(scene, 'arena', mapPath, targetSpawn);
+            transitionToRoom(scene, roomType, mapPath, targetSpawn);
             return;
           }
         }
@@ -285,6 +294,8 @@ export function GameCanvas() {
       inventoryListenerCleanupRef.current = null;
       sceneReadyRef.current = false;
       usePlayerCharacterStore.getState().reset();
+      botEngine.shutdown();
+      useAcademyStore.getState().setInAcademy(false);
       setInventoryBridge(null);
       clearStationCraftBridge();
       if (gameRef.current) {
@@ -480,7 +491,7 @@ export function GameCanvas() {
 
   async function transitionToRoom(
     scene: WorldScene,
-    targetRoomType: 'world' | 'arena',
+    targetRoomType: 'world' | 'arena' | 'academy',
     mapPath: string,
     targetSpawn: string,
     opts?: { regionOverride?: string }
@@ -501,13 +512,18 @@ export function GameCanvas() {
 
       // 2. Destroy all remote players from the old room
       scene.destroyAllRemotePlayers();
+      if (getActiveRoomType() === 'academy' && targetRoomType !== 'academy') {
+        useAcademyStore.getState().setInAcademy(false);
+        botEngine.shutdown();
+      }
 
       // 3. Leave the current room. Viagem com TROCA DE REGIÃO (main ↔ Mundo de
       // Coleta) também sai da sala world já aqui — senão eventos da sala antiga
       // chegam durante o build do mapa. Teleportes na MESMA região (recepção de
       // torneio) continuam reusando a sala, como sempre.
-      if (targetRoomType === 'arena') {
+      if (targetRoomType !== 'world') {
         await leaveWorldRoom();
+        await leaveArenaRoom();
       } else {
         await leaveArenaRoom();
         if (getWorldRoomRegion() !== (opts?.regionOverride ?? region)) {
@@ -533,14 +549,23 @@ export function GameCanvas() {
       };
 
       let newRoom: Room<any>;
-      if (targetRoomType === 'arena') {
-        newRoom = await joinArenaRoom(options);
+      if (targetRoomType !== 'world') {
+        newRoom = await joinArenaRoom(options, targetRoomType);
       } else {
         newRoom = await joinWorldRoom(options);
       }
 
       // 6. Update connection store
       useColyseusStore.getState().setConnected(newRoom.sessionId, newRoom.roomId);
+      if (targetRoomType === 'academy') {
+        useAcademyStore.getState().setInAcademy(true);
+        void useAcademyStore.getState().loadBots();
+        botEngine.acquire().then(() => console.log('[Academia] Engine pronto:', botEngine.status()))
+          .catch((error) => console.error('[Academia] Falha ao carregar engine:', error));
+      } else {
+        useAcademyStore.getState().setInAcademy(false);
+        botEngine.shutdown();
+      }
 
       // 7. Attach listeners to new room
       if (!newRoom.state) {
@@ -555,6 +580,27 @@ export function GameCanvas() {
       return true;
     } catch (err) {
       console.error('[GameCanvas] Room transition failed:', err);
+      if (targetRoomType === 'academy') {
+        pushNotice({ title: 'A Academia ainda não está disponível neste servidor.' });
+        useAcademyStore.getState().setInAcademy(false);
+        botEngine.shutdown();
+        try {
+          await scene.switchMap('/assets/world-v2/main_world.tmj', ACADEMY_EXIT_SPAWN);
+          const { data } = await supabase.auth.getSession();
+          const player = scene.getPlayerPosition();
+          const recovery = await joinWorldRoom({
+            playerId: user.id, token: data.session?.access_token ?? null,
+            username: profile?.username || 'Player', rating: profile?.rating || 1200,
+            region, x: player.x, y: player.y,
+          });
+          useColyseusStore.getState().setConnected(recovery.sessionId, recovery.roomId);
+          if (recovery.state) validateAndAttach(scene, recovery);
+          else recovery.onStateChange.once(() => validateAndAttach(scene, recovery));
+        } catch (recoveryError) {
+          console.error('[Academia] Falha ao voltar ao mundo:', recoveryError);
+          pushNotice({ title: 'Não foi possível reconectar ao mundo. Recarregue a página.' });
+        }
+      }
       return false;
     } finally {
       transitionInProgressRef.current = false;
@@ -1289,8 +1335,15 @@ export function GameCanvas() {
     room.onMessage('state_contract', (data: any) => {
       console.log('[Colyseus] state_contract:', data);
     });
+    // Registrado em toda sala (só a `academy` envia): evita handler ausente se o
+    // flag inAcademy ainda não estiver setado quando a sala é anexada.
+    room.onMessage(ACADEMY_MSG.error, (data: { code?: string; message?: string }) => {
+      console.error('[Academia] Erro:', data.code, data.message);
+      pushNotice({ title: data.message || 'Não foi possível concluir a ação na Academia.' });
+    });
 
     room.onMessage('match_started', (data: any) => {
+      useRatingStore.getState().dismiss();
       useGameStore.getState().setLastEvent(`match_started ${data.matchId.slice(0, 8)}`);
       const userId = useAuthStore.getState().user?.id;
       if (!userId) return;
@@ -1391,6 +1444,7 @@ export function GameCanvas() {
     room.onMessage('match_finished', (data: any) => {
       useGameStore.getState().setLastEvent(`match_finished: ${data.result}`);
       useChessStore.getState().finishMatchFromServer(data);
+      if (data.unrated === true && data.botId) useRatingStore.getState().setTrainingEnd();
       setTimeout(() => {
         // The next tournament round may have begun during the 3s grace: a new
         // match is already open, or the sprite was just re-seated (possibly

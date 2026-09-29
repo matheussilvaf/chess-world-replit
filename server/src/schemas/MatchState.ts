@@ -3,6 +3,7 @@ import { Schema, defineTypes } from '@colyseus/schema';
 export class MatchState extends Schema {
   id!: string;
   boardId!: string;
+  botId!: string;
   region!: string;
   whitePlayerId!: string;
   blackPlayerId!: string;
@@ -30,6 +31,7 @@ export class MatchState extends Schema {
     super();
     this.id = '';
     this.boardId = '';
+    this.botId = '';
     this.region = '';
     this.whitePlayerId = '';
     this.blackPlayerId = '';
@@ -57,6 +59,7 @@ export class MatchState extends Schema {
 defineTypes(MatchState, {
   id: 'string',
   boardId: 'string',
+  botId: 'string',
   region: 'string',
   whitePlayerId: 'string',
   blackPlayerId: 'string',

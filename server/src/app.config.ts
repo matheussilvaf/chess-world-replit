@@ -1,7 +1,9 @@
+import { academyRouter, academyAdminRouter } from "./academy/academyRoutes.js";
 import type { ConfigOptions } from "@colyseus/tools";
 import { WebSocketTransport } from "@colyseus/ws-transport";
 import { monitor } from "@colyseus/monitor";
 import { WorldRoom } from "./rooms/WorldRoom.js";
+import { ACADEMY_ROOM_NAME } from "./shared/academy/AcademyShapes.js";
 import { TournamentRoom } from "./rooms/TournamentRoom.js";
 import type { Request, Response, NextFunction } from "express";
 import cors from "cors";
@@ -67,6 +69,7 @@ const config: ConfigOptions = {
   initializeGameServer: (gameServer) => {
     gameServer.define("world", WorldRoom).filterBy(["region"]);
     gameServer.define("arena", WorldRoom).filterBy(["region"]);
+    gameServer.define(ACADEMY_ROOM_NAME, WorldRoom).filterBy(["region"]);
     gameServer.define("tournament", TournamentRoom).filterBy(["tournamentId"]);
   },
 
@@ -239,6 +242,8 @@ const config: ConfigOptions = {
     app.get("/api/rating-config", publicRatingConfigHandler);
     app.use("/api/admin/rating-config", ratingAdminRouter);
     app.use("/api/admin/chess-matches", chessMatchesAdminRouter);
+    app.use("/api/academy", academyRouter);
+    app.use("/api/admin/academy", academyAdminRouter);
 
     app.use("/api/tournament", tournamentRouter);
     app.use("/api/coordinator", coordinatorRouter);
