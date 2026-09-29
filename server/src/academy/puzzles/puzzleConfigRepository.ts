@@ -4,7 +4,9 @@ import { checkPuzzleError, puzzleClient, PuzzleStorageError } from './puzzleRepo
 const configRow = (r: any): DailySlotConfig => ({
   slot: r.slot, ratingMin: r.rating_min, ratingMax: r.rating_max, theme: r.theme, rewardGambits: r.reward_gambits,
 });
-const defaultSet = (): DailyConfigSet => ({ effectiveFrom: '0001-01-01', slots: DEFAULT_DAILY_SLOT_CONFIGS.map((s) => ({ ...s })), updatedAt: null });
+const defaultSet = (): DailyConfigSet => ({ effectiveFrom: '0001-01-01', slots: DEFAULT_DAILY_SLOT_CONFIGS.map((s) => ({ ...s })), showThemes: true, updatedAt: null });
+/** SQL que adiciona a coluna `show_themes` (bancos criados antes dela). */
+export const SHOW_THEMES_MIGRATION = 'server/supabase/tactics_academy_daily_show_themes.sql';
 
 export async function listDailyConfigs(): Promise<DailyConfigSet[]> {
   const { data, error } = await puzzleClient().from('academy_daily_config').select('*').order('effective_from');
@@ -12,7 +14,8 @@ export async function listDailyConfigs(): Promise<DailyConfigSet[]> {
   const sets = new Map<string, DailyConfigSet>();
   for (const r of data ?? []) {
     let set = sets.get(r.effective_from);
-    if (!set) { set = { effectiveFrom: r.effective_from, slots: [], updatedAt: r.updated_at }; sets.set(r.effective_from, set); }
+    // `show_themes` é igual nas 3 linhas do conjunto; bancos sem a coluna (SQL não rodado) = tema visível.
+    if (!set) { set = { effectiveFrom: r.effective_from, slots: [], showThemes: r.show_themes ?? true, updatedAt: r.updated_at }; sets.set(r.effective_from, set); }
     set.slots.push(configRow(r));
   }
   if (!sets.has('0001-01-01')) sets.set('0001-01-01', defaultSet());
@@ -31,8 +34,10 @@ export async function saveDailyConfig(set: DailyConfigSet): Promise<void> {
   const client = puzzleClient();
   const { error } = await client.from('academy_daily_config').upsert(set.slots.map((s) => ({
     effective_from: set.effectiveFrom, slot: s.slot, rating_min: s.ratingMin, rating_max: s.ratingMax,
-    theme: s.theme, reward_gambits: s.rewardGambits, updated_at: new Date().toISOString(),
+    theme: s.theme, reward_gambits: s.rewardGambits, show_themes: set.showThemes, updated_at: new Date().toISOString(),
   })), { onConflict: 'effective_from,slot' });
+  // Coluna ausente = migração não aplicada: falha explícita em vez de gravar sem o toggle.
+  if (error && /show_themes/.test(error.message)) throw new PuzzleStorageError(`Coluna show_themes ausente — rode ${SHOW_THEMES_MIGRATION} no Supabase.`);
   checkPuzzleError(error);
 }
 export async function deleteDailyConfig(date: string): Promise<void> {

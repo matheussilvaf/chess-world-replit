@@ -136,11 +136,12 @@ export async function registerSolved(userId: string, date: string, slot: DailySl
 }
 export async function buildDailyState(userId: string, now = Date.now()): Promise<DailyStatePayload> {
   const date = dailyPuzzleDate(now);
-  const [draws, attempts] = await Promise.all([getDailyPuzzles(date), getAttempts(userId, date)]);
-  return { date, nextResetAt: dailyPuzzleNextReset(now), serverNow: now, schemaMissing: false,
+  const [draws, attempts, config] = await Promise.all([getDailyPuzzles(date), getAttempts(userId, date), resolveDailyConfigFor(date)]);
+  return { date, nextResetAt: dailyPuzzleNextReset(now), serverNow: now, schemaMissing: false, showThemes: config.showThemes,
     slots: draws.map((d) => {
       const a = attempts.find((row) => row.slot === d.slot);
-      return { puzzleId: d.puzzle.puzzleId, rating: d.puzzle.rating, themes: d.puzzle.themes,
+      // Tema oculto pela config do admin: não vai ao cliente.
+      return { puzzleId: d.puzzle.puzzleId, rating: d.puzzle.rating, themes: config.showThemes ? d.puzzle.themes : [],
         slot: d.slot, rewardGambits: d.rewardGambits, status: a?.status ?? 'available',
         livesLeft: a?.livesLeft ?? DAILY_PUZZLE_LIVES, earnedGambits: a?.earnedGambits ?? 0 };
     }) };

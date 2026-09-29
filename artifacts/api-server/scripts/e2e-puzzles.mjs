@@ -17,7 +17,7 @@ const tracks = new Map();
 function listen(room) {
   const messages = [];
   tracks.set(room, messages);
-  for (const type of ['academy_daily_state', 'academy_puzzle_started', 'academy_puzzle_feedback',
+  for (const type of ['academy_daily_state', 'academy_daily_seated', 'academy_puzzle_started', 'academy_puzzle_feedback',
     'academy_battle_state', 'academy_error']) room.onMessage(type, (data) => {
     messages.push({ type, data });
     console.log(type, JSON.stringify(data).slice(0, 300));
@@ -83,21 +83,36 @@ try {
   const { error: cleanupError } = await service.from('academy_daily_attempts').delete()
     .eq('user_id', userA.userId).eq('puzzle_date', date).eq('slot', 1);
   if (cleanupError && !['42P01', 'PGRST205'].includes(cleanupError.code)) throw cleanupError;
+  // A mesa do diário precisa existir na sala (o cliente real registra as mesas do mapa).
+  A.send('register_boards', { boards: [{ id: 'academy_puzzle_day', name: 'Puzzle do dia', x: 0, y: 0 }, { id: 'academy_challenge_1', name: 'Desafio 1', x: 0, y: 0 }] });
+  await wait(600);
   let cursor = tracks.get(A).length;
-  A.send('academy_daily_open', {});
+  // Sem cadeira, o servidor recusa iniciar o puzzle.
+  A.send('academy_daily_start', { slot: 1 });
+  const refused = await next(A, 'academy_error', () => true, cursor).catch(() => null);
+  if (!refused || refused.code !== 'not_seated') throw new Error(`Diário: start sem cadeira deveria falhar com not_seated (${JSON.stringify(refused)}).`);
+  cursor = tracks.get(A).length;
+  A.send('academy_daily_sit', { boardId: 'academy_puzzle_day' });
+  const seated = await next(A, 'academy_daily_seated', () => true, cursor);
+  if (seated.boardId !== 'academy_puzzle_day' || seated.seat !== 'bottom') throw new Error(`Diário: cadeira inesperada ${JSON.stringify(seated)}.`);
   const daily = await next(A, 'academy_daily_state', () => true, cursor);
+  if (typeof daily.showThemes !== 'boolean') throw new Error('Diário: dailyState sem showThemes.');
+  if (A.state.boards.get('academy_puzzle_day')?.whitePlayerId !== userA.userId) throw new Error('Diário: whitePlayerId da mesa não é o jogador sentado.');
   if (daily.schemaMissing) console.warn('⚠ Tabelas da fase 2 ausentes; ignorando teste diário.');
   else {
     cursor = tracks.get(A).length;
     A.send('academy_daily_start', { slot: 1 });
     const started = await next(A, 'academy_puzzle_started', (d) => d.context.kind === 'daily', cursor);
+    if (started.boardId !== 'academy_puzzle_day' || started.seat !== 'bottom') throw new Error('Diário: puzzleStarted sem mesa/cadeira.');
     cursor = tracks.get(A).length;
     const feedback = await failPuzzle(A, started);
     if (!feedback.restart || feedback.livesLeft !== 2) throw new Error('Diário: tentativa errada não reduziu vida para 2.');
     await next(A, 'academy_puzzle_started', (d) => d.context.kind === 'daily' && d.sessionId !== started.sessionId, cursor);
   }
-  A.send('register_boards', { boards: [{ id: 'academy_challenge_1', name: 'Desafio 1', x: 0, y: 0 }] });
-  await wait(600);
+  // Levanta da mesa do diário (senão a batalha recusa por já estar sentado) e confere a cadeira liberada.
+  A.send('academy_daily_leave', {});
+  for (let i = 0; i < 30 && A.state.boards.get('academy_puzzle_day')?.whitePlayerId; i++) await wait(100);
+  if (A.state.boards.get('academy_puzzle_day')?.whitePlayerId) throw new Error('Diário: cadeira não foi liberada ao levantar.');
   A.send('academy_battle_create', { boardId: 'academy_challenge_1', mode: 'race', band: 'beginner', showThemes: false });
   const board = A.state.boards.get('academy_challenge_1');
   for (let i = 0; i < 30 && board?.status !== 'waiting'; i++) await wait(100);
@@ -106,10 +121,12 @@ try {
   const cursorB = tracks.get(B).length;
   B.send('academy_battle_accept', { boardId: 'academy_challenge_1' });
   const countdown = await next(A, 'academy_battle_state', (d) => d.phase === 'countdown', cursor);
-  await next(B, 'academy_battle_state', (d) => d.phase === 'countdown', cursorB);
+  const countdownB = await next(B, 'academy_battle_state', (d) => d.phase === 'countdown', cursorB);
+  if (countdown.mySeat !== 'bottom' || countdownB.mySeat !== 'top') throw new Error(`Batalha: cadeiras inesperadas (${countdown.mySeat}/${countdownB.mySeat}).`);
   const startedA = await next(A, 'academy_puzzle_started', (d) => d.context.kind === 'battle', cursor, 20000);
   const startedB = await next(B, 'academy_puzzle_started', (d) => d.context.kind === 'battle', cursorB, 20000);
   if (startedA.puzzleId !== startedB.puzzleId) throw new Error('Puzzles iniciais dos jogadores não coincidem.');
+  if (startedA.boardId !== 'academy_challenge_1' || startedA.seat !== 'bottom' || startedB.seat !== 'top') throw new Error('Batalha: puzzleStarted sem mesa/cadeira corretas.');
   const afterB = tracks.get(B).length;
   await failPuzzle(B, startedB);
   const afterA = tracks.get(A).length;
@@ -121,6 +138,13 @@ try {
   A.send('academy_battle_leave', { battleId: countdown.battleId });
   const finished = await next(A, 'academy_battle_state', (d) => d.phase === 'finished', finishedAt);
   if (finished.result?.winnerId !== finished.opponent.playerId) throw new Error('Desistência não deu vitória a B.');
+  // Conexão duplicada do mesmo jogador (reconexão): a cadeira do diário da conexão antiga é liberada.
+  cursor = tracks.get(A).length;
+  A.send('academy_daily_sit', { boardId: 'academy_puzzle_day' });
+  await next(A, 'academy_daily_seated', () => true, cursor);
+  const A2 = await enter(userA);
+  for (let i = 0; i < 30 && A2.state.boards.get('academy_puzzle_day')?.whitePlayerId; i++) await wait(100);
+  if (A2.state.boards.get('academy_puzzle_day')?.whitePlayerId) throw new Error('Diário: cadeira não liberada na conexão duplicada.');
   console.log('✅ Protocolo diário e batalha verificado.');
 } catch (error) {
   console.error('❌ E2E Sala de Puzzles:', error);

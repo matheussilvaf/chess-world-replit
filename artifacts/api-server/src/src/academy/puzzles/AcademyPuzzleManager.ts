@@ -7,8 +7,9 @@ import { BattleEngine, type BattleEngineEvent } from '../../shared/academy/battl
 import { evaluatePlayerMove, puzzleSetup, puzzleSolutionMoves } from '../../shared/academy/puzzleSolver.js';
 import {
   BATTLE_CHALLENGE_TTL_MS, PUZZLE_MSG, dailyPuzzleDate, dailyPuzzleNextReset, isBattleMode, isDailySlot, isPuzzleBand,
-  puzzleMainThemes, type BattleCreatePayload, type PuzzleContext, type PuzzleErrorCode,
+  puzzleMainThemes, type BattleCreatePayload, type PuzzleContext, type PuzzleErrorCode, type PuzzleSeat,
 } from '../../shared/academy/PuzzleShapes.js';
+import { resolveDailyConfigFor } from './puzzleConfigRepository.js';
 import { getRatingConfigCached } from '../../rating/ratingConfigRepository.js';
 import { awardGambitsAtomic } from '../../rating/ratingRepository.js';
 import { gambitDayStart } from '../../shared/rating/RatingShapes.js';
@@ -16,7 +17,7 @@ import { getBattleRewards } from './puzzleConfigRepository.js';
 import { buildDailyState, getDailyPuzzles, registerSolved, registerWrongMove, startAttempt } from './dailyPuzzleService.js';
 import { checkPuzzleError, drawPuzzle, puzzleClient, PuzzleStorageError, type PuzzleRow } from './puzzleRepository.js';
 
-interface Session { id: string; userId: string; context: PuzzleContext; puzzle: PuzzleRow; k: number; date?: string }
+interface Session { id: string; userId: string; context: PuzzleContext; puzzle: PuzzleRow; k: number; date?: string; boardId: string; seat: PuzzleSeat }
 interface Battle {
   id: string; boardId: string; engine: BattleEngine; players: [string, string]; names: [string, string];
   showThemes: boolean; startedAt: string; puzzles: Map<number, PuzzleRow>; loading: Map<number, Promise<PuzzleRow>>;
@@ -34,6 +35,57 @@ export class AcademyPuzzleManager {
   private busy = new Set<string>();
   private lastTick = 0;
   constructor(private readonly room: Context) {}
+
+  // -------------------------------------------------------------------------
+  // Mesa do puzzle diário: duas cadeiras físicas (bottom = whitePlayerId,
+  // top = blackPlayerId no BoardState, como nas partidas normais, para os
+  // outros clientes sentarem o sprite). O puzzle em si é por jogador.
+  // -------------------------------------------------------------------------
+  private dailyBoard(): BoardState | undefined {
+    for (const board of this.room.state.boards.values()) if (academyTableKind(board.id) === 'puzzle_day') return board;
+    return undefined;
+  }
+  private dailySeatOf(userId: string): PuzzleSeat | null {
+    const board = this.dailyBoard();
+    if (!board) return null;
+    return board.whitePlayerId === userId ? 'bottom' : board.blackPlayerId === userId ? 'top' : null;
+  }
+  dailySit(client: Client, payload: unknown) {
+    const user = this.player(client);
+    const boardId = (payload as { boardId?: unknown } | null)?.boardId;
+    if (!user || user.id.startsWith('anon:')) { this.error(client, 'daily_unavailable', 'Entre na sua conta para resolver puzzles.'); return; }
+    const board = this.dailyBoard();
+    if (!board || board.id !== boardId) { this.error(client, 'board_missing', 'Mesa do puzzle diário não encontrada.'); return; }
+    let seat = this.dailySeatOf(user.id);
+    if (!seat) {
+      if (user.currentBoardId) { this.error(client, 'already_seated', 'Você já está em outra mesa.'); return; }
+      if (!board.whitePlayerId) seat = 'bottom';
+      else if (!board.blackPlayerId) seat = 'top';
+      else { this.error(client, 'board_busy', 'Mesa cheia — aguarde uma cadeira vagar.'); return; }
+      if (seat === 'bottom') board.whitePlayerId = user.id; else board.blackPlayerId = user.id;
+      board.status = 'playing';
+    }
+    // Reconexão com a cadeira ainda ocupada por este jogador: o PlayerState novo
+    // nasce sem mesa — restaura o vínculo para não sentar em duas mesas.
+    user.currentBoardId = board.id;
+    client.send(PUZZLE_MSG.dailySeated, { boardId: board.id, seat });
+    void this.dailyOpen(client);
+  }
+  private freeDailySeat(userId: string) {
+    const board = this.dailyBoard();
+    if (!board) return;
+    if (board.whitePlayerId === userId) board.whitePlayerId = '';
+    if (board.blackPlayerId === userId) board.blackPlayerId = '';
+    if (!board.whitePlayerId && !board.blackPlayerId) this.room.resetBoard(board);
+    for (const [key, s] of this.sessions) if (s.userId === userId && s.context.kind === 'daily') this.sessions.delete(key);
+  }
+  dailyLeave(client: Client) {
+    const user = this.player(client);
+    if (!user) return;
+    const board = this.dailyBoard();
+    if (user.currentBoardId && board && user.currentBoardId === board.id) user.currentBoardId = '';
+    this.freeDailySeat(user.id);
+  }
 
   private player(client: Client) { return this.room.state.players.get(client.sessionId); }
   private client(id: string): Client | undefined {
@@ -72,23 +124,44 @@ export class AcademyPuzzleManager {
       const slot = (payload as { slot?: unknown } | null)?.slot;
       const user = this.player(client);
       if (!isDailySlot(slot) || !user || user.id.startsWith('anon:')) { this.error(client, 'invalid_payload', 'Selecione um slot diário válido.'); return; }
+      const board = this.dailyBoard();
+      const seat = this.dailySeatOf(user.id);
+      if (!board || !seat) { this.error(client, 'not_seated', 'Sente-se na mesa do puzzle diário primeiro.'); return; }
       const date = dailyPuzzleDate();
       const draw = (await getDailyPuzzles(date)).find((d) => d.slot === slot);
       if (!draw) { this.error(client, 'no_puzzles', 'Puzzle diário não encontrado.'); return; }
       const attempt = await startAttempt(user.id, date, slot, draw.puzzle.puzzleId);
-      this.startSession(user.id, { kind: 'daily', slot }, draw.puzzle, attempt.livesLeft, date);
+      await this.startSession(user.id, { kind: 'daily', slot }, draw.puzzle, attempt.livesLeft, date);
     });
   }
-  private startSession(userId: string, context: PuzzleContext, puzzle: PuzzleRow, livesLeft?: number, date?: string, deadlineAt?: number) {
+  private async startSession(userId: string, context: PuzzleContext, puzzle: PuzzleRow, livesLeft?: number, date?: string, deadlineAt?: number) {
+    let seatInfo: { boardId: string; seat: PuzzleSeat } | undefined;
+    let showThemes: boolean;
+    if (context.kind === 'daily') {
+      showThemes = (await resolveDailyConfigFor(date ?? dailyPuzzleDate())).showThemes;
+      // A cadeira é lida DEPOIS do await: dailyLeave/desconexão podem ter
+      // liberado (ou outro jogador ocupado) a mesa enquanto a config carregava.
+      const board = this.dailyBoard();
+      const seat = this.dailySeatOf(userId);
+      if (board && seat) seatInfo = { boardId: board.id, seat };
+    } else {
+      const battle = this.battles.get(context.battleId);
+      showThemes = !!battle?.showThemes;
+      if (battle && battle.engine.phase === 'running' && battle.engine.currentIndex(userId) === context.index) {
+        seatInfo = { boardId: battle.boardId, seat: this.battleSeat(battle, userId) };
+      }
+    }
+    // Cliente resolvido só agora: quem desconectou durante o await não recebe sessão órfã.
     const client = this.client(userId);
-    if (!client) return;
+    if (!seatInfo || !client) return;
     for (const [key, s] of this.sessions) if (s.userId === userId && s.context.kind === context.kind) this.sessions.delete(key);
     const id = randomUUID();
-    this.sessions.set(id, { id, userId, context, puzzle, k: 0, date });
+    this.sessions.set(id, { id, userId, context, puzzle, k: 0, date, boardId: seatInfo.boardId, seat: seatInfo.seat });
     const setup = puzzleSetup(puzzle);
     client.send(PUZZLE_MSG.puzzleStarted, {
       sessionId: id, context, puzzleId: puzzle.puzzleId, rating: puzzle.rating,
-      themes: context.kind === 'daily' || this.battles.get(context.battleId)?.showThemes ? puzzleMainThemes(puzzle.themes) : [],
+      boardId: seatInfo.boardId, seat: seatInfo.seat,
+      themes: showThemes ? puzzleMainThemes(puzzle.themes) : [],
       fen: puzzle.fen, setupMove: setup.setupMove, playerColor: setup.playerColor,
       solutionLength: setup.solutionLength, ...(livesLeft !== undefined ? { livesLeft } : {}),
       ...(deadlineAt ? { deadlineAt } : {}),
@@ -128,7 +201,7 @@ export class AcademyPuzzleManager {
           else Object.assign(feedback, { solutionMoves: puzzleSolutionMoves(session.puzzle), dailyStatus: 'failed' });
         }
         client.send(PUZZLE_MSG.puzzleFeedback, feedback);
-        if (feedback.restart) this.startSession(user.id, { kind: 'daily', slot }, session.puzzle, feedback.livesLeft as number, date);
+        if (feedback.restart) await this.startSession(user.id, { kind: 'daily', slot }, session.puzzle, feedback.livesLeft as number, date);
         else client.send(PUZZLE_MSG.dailyState, await buildDailyState(user.id));
         return;
       }
@@ -222,13 +295,17 @@ export class AcademyPuzzleManager {
   private async prefetch(battle: Battle) {
     for (let index = 0; index <= battle.engine.highestNeededIndex(); index++) await this.puzzleAt(battle, index);
   }
+  /** Criador (whitePlayerId) senta embaixo; quem aceitou (blackPlayerId), em cima. */
+  private battleSeat(battle: Battle, userId: string): PuzzleSeat {
+    return battle.players[0] === userId ? 'bottom' : 'top';
+  }
   private sendState(battle: Battle) {
     for (const id of battle.players) {
       const c = this.client(id);
       if (!c) continue;
       const view = battle.engine.view(id, Date.now());
       c.send(PUZZLE_MSG.battleState, {
-        battleId: battle.id, boardId: battle.boardId, mode: battle.engine.mode, band: battle.engine.band,
+        battleId: battle.id, boardId: battle.boardId, mySeat: this.battleSeat(battle, id), mode: battle.engine.mode, band: battle.engine.band,
         showThemes: battle.showThemes, serverNow: Date.now(), ...view,
         ...(battle.rewards.has(id) ? { result: { ...view.result, myRewardGambits: battle.rewards.get(id)!.amount, gambitsBalance: battle.rewards.get(id)!.balance } } : {}),
       });
@@ -249,7 +326,7 @@ export class AcademyPuzzleManager {
         const puzzle = await this.puzzleAt(battle, event.index);
         // Enquanto o puzzle carregava a batalha pode ter acabado ou a rodada avançado: não reabrir sessão obsoleta.
         if (battle.engine.phase !== 'running' || battle.engine.currentIndex(event.playerId) !== event.index) continue;
-        this.startSession(event.playerId, { kind: 'battle', battleId: battle.id, index: event.index }, puzzle,
+        await this.startSession(event.playerId, { kind: 'battle', battleId: battle.id, index: event.index }, puzzle,
           battle.engine.view(event.playerId, Date.now()).me.lives, undefined,
           battle.engine.view(event.playerId, Date.now()).bestOf?.deadlineAt);
         void this.prefetch(battle).catch((e) => console.warn('[academy-puzzles] pré-carga:', e));
@@ -325,7 +402,7 @@ export class AcademyPuzzleManager {
         try {
           const index = battle.engine.currentIndex(id);
           const puzzle = await this.puzzleAt(battle, index);
-          this.startSession(id, { kind: 'battle', battleId: battle.id, index }, puzzle, battle.engine.view(id, Date.now()).me.lives,
+          await this.startSession(id, { kind: 'battle', battleId: battle.id, index }, puzzle, battle.engine.view(id, Date.now()).me.lives,
             undefined, battle.engine.view(id, Date.now()).bestOf?.deadlineAt);
         } catch (e) { this.failure(client, e); }
       }
@@ -334,11 +411,23 @@ export class AcademyPuzzleManager {
   onLeave(client: Client, consented: boolean) {
     const id = this.player(client)?.id;
     if (!id) return;
+    this.release(id, consented, client);
+  }
+  /**
+   * Conexão duplicada do mesmo jogador: a WorldRoom apaga o PlayerState antigo
+   * antes do onLeave dele rodar, então a liberação é feita por id aqui (não
+   * consentida: a batalha fica offline até o onJoin da nova conexão religar).
+   */
+  onStaleSession(playerId: string, staleClient: Client | undefined) {
+    this.release(playerId, false, staleClient);
+  }
+  private release(id: string, consented: boolean, client: Client | undefined) {
     for (const [key, session] of this.sessions) if (session.userId === id) this.sessions.delete(key);
+    this.freeDailySeat(id);
     for (const board of this.room.state.boards.values()) if (board.status === 'waiting' &&
       board.waitingPlayerId === id && academyTableKind(board.id) === 'puzzle_battle') this.closeChallenge(board, 'cancelled');
     for (const battle of this.battles.values()) if (battle.players.includes(id) && battle.engine.phase !== 'finished') {
-      if (consented) void this.events(battle, battle.engine.forfeit(id, Date.now())).catch((e) => this.failure(client, e));
+      if (consented) void this.events(battle, battle.engine.forfeit(id, Date.now())).catch((e) => { if (client) this.failure(client, e); else console.warn('[academy-puzzles]', e); });
       else { battle.engine.setOffline(id, true); if (battle.players.every((p) => battle.engine.view(p, Date.now()).me.offline)) battle.offlineSince = Date.now(); this.sendState(battle); }
     }
   }

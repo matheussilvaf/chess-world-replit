@@ -38,6 +38,7 @@ import { HUNT_MSG } from '../shared/hunting/HuntingShapes.js';
 import { inviteCoop, respondCoop } from '../hunting/HuntingCoop.js';
 import { registerClient, unregisterClient } from '../realtime/userNotify.js';
 import { presenceService } from '../presence/presenceService.js';
+import { isSpawnRoomName, resolveJoinSpawn } from '../shared/world/SpawnPoints.js';
 import { ACADEMY_MSG, ACADEMY_ROOM_NAME, botIdForTable, botPlayerId, isBotPlayerId, type CreateBotChallengePayload, type BotMovePayload, type AcademyBot } from '../shared/academy/AcademyShapes.js';
 import { getBots } from '../academy/academyBotsRepository.js';
 import { insertBotGame } from '../academy/botGamesRepository.js';
@@ -54,8 +55,11 @@ interface JoinOptions {
   /** Legado — IGNORADO (rating é server-authoritative). */
   rating?: number;
   region: string;
-  x: number;
-  y: number;
+  /** Legado — IGNORADOS (o servidor resolve o spawn por `spawnId`). */
+  x?: number;
+  y?: number;
+  /** Ponto de entrada pedido pelo cliente (só ids conhecidos em SpawnPoints). */
+  spawnId?: string;
 }
 
 const activeGames = new Map<string, Chess>();
@@ -298,6 +302,8 @@ export class WorldRoom extends Room<WorldState> {
       }
     });
     this.onMessage(PUZZLE_MSG.dailyOpen, (client) => void this.puzzles?.dailyOpen(client));
+    this.onMessage(PUZZLE_MSG.dailySit, (client, data) => this.puzzles?.dailySit(client, data));
+    this.onMessage(PUZZLE_MSG.dailyLeave, (client) => this.puzzles?.dailyLeave(client));
     this.onMessage(PUZZLE_MSG.dailyStart, (client, data) => void this.puzzles?.dailyStart(client, data));
     this.onMessage(PUZZLE_MSG.puzzleMove, (client, data) => void this.puzzles?.puzzleMove(client, data));
     this.onMessage(PUZZLE_MSG.battleCreate, (client, data) => this.puzzles?.battleCreate(client, data));
@@ -1461,9 +1467,12 @@ export class WorldRoom extends Room<WorldState> {
           reconnectPosition = { x: existing.x, y: existing.y };
         }
         console.log(`[WorldRoom] Duplicate player ${playerId}, removing stale session: ${existingSessionId}`);
+        const staleClient = this.clients.find(c => c.sessionId === existingSessionId);
+        // Sala de Puzzles: libera cadeira/sessões ANTES de apagar o PlayerState
+        // (o onLeave da conexão antiga já não encontra o jogador).
+        this.puzzles?.onStaleSession(existing.id, staleClient);
         this.state.voiceParticipants.delete(existingSessionId);
         this.state.players.delete(existingSessionId);
-        const staleClient = this.clients.find(c => c.sessionId === existingSessionId);
         if (staleClient) {
           unregisterClient(existing.id, staleClient);
           if (!isAnonId(existing.id)) presenceService.leave(existing.id, existingSessionId);
@@ -1480,9 +1489,9 @@ export class WorldRoom extends Room<WorldState> {
     // o inicial fica até o perfil responder (loadDisplayRating, logo abaixo).
     player.rating = DEFAULT_RATING_GAMBITS_CONFIG.rating.initialRating;
     player.region = this.region;
-    const spawn = reconnectPosition ?? (this.region.startsWith('craft:')
-      ? { x: 3256, y: 2246.67 }
-      : { x: 1273, y: 926 });
+    // Spawn por sala/região + `spawnId` da whitelist (nunca x/y do cliente).
+    const spawn = reconnectPosition ?? resolveJoinSpawn(
+      isSpawnRoomName(this.roomName) ? this.roomName : 'world', this.region, options.spawnId);
     player.x = spawn.x;
     player.y = spawn.y;
     player.targetX = player.x;

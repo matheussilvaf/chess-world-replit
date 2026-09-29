@@ -57,6 +57,8 @@ export async function joinWorldRoom(options: {
   region: string;
   x: number;
   y: number;
+  /** Ponto de entrada (id de spawn conhecido pelo servidor); o servidor resolve a posição. */
+  spawnId?: string;
 }): Promise<Room<any>> {
   if (!isColyseusConfigured()) {
     throw new Error('VITE_COLYSEUS_URL is not configured');
@@ -117,6 +119,7 @@ export async function joinArenaRoom(options: {
   region: string;
   x: number;
   y: number;
+  spawnId?: string;
 }, roomName: 'arena' | 'academy' = 'arena'): Promise<Room<any>> {
   if (!isColyseusConfigured()) {
     throw new Error('VITE_COLYSEUS_URL is not configured');

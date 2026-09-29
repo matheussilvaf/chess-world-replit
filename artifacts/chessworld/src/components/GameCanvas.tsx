@@ -2,8 +2,9 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { CRAFTING_MAP, CRAFT_REGION_PREFIX } from '../game/config/craftingMapConfig';
 import { ACADEMY_EXIT_SPAWN, ACADEMY_MAP_PATH, ACADEMY_TARGET_MAP, ACADEMY_MSG, botIdForTable } from '../shared/academy/AcademyShapes';
 import { useAcademyStore } from '../stores/academyStore';
-import { registerDailyPuzzleHandlers } from '../game/network/puzzleHandlers';
+import { registerDailyPuzzleHandlers, resetPuzzleClientState } from '../game/network/puzzleHandlers';
 import { registerBattleHandlers } from '../game/network/battleHandlers';
+import { academyTableKind } from '../shared/academy/AcademyShapes';
 import { botEngine } from '../game/bots/botEngine';
 import Phaser from 'phaser';
 import { createPhaserGame, getWorldScene } from '../game/PhaserGame';
@@ -518,6 +519,9 @@ export function GameCanvas() {
         useAcademyStore.getState().setInAcademy(false);
         botEngine.shutdown();
       }
+      // Sala de Puzzles: levanta da mesa e some com tabuleiro/HUD ANTES de trocar
+      // de mapa (senão o modo "em partida" da cena e o HUD sobrevivem à viagem).
+      resetPuzzleClientState();
 
       // 3. Leave the current room. Viagem com TROCA DE REGIÃO (main ↔ Mundo de
       // Coleta) também sai da sala world já aqui — senão eventos da sala antiga
@@ -548,6 +552,10 @@ export function GameCanvas() {
         region: opts?.regionOverride ?? region,
         x: pos.x,
         y: pos.y,
+        // O servidor nasce o jogador neste spawn (whitelist em shared/world/SpawnPoints).
+        // Sem isso ele nascia no spawn do mundo e rejeitava todo movimento seguinte:
+        // os outros jogadores viam o personagem congelado.
+        spawnId: targetSpawn,
       };
 
       let newRoom: Room<any>;
@@ -593,7 +601,7 @@ export function GameCanvas() {
           const recovery = await joinWorldRoom({
             playerId: user.id, token: data.session?.access_token ?? null,
             username: profile?.username || 'Player', rating: profile?.rating || 1200,
-            region, x: player.x, y: player.y,
+            region, x: player.x, y: player.y, spawnId: ACADEMY_EXIT_SPAWN,
           });
           useColyseusStore.getState().setConnected(recovery.sessionId, recovery.roomId);
           if (recovery.state) validateAndAttach(scene, recovery);
@@ -1637,8 +1645,18 @@ function updateBoardVisual(scene: WorldScene, board: any, room?: Room<any>) {
       battleExpiresAt: board.battleExpiresAt,
     });
   } else if (board.status === 'playing') {
-    if (/^academy_challenge_\d+$/.test(board.id)) {
+    const localUserId = useAuthStore.getState().user?.id;
+    const seatRemotes = () => {
+      if (board.whitePlayerId && board.whitePlayerId !== localUserId) scene.seatRemotePlayerById(board.whitePlayerId, 'bottom', board.id);
+      if (board.blackPlayerId && board.blackPlayerId !== localUserId) scene.seatRemotePlayerById(board.blackPlayerId, 'top', board.id);
+    };
+    const academyKind = academyTableKind(board.id);
+    if (academyKind === 'puzzle_battle' || academyKind === 'puzzle_day') {
+      // Mesas de puzzle: o tabuleiro não é revelado aos outros jogadores; só os
+      // sprites sentam (na mesa do diário cada cadeira pode vagar separadamente).
       scene.updateBoardStatus(board.id, 'playing');
+      scene.unseatRemotePlayersAtBoard(board.id, [board.whitePlayerId, board.blackPlayerId]);
+      seatRemotes();
       return;
     }
     let fen = '';
@@ -1651,14 +1669,7 @@ function updateBoardVisual(scene: WorldScene, board: any, room?: Room<any>) {
     }
     const fenToShow = fen || 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1';
     scene.updateBoardFEN(board.id, fenToShow);
-
-    const localUserId = useAuthStore.getState().user?.id;
-    if (board.whitePlayerId && board.whitePlayerId !== localUserId) {
-      scene.seatRemotePlayerById(board.whitePlayerId, 'bottom', board.id);
-    }
-    if (board.blackPlayerId && board.blackPlayerId !== localUserId) {
-      scene.seatRemotePlayerById(board.blackPlayerId, 'top', board.id);
-    }
+    seatRemotes();
   } else {
     scene.updateBoardStatus(board.id, 'idle');
     scene.unseatRemotePlayersAtBoard(board.id);

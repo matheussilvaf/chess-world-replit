@@ -34,3 +34,11 @@ description: Lições não óbvias da fase 1 da academia — Stockfish no browse
 - **Regra:** nas batalhas, aplicar `engine.tick(now)` (prazos de melhor-de-N/pressão/tempo) antes de aceitar um lance e passar o `index` da sessão ao `playerMove`; o engine descarta lance cujo índice mudou. Após qualquer `await` (carregar puzzle) revalidar fase/índice antes de abrir sessão. **Why:** lance atrasado pontuava no puzzle seguinte.
 - Pin do admin não altera sorteio com tentativas registradas (400 explicando); cache do sorteio diário tem TTL 60 s por processo.
 - Playwright não carrega o mundo Phaser (sem WebGL): validar UI pelas bancadas `/dev/puzzles` e `/dev/batalhas` (simulação local, sem servidor). Ao escrever plano de teste com lances, conferir a legalidade antes (um "erro" reportado era lance ilegal do plano, não bug).
+
+# Puzzles NA MESA do mapa (set/2026 — pedido explícito do usuário: nunca em modal)
+- Diário e batalhas usam um tabuleiro DOM genérico que segue `window.__tableScreenRects[boardId]` (mesma técnica do ChessBoardOverlay das partidas) + HUD com o layout das partidas (cartão sup. esq., chip inf. esq., timer central). A lista de slots do diário continua um painel leve que já SENTA o jogador ao abrir (`academy_daily_sit`) e levanta ao fechar sem puzzle em andamento.
+- **Regra:** `daily_start` exige cadeira; a cadeira é relida DEPOIS de todo `await` (config/puzzle) e o cliente resolvido só no fim — `dailyLeave`/queda no meio não pode abrir sessão órfã. Conexão duplicada: a WorldRoom apaga o PlayerState antigo antes do onLeave, então liberar cadeira/sessão por id (`onStaleSession`) ANTES do delete.
+- **Regra:** no cliente, zerar TODO o estado de puzzle (cadeira, painel, sessão, batalha + levantar sprite) ao anexar sala nova e antes de trocar de mapa; o modo "em partida" da WorldScene sobrevive ao switchMap se não for desfeito.
+- Zustand: seletor que devolve objeto novo (fen/lance derivado do replay) → loop "Maximum update depth"; derivar com useMemo a partir de primitivos.
+- Lance errado: casas piscam vermelho ~720 ms antes do reinício/solução (feedback chega, reinício aguarda o blink; `pending` guarda um start que chegou durante o blink).
+- Roteiros de teste: `puzzleSolutionMoves` exclui o lance de preparação (l1Pgu = 5 passos, não 6); recompensa parcial com 2 vidas = 70% (30 → 21).

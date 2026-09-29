@@ -137,6 +137,24 @@ export interface DailyStatePayload {
   serverNow: number;
   /** true quando as tabelas da fase 2 ainda não existem no Supabase. */
   schemaMissing: boolean;
+  /** Config do admin: mostrar o tema dos puzzles diários (lista e durante a resolução). */
+  showThemes: boolean;
+}
+
+/** Cadeira física da mesa (mesmo conceito das partidas normais: bottom = brancas). */
+export type PuzzleSeat = 'bottom' | 'top';
+export function isPuzzleSeat(v: unknown): v is PuzzleSeat {
+  return v === 'bottom' || v === 'top';
+}
+
+/** cliente → servidor (`PUZZLE_MSG.dailySit`): sentar na mesa do puzzle diário. */
+export interface DailySitPayload {
+  boardId: string;
+}
+/** servidor → cliente (`PUZZLE_MSG.dailySeated`): cadeira reservada nesta mesa. */
+export interface DailySeatedPayload {
+  boardId: string;
+  seat: PuzzleSeat;
 }
 
 // ---------------------------------------------------------------------------
@@ -152,6 +170,9 @@ export interface PuzzleStartedPayload extends PuzzleSummary {
   /** Identificador da sessão (vai em todo `puzzleMove`). Muda a cada reinício/puzzle. */
   sessionId: string;
   context: PuzzleContext;
+  /** Mesa do mapa onde o puzzle é resolvido e a cadeira do jogador nela. */
+  boardId: string;
+  seat: PuzzleSeat;
   /** Posição ANTES do lance de preparação. */
   fen: string;
   /** `moves[0]` em UCI — o cliente anima este lance antes de liberar o tabuleiro. */
@@ -163,7 +184,7 @@ export interface PuzzleStartedPayload extends PuzzleSummary {
   livesLeft?: number;
   /** Prazo (epoch ms) deste puzzle (Melhor de N). */
   deadlineAt?: number;
-  /** Temas só quando visíveis (diário sempre; batalha se `showThemes`). Vazio caso contrário. */
+  /** Temas só quando visíveis (diário: config do admin; batalha: `showThemes`). Vazio caso contrário. */
   themes: string[];
 }
 
@@ -303,6 +324,8 @@ export interface BattleResultView {
 export interface BattleStatePayload {
   battleId: string;
   boardId: string;
+  /** Minha cadeira na mesa (criador = bottom, quem aceitou = top). */
+  mySeat: PuzzleSeat;
   mode: BattleMode;
   band: PuzzleBand;
   showThemes: boolean;
@@ -345,6 +368,12 @@ export const PUZZLE_MSG = {
   dailyOpen: 'academy_daily_open',
   /** S→C DailyStatePayload */
   dailyState: 'academy_daily_state',
+  /** C→S DailySitPayload — reserva uma cadeira na mesa do puzzle diário (obrigatório antes de `dailyStart`). */
+  dailySit: 'academy_daily_sit',
+  /** S→C DailySeatedPayload */
+  dailySeated: 'academy_daily_seated',
+  /** C→S {} — levanta da mesa do puzzle diário (encerra a sessão aberta). */
+  dailyLeave: 'academy_daily_leave',
   /** C→S { slot } — começa (ou retoma do zero) a tentativa do slot. */
   dailyStart: 'academy_daily_start',
 
@@ -384,7 +413,7 @@ export interface BattleChallengeClosedPayload {
 export type PuzzleErrorCode =
   | 'schema_missing' | 'not_academy' | 'board_busy' | 'board_missing' | 'already_seated'
   | 'daily_done' | 'daily_unavailable' | 'session_invalid' | 'illegal_move' | 'battle_missing'
-  | 'battle_not_yours' | 'battle_self' | 'battle_expired' | 'invalid_payload' | 'no_puzzles';
+  | 'battle_not_yours' | 'battle_self' | 'battle_expired' | 'invalid_payload' | 'no_puzzles' | 'not_seated';
 
 // ---------------------------------------------------------------------------
 // BoardState (campos extras nos tabuleiros de desafio, Colyseus schema)
@@ -423,6 +452,8 @@ export interface DailyConfigSet {
   /** YYYY-MM-DD (fuso dos puzzles diários). '0001-01-01' = padrão sem agendamento. */
   effectiveFrom: string;
   slots: DailySlotConfig[];
+  /** Mostrar o tema dos puzzles diários aos jogadores (coluna `show_themes`). */
+  showThemes: boolean;
   updatedAt: string | null;
 }
 
@@ -460,6 +491,7 @@ export interface PuzzleAdminConfigResponse {
 export interface DailyConfigUpsertRequest {
   effectiveFrom: string;
   slots: DailySlotConfig[];
+  showThemes: boolean;
 }
 /** DELETE /api/admin/academy/puzzles/config/daily/:effectiveFrom (só agendamentos futuros). */
 

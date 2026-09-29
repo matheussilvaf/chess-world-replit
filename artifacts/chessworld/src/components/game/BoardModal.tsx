@@ -5,7 +5,7 @@ import { sendCreateChallenge, sendAcceptChallenge, sendBoardCancel } from '../..
 import { X, Loader2, Swords, Zap, Timer, Clock, Eye, Crown } from 'lucide-react';
 import { academyTableKind, botIdForTable } from '../../shared/academy/AcademyShapes';
 import { BotChallengeModal } from '../academy/BotChallengeModal';
-import { DailyPuzzlesModal } from '../academy/puzzles/DailyPuzzlesModal';
+import { DailyPuzzlePanel } from '../academy/puzzles/DailyPuzzlePanel';
 import { BattleChallengeModal } from '../academy/puzzles/BattleChallengeModal';
 import { LessonTablePlaceholder } from '../academy/LessonTablePlaceholder';
 
@@ -59,7 +59,7 @@ export function BoardModal() {
   const botId = botIdForTable(selectedBoard.id);
   if (botId) return <BotChallengeModal key={selectedBoard.id} botId={botId} boardId={selectedBoard.id} />;
   const academyKind = academyTableKind(selectedBoard.id);
-  if (academyKind === 'puzzle_day') return <DailyPuzzlesModal key={selectedBoard.id} boardId={selectedBoard.id} />;
+  if (academyKind === 'puzzle_day') return <DailyPuzzlePanel key={selectedBoard.id} boardId={selectedBoard.id} />;
   if (academyKind === 'puzzle_battle') return <BattleChallengeModal key={selectedBoard.id} boardId={selectedBoard.id} />;
   if (academyKind === 'lesson') return <LessonTablePlaceholder key={selectedBoard.id} />;
 

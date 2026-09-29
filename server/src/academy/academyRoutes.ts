@@ -114,9 +114,10 @@ academyAdminRouter.put('/puzzles/config/daily', route(async (req, res) => {
   if (!body || !validDate(body.effectiveFrom) || !Array.isArray(body.slots) || body.slots.length !== 3 ||
     new Set(body.slots.map((s) => s?.slot)).size !== 3 ||
     !body.slots.every((s) => isDailySlot(s?.slot) && validFilter(s) && typeof s.theme === 'string' &&
-      Number.isInteger(s.rewardGambits) && s.rewardGambits >= 0 && s.rewardGambits <= DAILY_REWARD_MAX_GAMBITS))
-    { bad(res, 'Informe data ISO e três slots válidos com rating, tema e recompensa.'); return; }
-  await saveDailyConfig({ effectiveFrom: body.effectiveFrom, slots: body.slots, updatedAt: null });
+      Number.isInteger(s.rewardGambits) && s.rewardGambits >= 0 && s.rewardGambits <= DAILY_REWARD_MAX_GAMBITS) ||
+    typeof body.showThemes !== 'boolean')
+    { bad(res, 'Informe data ISO, três slots válidos com rating, tema e recompensa, e se o tema é exibido.'); return; }
+  await saveDailyConfig({ effectiveFrom: body.effectiveFrom, slots: body.slots, showThemes: body.showThemes, updatedAt: null });
   res.json(await adminConfigDocument());
 }));
 academyAdminRouter.delete('/puzzles/config/daily/:effectiveFrom', route(async (req, res) => {

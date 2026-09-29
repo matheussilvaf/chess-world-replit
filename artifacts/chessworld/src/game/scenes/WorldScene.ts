@@ -2242,9 +2242,10 @@ export class WorldScene extends Phaser.Scene {
     this.restoreRemoteWalkTexture(remote);
   }
 
-  public unseatRemotePlayersAtBoard(boardId: string) {
+  /** Levanta os remotos sentados nesta mesa (exceto os `keepPlayerIds`, que continuam na cadeira). */
+  public unseatRemotePlayersAtBoard(boardId: string, keepPlayerIds: readonly string[] = []) {
     for (const remote of this.otherPlayers.values()) {
-      if (remote.seated && remote.seatedBoardId === boardId) {
+      if (remote.seated && remote.seatedBoardId === boardId && !keepPlayerIds.includes(remote.playerId)) {
         remote.seated = false;
         remote.seatedBoardId = '';
         remote.seatedSeat = '';

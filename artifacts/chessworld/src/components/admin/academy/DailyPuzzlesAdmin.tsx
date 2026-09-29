@@ -58,6 +58,7 @@ export function DailyPuzzlesAdmin({ section }: { section: 'daily' | 'battles' })
   const [themes, setThemes] = useState<PuzzleThemesResponse['themes']>([]);
   const [selected, setSelected] = useState(DEFAULT_DATE);
   const [slots, setSlots] = useState<DailySlotConfig[]>(copySlots(DEFAULT_DAILY_SLOT_CONFIGS));
+  const [showThemes, setShowThemes] = useState(true);
   const [rewards, setRewards] = useState<BattleRewardConfig>({ ...DEFAULT_BATTLE_REWARDS });
   const [date, setDate] = useState(dailyPuzzleDate());
   const [scheduleDate, setScheduleDate] = useState('');
@@ -77,7 +78,9 @@ export function DailyPuzzlesAdmin({ section }: { section: 'daily' | 'battles' })
       .then(([config, themeData]) => {
         if (!active) return;
         setData(config); setSchemaMissing(config.schemaMissing || themeData.schemaMissing);
-        setSlots(copySlots(config.configSets.find((s) => s.effectiveFrom === DEFAULT_DATE)?.slots ?? config.activeToday.slots));
+        const initial = config.configSets.find((s) => s.effectiveFrom === DEFAULT_DATE) ?? config.activeToday;
+        setSlots(copySlots(initial.slots));
+        setShowThemes(initial.showThemes ?? true);
         setRewards({ ...config.battleRewards });
         setThemes([...themeData.themes].sort((a, b) => puzzleThemeLabel(a.theme).localeCompare(puzzleThemeLabel(b.theme), 'pt-BR')));
       }).catch((cause) => { if (active) { setError(describeError(cause)); setSchemaMissing(missingSchema(cause)); } })
@@ -97,7 +100,7 @@ export function DailyPuzzlesAdmin({ section }: { section: 'daily' | 'battles' })
   function chooseSet(value: string) {
     setSelected(value); setSuccess(''); setError('');
     const set = data?.configSets.find((s) => s.effectiveFrom === value);
-    if (set) setSlots(copySlots(set.slots));
+    if (set) { setSlots(copySlots(set.slots)); setShowThemes(set.showThemes ?? true); }
   }
   function updateSlot(slot: DailySlot, patch: Partial<DailySlotConfig>) {
     setSlots((prev) => prev.map((s) => s.slot === slot ? { ...s, ...patch } : s));
@@ -127,8 +130,9 @@ export function DailyPuzzlesAdmin({ section }: { section: 'daily' | 'battles' })
     }
     const active = [...(data?.configSets ?? [])].filter((s) => s.effectiveFrom <= today).at(-1) ?? data?.activeToday;
     const copied = copySlots(active?.slots ?? slots);
-    const next = await action(() => academyApi.saveDailyPuzzleConfig({ effectiveFrom: scheduleDate, slots: copied }), `Agendamento criado para ${scheduleDate}.`);
-    if (next) { setSelected(scheduleDate); setSlots(copied); setScheduleDate(''); setScheduling(false); }
+    const copiedThemes = active?.showThemes ?? showThemes;
+    const next = await action(() => academyApi.saveDailyPuzzleConfig({ effectiveFrom: scheduleDate, slots: copied, showThemes: copiedThemes }), `Agendamento criado para ${scheduleDate}.`);
+    if (next) { setSelected(scheduleDate); setSlots(copied); setShowThemes(copiedThemes); setScheduleDate(''); setScheduling(false); }
   }
   const validSlots = slots.length === 3 && DAILY_PUZZLE_SLOTS.every((slot) => slots.some((s) => s.slot === slot && Number.isInteger(s.ratingMin) && s.ratingMin >= PUZZLE_RATING_MIN &&
     Number.isInteger(s.ratingMax) && s.ratingMax <= PUZZLE_RATING_MAX && s.ratingMax >= s.ratingMin && validReward(s.rewardGambits)));
@@ -162,11 +166,15 @@ export function DailyPuzzlesAdmin({ section }: { section: 'daily' | 'battles' })
         <div className="grid gap-4 lg:grid-cols-3">
           {slots.map((config) => <PuzzleSlotCard key={`${selected}-${config.slot}`} config={config} themes={themes} date={date} onChange={(patch) => updateSlot(config.slot, patch)} pinning={busy} onPin={(id) => pin(config.slot, id)} />)}
         </div>
+        <label className="flex items-center gap-2 text-sm">
+          <input type="checkbox" data-testid="daily-show-themes" checked={showThemes} onChange={(e) => { setShowThemes(e.target.checked); setSuccess(''); }} />
+          Mostrar tema dos puzzles aos jogadores (no painel do dia e no HUD da mesa)
+        </label>
         <div className="flex flex-wrap gap-3">
-          <button type="button" disabled={busy || !validSlots} onClick={() => void action(() => academyApi.saveDailyPuzzleConfig({ effectiveFrom: selected, slots }), 'Configuração diária salva.')} className={button}>{busy ? 'Salvando…' : 'Salvar conjunto'}</button>
+          <button type="button" disabled={busy || !validSlots} onClick={() => void action(() => academyApi.saveDailyPuzzleConfig({ effectiveFrom: selected, slots, showThemes }), 'Configuração diária salva.')} className={button}>{busy ? 'Salvando…' : 'Salvar conjunto'}</button>
           {selected !== DEFAULT_DATE && selected > today && <button type="button" disabled={busy} onClick={() => void (async () => {
             const next = await action(() => academyApi.deleteDailyPuzzleConfig(selected), 'Agendamento removido.');
-            if (next) { setSelected(DEFAULT_DATE); setSlots(copySlots(next.configSets.find((s) => s.effectiveFrom === DEFAULT_DATE)?.slots ?? next.activeToday.slots)); }
+            if (next) { const fallback = next.configSets.find((s) => s.effectiveFrom === DEFAULT_DATE) ?? next.activeToday; setSelected(DEFAULT_DATE); setSlots(copySlots(fallback.slots)); setShowThemes(fallback.showThemes ?? true); }
           })()} className="rounded border border-red-700 px-4 py-2 text-sm text-red-300 hover:bg-red-950 disabled:opacity-50">Remover agendamento</button>}
         </div>
       </section>

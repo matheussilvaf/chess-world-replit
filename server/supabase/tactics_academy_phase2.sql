@@ -26,9 +26,12 @@ CREATE TABLE IF NOT EXISTS public.academy_daily_config (
   rating_max int NOT NULL DEFAULT 1100,
   theme text NOT NULL DEFAULT '',
   reward_gambits int NOT NULL DEFAULT 0 CHECK (reward_gambits >= 0),
+  -- Mostrar o tema dos puzzles diários aos jogadores (igual nas 3 linhas do conjunto).
+  show_themes boolean NOT NULL DEFAULT true,
   updated_at timestamptz NOT NULL DEFAULT now(),
   PRIMARY KEY (effective_from, slot)
 );
+ALTER TABLE public.academy_daily_config ADD COLUMN IF NOT EXISTS show_themes boolean NOT NULL DEFAULT true;
 INSERT INTO public.academy_daily_config (effective_from, slot, rating_min, rating_max, theme, reward_gambits) VALUES
   ('0001-01-01', 1, 600, 1100, '', 10),
   ('0001-01-01', 2, 1100, 1600, '', 20),
