@@ -81,6 +81,25 @@ export const PROBLEM_THEME_GROUPS: { id: string; label: string; themes: string[]
 ];
 /** Rótulo localizado de uma opção de tema; nunca apresente chaves cruas ao usuário. */
 export function problemThemeLabel(theme: string): string { return theme === 'mixed' ? 'Misto' : puzzleThemeLabel(theme); }
+/** Famílias de abertura disponíveis no banco de problemas. */
+export const OPENING_FAMILIES = [
+  ['Sicilian_Defense', 'Defesa Siciliana'], ['French_Defense', 'Defesa Francesa'], ['Italian_Game', 'Abertura Italiana'],
+  ['Caro-Kann_Defense', 'Defesa Caro-Kann'], ['Queens_Pawn_Game', 'Peão da Dama'], ['Scandinavian_Defense', 'Defesa Escandinava'],
+  ['Queens_Gambit_Declined', 'Gambito da Dama Recusado'], ['English_Opening', 'Abertura Inglesa'], ['Ruy_Lopez', 'Ruy López (Espanhola)'],
+  ['Scotch_Game', 'Abertura Escocesa'], ['Indian_Defense', 'Defesa Índia'], ['Pirc_Defense', 'Defesa Pirc'],
+  ['Petrovs_Defense', 'Defesa Petrov'], ['Vienna_Game', 'Abertura Vienense'], ['Philidor_Defense', 'Defesa Philidor'],
+  ['Kings_Gambit_Accepted', 'Gambito do Rei Aceito'], ['Zukertort_Opening', 'Abertura Zukertort'], ['Bishops_Opening', 'Abertura do Bispo'],
+  ['Kings_Pawn_Game', 'Peão do Rei'], ['Englund_Gambit', 'Gambito Englund'], ['Four_Knights_Game', 'Quatro Cavalos'],
+  ['Slav_Defense', 'Defesa Eslava'], ['Modern_Defense', 'Defesa Moderna'], ['Nimzowitsch_Defense', 'Defesa Nimzowitsch'],
+  ['Bird_Opening', 'Abertura Bird'], ['Nimzo-Larsen_Attack', 'Ataque Nimzo-Larsen'], ['Benoni_Defense', 'Defesa Benoni'],
+  ['Queens_Gambit_Accepted', 'Gambito da Dama Aceito'], ['Alekhine_Defense', 'Defesa Alekhine'], ['Kings_Gambit_Declined', 'Gambito do Rei Recusado'],
+  ['Dutch_Defense', 'Defesa Holandesa'], ['Owen_Defense', 'Defesa Owen'], ['Kings_Indian_Defense', 'Defesa Índia do Rei'],
+  ['Horwitz_Defense', 'Defesa Horwitz'], ['Center_Game', 'Abertura do Centro'], ['Rapport-Jobava_System', 'Sistema Rapport-Jobava'],
+  ['Nimzo-Indian_Defense', 'Defesa Nimzo-Índia'], ['Semi-Slav_Defense', 'Defesa Semi-Eslava'], ['Elephant_Gambit', 'Gambito do Elefante'],
+  ['Blackmar-Diemer_Gambit', 'Gambito Blackmar-Diemer'], ['Ponziani_Opening', 'Abertura Ponziani'], ['Hungarian_Opening', 'Abertura Húngara'],
+  ['Rat_Defense', 'Defesa do Rato'], ['Russian_Game', 'Partida Russa'], ['Three_Knights_Opening', 'Três Cavalos'],
+  ['London_System', 'Sistema Londres'],
+] as const;
 /** Faixa de rating dos problemas. */
 export type ProblemDifficultyId = 'any' | 'beginner' | 'easy' | 'intermediate' | 'advanced' | 'expert' | 'master';
 /** Limites inclusivos das faixas dos problemas; 0 e 4000 representam limites abertos. */
@@ -99,19 +118,20 @@ export type ProblemPhaseId = 'any' | 'opening' | 'middlegame' | 'endgame';
 /** Rótulos de fase. */
 export const PROBLEM_PHASES: Record<ProblemPhaseId, string> = { any: 'Qualquer', opening: 'Abertura', middlegame: 'Meio-jogo', endgame: 'Final' };
 /** Seleção de filtros de um treino livre. */
-export interface ProblemFilters { theme: string | 'mixed'; difficulty: ProblemDifficultyId; length: ProblemLengthId; phase: ProblemPhaseId; opening?: string }
+export interface ProblemFilters { theme: string | 'mixed'; difficulty: ProblemDifficultyId; length: ProblemLengthId; phase: ProblemPhaseId; opening?: string; showTheme?: boolean }
 /** Seleção inicial sem restrições. */
-export const DEFAULT_PROBLEM_FILTERS: ProblemFilters = { theme: 'mixed', difficulty: 'any', length: 'any', phase: 'any' };
+export const DEFAULT_PROBLEM_FILTERS: ProblemFilters = { theme: 'mixed', difficulty: 'any', length: 'any', phase: 'any', showTheme: true };
 /** Valida todos os campos de filtros recebidos pela rede. */
 export function isProblemFilters(v: unknown): v is ProblemFilters {
   if (!v || typeof v !== 'object' || Array.isArray(v)) return false;
   const f = v as Record<string, unknown>;
-  return Object.keys(f).every((key) => ['theme', 'difficulty', 'length', 'phase', 'opening'].includes(key))
+  return Object.keys(f).every((key) => ['theme', 'difficulty', 'length', 'phase', 'opening', 'showTheme'].includes(key))
     && typeof f.theme === 'string' && PROBLEM_THEME_GROUPS.some((g) => g.themes.includes(f.theme as string))
     && typeof f.difficulty === 'string' && Object.prototype.hasOwnProperty.call(PROBLEM_DIFFICULTIES, f.difficulty)
     && typeof f.length === 'string' && Object.prototype.hasOwnProperty.call(PROBLEM_LENGTHS, f.length)
     && typeof f.phase === 'string' && Object.prototype.hasOwnProperty.call(PROBLEM_PHASES, f.phase)
-    && (f.opening === undefined || (typeof f.opening === 'string' && f.opening.length <= 64 && /^[A-Za-z0-9_-]+$/.test(f.opening)));
+    && (f.showTheme === undefined || typeof f.showTheme === 'boolean')
+    && (f.opening === undefined || f.opening === '' || (typeof f.opening === 'string' && OPENING_FAMILIES.some(([tag]) => tag === f.opening)));
 }
 /** Chaves que devem estar simultaneamente no array `themes` do banco. */
 export function problemFilterThemes(filters: ProblemFilters): string[] { return [...new Set([filters.theme, filters.length, filters.phase].filter((v) => v !== 'mixed' && v !== 'any'))]; }

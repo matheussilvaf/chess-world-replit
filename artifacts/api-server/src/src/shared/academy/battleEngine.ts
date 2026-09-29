@@ -19,6 +19,7 @@ export type BattleEngineEvent =
 interface Player {
   id: string;
   name: string;
+  color: 'w' | 'b';
   index: number;
   solved: number;
   failed: number;
@@ -54,7 +55,7 @@ export class BattleEngine {
     if (info.durationMs) this.endsAt = this.startsAt + info.durationMs;
     if (this.mode === 'pressure') this.endsAt = this.startsAt + 15 * 60_000; // teto de segurança
     this.players = opts.players.map(({ id, name }) => ({
-      id, name, index: 0, solved: 0, failed: 0,
+      id, name, color: 'w', index: 0, solved: 0, failed: 0,
       lives: info.lives, points: info.bestOf ? 0 : undefined,
       penaltyMs: 0, assignedAt: this.startsAt, solveTimeMs: 0,
       done: false, offline: false,
@@ -230,6 +231,12 @@ export class BattleEngine {
     return this.player(playerId).index;
   }
 
+  /** Atualiza a cor somente se a sessão ainda for do puzzle atual. */
+  setPuzzleColor(playerId: string, index: number, color: 'w' | 'b'): void {
+    const player = this.player(playerId);
+    if (player.index === index) player.color = color;
+  }
+
   highestNeededIndex(): number {
     return Math.max(...this.players.map((p) => p.index)) + BATTLE_PREFETCH;
   }
@@ -249,7 +256,7 @@ export class BattleEngine {
   } {
     const me = this.player(forPlayerId);
     const toView = (p: Player): BattlePlayerView => ({
-      playerId: p.id, name: p.name, index: p.index, solved: p.solved, failed: p.failed,
+      playerId: p.id, name: p.name, color: p.color, index: p.index, solved: p.solved, failed: p.failed,
       lives: p.lives, clockMs: this.mode === 'pressure'
         ? this.clock(p, this.phase === 'countdown' ? this.startsAt : this.phase === 'finished' ? this.finishedAt ?? now : now)
         : undefined,

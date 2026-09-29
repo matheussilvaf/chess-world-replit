@@ -8,6 +8,7 @@ import { WORLD_TILESETS, ALL_TILESETS, EXTRA_TILESETS, findTilesetForGid, findTi
 import { embedExternalTilesets } from '../config/externalTilesets';
 import { ACADEMY_MAP_KEY, academyTableIdFromFolder } from '../../shared/academy/AcademyShapes';
 import { puzzleThemeLabel } from '../../shared/academy/PuzzleShapes';
+import { AcademyStatsBoard } from '../academy/AcademyStatsBoard';
 import { ArenaModuleManager } from '../map/ArenaModuleManager';
 import {
   getSelectedCharacter,
@@ -404,6 +405,7 @@ export class WorldScene extends Phaser.Scene {
   private interactionSystem!: InteractionSystem;
   public tableRegistry: TableRegistry | null = null;
   private tournamentPanelAnchors: { registry: { x: number; y: number; width: number; height: number } | null; standings: { x: number; y: number; width: number; height: number } | null } = { registry: null, standings: null };
+  private academyStatsBoard: AcademyStatsBoard | null = null;
   private currentSeatInfo: { tableId: string; role: 'player' | 'spectator'; seat: string } | null = null;
   private seatTween: Phaser.Tweens.Tween | null = null;
   private savedCollisionFilter: any = null;
@@ -610,6 +612,7 @@ export class WorldScene extends Phaser.Scene {
       if (dist > DRAG_THRESHOLD) return;
       const worldPoint = this.cameras.main.getWorldPoint(pointer.x, pointer.y);
       // Don't walk if pointer is over an interactive object (handled by InteractionSystem)
+      if (this.academyStatsBoard?.hitTest(worldPoint.x, worldPoint.y)) return;
       if (this.interactionSystem?.hitTestPointer(worldPoint.x, worldPoint.y)) return;
       // Estação portátil posicionada: o clique abre o painel (zona interativa), não anda.
       if (this.placedStationLayer?.hitTest(worldPoint.x, worldPoint.y)) return;
@@ -654,6 +657,8 @@ export class WorldScene extends Phaser.Scene {
     );
 
     this.events.once('shutdown', () => {
+      this.academyStatsBoard?.destroy();
+      this.academyStatsBoard = null;
       this.keyboardControls?.destroy();
       this.keyboardControls = null;
       this.interactionSystem?.destroy();
@@ -1540,6 +1545,8 @@ export class WorldScene extends Phaser.Scene {
     const wp = this.cameras.main.getWorldPoint(pointer.x, pointer.y);
     // Hovering an interactive object mid-hold: keep the current path.
     if (this.interactionSystem?.hitTestPointer(wp.x, wp.y)) return;
+    // Segurar sobre o painel de estatísticas não caminha (as áreas clicáveis vencem o toque-para-andar).
+    if (this.academyStatsBoard?.contains(wp.x, wp.y)) return;
     this.lastHoldRepath = now;
     const last = this.lastHoldTarget;
     if (last && this.target && Math.hypot(wp.x - last.x, wp.y - last.y) <= HOLD_MOVE_MIN_DELTA_PX) {
@@ -2728,12 +2735,17 @@ export class WorldScene extends Phaser.Scene {
     const findUiAnchors = (layers: any[]): void => {
       for (const l of layers) {
         if (l.type === 'group') findUiAnchors(l.layers || []);
-        else if (l.type === 'objectgroup' && l.name === 'ui_anchors') {
+        else if (l.type === 'objectgroup' && (l.name === 'ui_anchors' || l.name === 'ui anchors')) {
           for (const obj of l.objects || []) {
             if (obj.name === 'tournament_registry_anchor') {
               this.tournamentPanelAnchors.registry = { x: obj.x, y: obj.y, width: obj.width, height: obj.height };
             } else if (obj.name === 'tournament_standings_anchor') {
               this.tournamentPanelAnchors.standings = { x: obj.x, y: obj.y, width: obj.width, height: obj.height };
+            } else if (obj.name === 'tactics_academy_stats' && key === ACADEMY_MAP_KEY) {
+              this.academyStatsBoard?.destroy();
+              this.academyStatsBoard = new AcademyStatsBoard(this, {
+                x: obj.x, y: obj.y, width: obj.width, height: obj.height,
+              });
             }
           }
         }
@@ -3158,6 +3170,8 @@ export class WorldScene extends Phaser.Scene {
   // =========================================================
 
   private teardownCurrentMap() {
+    this.academyStatsBoard?.destroy();
+    this.academyStatsBoard = null;
     // Mundo de Coleta: sprites de recursos/collections e timer da água
     this.craftingRuntime.teardown();
 

@@ -17,6 +17,11 @@ export function applyBattleState(data: BattleStatePayload): void {
   const previous = store.battle;
   store.setBattle(data);
   if (data.phase !== 'finished') store.setScreenOpen(true);
+  if (data.phase === 'finished') {
+    leavePuzzleTable();
+    useGameStore.getState().setSelectedBoard(null);
+    useGameStore.getState().setBoardLocked(false);
+  }
   if (data.phase === 'countdown' || data.phase === 'running') {
     if (previous?.battleId !== data.battleId) usePuzzleSessionStore.getState().clear();
     sitAtPuzzleTable(data.boardId, data.mySeat);
@@ -67,6 +72,19 @@ export const sendBattleAccept = (boardId: string) => send(PUZZLE_MSG.battleAccep
 export const sendBattleLeave = (battleId: string) => send(PUZZLE_MSG.battleLeave, { battleId });
 export const sendBattleMove = (sessionId: string, uci: string) => send(PUZZLE_MSG.puzzleMove, { sessionId, uci });
 export const sendBattleDismiss = () => send(PUZZLE_MSG.battleDismiss, {});
+
+/**
+ * Sentou em outra mesa com o resultado da batalha ainda aberto: o resultado sai
+ * sem levantar o jogador da NOVA cadeira (só limpa a batalha encerrada).
+ */
+export function dismissFinishedBattle(): void {
+  const store = useBattleStore.getState();
+  if (store.battle?.phase !== 'finished') return;
+  const room = getActiveRoomType() === 'academy' ? getActiveRoom() : null;
+  room?.send(PUZZLE_MSG.battleDismiss, {});
+  if (usePuzzleSessionStore.getState().puzzle?.context.kind === 'battle') usePuzzleSessionStore.getState().clear();
+  store.clear();
+}
 
 /** Fecha o resultado da batalha e levanta da mesa. */
 export function dismissBattle(): void {

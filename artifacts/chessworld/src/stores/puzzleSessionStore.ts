@@ -58,7 +58,11 @@ interface PuzzleSessionState {
   animationDone: () => void;
   /** Lance do jogador: aplica localmente e entra em `waiting`. false = ilegal/fora de hora. */
   playerMove: (uci: string) => boolean;
+  /** Passo do replay vindo do autoplay (não muda `manualSolution`). */
   setSolutionStep: (step: number) => void;
+  /** Navegação feita pelo jogador: desliga o autoplay até `setSolutionAutoplay(true)`. */
+  navigateSolution: (step: number) => void;
+  setSolutionAutoplay: (on: boolean) => void;
   clear: () => void;
 }
 
@@ -137,6 +141,8 @@ export const usePuzzleSessionStore = create<PuzzleSessionState>((set, get) => ({
   },
 
   setSolutionStep: (solutionStep) => set({ solutionStep }),
+  navigateSolution: (solutionStep) => set({ solutionStep, manualSolution: true }),
+  setSolutionAutoplay: (on) => set({ manualSolution: !on }),
 
   clear: () => {
     if (blinkTimer !== null) { window.clearTimeout(blinkTimer); blinkTimer = null; }

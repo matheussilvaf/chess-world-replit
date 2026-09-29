@@ -44,7 +44,8 @@ export default function LessonsBenchPage() {
       sessionId: current.id, context: current.kind === 'lesson'
         ? { kind: 'lesson', theme: current.theme, difficulty: current.difficulty, index: current.index, total: LESSON_PRACTICE_SIZE }
         : { kind: 'problem', index: current.index, filters: current.filters },
-      puzzleId: source.puzzleId, boardId: BOARD_ID, seat: 'bottom', rating: source.rating, themes: [theme],
+      puzzleId: source.puzzleId, boardId: BOARD_ID, seat: 'bottom', rating: source.rating,
+      themes: current.kind === 'problem' && current.filters.theme === 'mixed' && current.filters.showTheme === false ? [] : [theme],
       ...setup,
     };
     useLessonStore.getState().start(payload);
@@ -67,6 +68,9 @@ export default function LessonsBenchPage() {
         total: LESSON_PRACTICE_SIZE, completed, newlyCompleted: completed && !previous?.completed, reason });
     } else useLessonStore.getState().end({ kind: current.kind, ...(current.kind === 'lesson' ? { theme: current.theme, total: LESSON_PRACTICE_SIZE } : {}), solved: current.solved, attempted: current.attempted, reason });
     run.current = null;
+    useLessonStore.getState().setBoardId(BOARD_ID);
+    usePuzzleStore.getState().setSeat(null);
+    usePuzzleSessionStore.getState().clear();
     state();
     record('sessionEnd');
   };
@@ -87,6 +91,7 @@ export default function LessonsBenchPage() {
     },
     stop: () => finish('stopped'),
     leave: transport.leave,
+    sit: transport.sit,
     practiceStart: transport.practiceStart,
     openPanel: () => setPanel(true),
   };
@@ -108,7 +113,9 @@ export default function LessonsBenchPage() {
     window.setTimeout(() => {
       usePuzzleSessionStore.getState().applyFeedback({ sessionId: id, ok: result.ok, solved: result.solved,
         moveIndex: result.ok ? current.moveIndex - 1 : current.moveIndex, reply: result.reply,
+        ...(ended && current.kind === 'problem' && current.filters.theme === 'mixed' && current.filters.showTheme === false ? { themes: ['fork'] } : {}),
         ...(!result.ok ? { solutionMoves: puzzleSolutionMoves(source) } : {}) });
+      if (!result.ok) usePuzzleSessionStore.getState().setSolutionAutoplay(false);
       record('puzzleFeedback');
     }, 100);
   };

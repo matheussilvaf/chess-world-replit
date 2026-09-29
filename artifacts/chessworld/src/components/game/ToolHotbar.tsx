@@ -13,6 +13,7 @@ import { usePlayerCharacterStore } from '../../stores/playerCharacterStore';
 import { useCollectionInventoryStore, weaponSlotIndex } from '../../stores/collectionInventoryStore';
 import { INVENTORY_COLUMNS } from '../../shared/collection/CollectionShapes';
 import { useInventoryUiStore } from '../../stores/inventoryUiStore';
+import { useGameStore } from '../../stores/gameStore';
 import { useProgressStore } from '../../stores/progressStore';
 import { getInventoryBridge } from '../../game/inventory/inventoryBridge';
 import { canEat, eat } from '../../game/progress/eatBridge';
@@ -91,6 +92,8 @@ export function ToolHotbar() {
   const foods = useProgressStore((s) => s.config.energy.foods);
   const skillsOpen = useProgressStore((s) => s.skillsOpen);
   const toggleSkills = useProgressStore((s) => s.toggleSkills);
+  // Energia e acesso rápido só fazem sentido no Mundo de Coleta; Bolsa e Skills ficam em todo mapa.
+  const inCrafting = useGameStore((s) => s.currentWorld === 'crafting');
   const [badges, setBadges] = useState<CraftBadgeMap | null>(null);
   const [eatPreview, setEatPreview] = useState<EatPreview | null>(null);
   const barRef = useRef<HTMLDivElement | null>(null);
@@ -277,8 +280,9 @@ export function ToolHotbar() {
             </button>
           </div>
         )}
-        <EnergyBar />
-        <div className="pointer-events-auto flex w-full items-stretch gap-1.5 md:w-auto">
+        {inCrafting && <EnergyBar />}
+        <div className={`pointer-events-auto flex w-full items-stretch gap-1.5 md:w-auto ${inCrafting ? '' : 'justify-end'}`}>
+          {inCrafting && (
           <div
             ref={barRef}
             className="flex min-w-0 flex-1 items-center gap-1 overflow-hidden rounded-xl border-[3px] border-[#8a5a2b] bg-[#2a1a0e] p-1 shadow-[0_0_0_1px_#1a0f07,0_10px_28px_rgba(0,0,0,.6)] md:flex-none md:gap-1.5 md:p-1.5"
@@ -321,6 +325,7 @@ export function ToolHotbar() {
               );
             })}
           </div>
+          )}
           <button
             type="button"
             onClick={toggleInventory}

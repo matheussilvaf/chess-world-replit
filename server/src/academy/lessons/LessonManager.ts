@@ -141,7 +141,7 @@ export class LessonManager {
     if (!still()) return;
     if (!puzzle) { this.error(client, 'no_puzzles', 'Nenhum puzzle disponível para estes filtros.'); return; }
     const previous = this.sessions.get(user.id);
-    if (previous) this.end(previous, 'stopped');
+    if (previous?.current) this.byPuzzle.delete(previous.current.id);
     this.sessions.set(user.id, session);
     this.sendPuzzle(session, puzzle, client);
   }
@@ -177,7 +177,7 @@ export class LessonManager {
     const setup = puzzleSetup(puzzle);
     client.send(PUZZLE_MSG.puzzleStarted, {
       sessionId: id, context, puzzleId: puzzle.puzzleId, rating: puzzle.rating,
-      boardId: board.id, seat, themes: [], fen: puzzle.fen, setupMove: setup.setupMove,
+       boardId: board.id, seat, themes: session.kind === 'lesson' || session.filters!.theme !== 'mixed' || session.filters!.showTheme !== false ? puzzleMainThemes(puzzle.themes) : [], fen: puzzle.fen, setupMove: setup.setupMove,
       playerColor: setup.playerColor, solutionLength: setup.solutionLength,
     });
   }
@@ -206,6 +206,7 @@ export class LessonManager {
       session.attempted++;
       if (evaluation.solved) session.solved++;
       else feedback.solutionMoves = puzzleSolutionMoves(current.puzzle);
+       if (session.kind === 'problem' && session.filters!.theme === 'mixed' && session.filters!.showTheme === false) feedback.themes = puzzleMainThemes(current.puzzle.themes);
       client.send(PUZZLE_MSG.puzzleFeedback, feedback);
       await insertPuzzleHistory(user.id, {
         puzzleId: current.puzzle.puzzleId, mode: session.kind,
@@ -238,6 +239,7 @@ export class LessonManager {
     this.sessions.delete(session.userId);
     if (session.current) this.byPuzzle.delete(session.current.id);
     const client = this.client(session.userId);
+    if (reason !== 'left') this.releaseSeat(session.userId);
     const result: LessonSessionEndPayload = {
       kind: session.kind, solved: session.solved, attempted: session.attempted, reason,
       ...(session.kind === 'lesson' ? { theme: session.theme, total: LESSON_PRACTICE_SIZE } : {}),
@@ -288,6 +290,9 @@ export class LessonManager {
     this.generation.set(id, (this.generation.get(id) ?? 0) + 1);
     const session = this.sessions.get(id);
     if (session) void this.end(session, 'left');
+    this.releaseSeat(id);
+  }
+  private releaseSeat(id: string) {
     for (const board of this.room.state.boards.values()) if (academyTableKind(board.id) === 'lesson') {
       if (board.whitePlayerId === id) board.whitePlayerId = '';
       if (board.blackPlayerId === id) board.blackPlayerId = '';

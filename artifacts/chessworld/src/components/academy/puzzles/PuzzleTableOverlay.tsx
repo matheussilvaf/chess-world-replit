@@ -55,6 +55,8 @@ export function PuzzleTableOverlay({ onMove, rectOverride }: {
   }, [phase, solution, solutionStep, manualSolution]);
 
   if (!table) return null;
+  // Batalha encerrada: o jogador já levantou; só o modal de resultado fica (sem tabuleiro capturando cliques).
+  if (table.kind === 'battle' && table.battle?.phase === 'finished') return null;
   const hasPuzzle = !!puzzle && puzzle.boardId === table.boardId;
   const secondsLeft = countdown && battle ? Math.max(0, Math.ceil((battle.startsAt - battleServerTime({ battle, receivedAt }, now)) / 1000)) : 0;
   const dimmed = !hasPuzzle || countdown || battle?.phase === 'finished';

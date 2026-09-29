@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react';
-import { ChevronLeft, ChevronRight, Flag, LogOut, Puzzle, RotateCcw, X } from 'lucide-react';
+import { ChevronLeft, ChevronRight, Flag, LogOut, Pause, Play, Puzzle, RotateCcw, X } from 'lucide-react';
 import {
   BATTLE_MODE_INFO, PUZZLE_BAND_INFO, dailyRewardFor, puzzleDifficultyLabel, puzzleMainThemes, puzzleThemeLabel,
   type BattleEndReason, type BattlePlayerView,
@@ -70,6 +70,16 @@ function BottomRow({ left, right }: { left: ReactNode; right?: ReactNode }) {
   </div>;
 }
 
+/** Substitui o cartão inferior durante solução/conclusão, sem ocupar o tabuleiro. */
+function BottomStrip({ children, testId, tone = 'border-slate-600/60' }: { children: ReactNode; testId: string; tone?: string }) {
+  return <div className="pointer-events-none fixed inset-x-0 bottom-0 z-[220] flex justify-center" data-testid={testId}>
+    <div className={`pointer-events-auto flex min-h-10 w-full items-center justify-between gap-1 border-t bg-slate-900/95 px-2 py-1 text-xs text-white shadow-2xl backdrop-blur-md sm:px-4 ${tone}`}>
+      {children}
+    </div>
+  </div>;
+}
+const stripButton = 'flex h-7 flex-shrink-0 items-center justify-center rounded-md border border-slate-600/60 bg-slate-800 px-1.5 font-semibold text-slate-100 disabled:opacity-40 hover:bg-slate-700';
+
 /** Cartão central do topo: o único elemento lá em cima (modo, tempo, nível/tema e status). */
 function TopCard({ title, timer, meta, status, testId }: { title: string; timer?: string; meta?: string; status?: { text: string; tone: string } | null; testId?: string }) {
   return <div className="pointer-events-none fixed inset-x-3 top-3 z-[200] flex justify-center" data-testid={testId}>
@@ -102,7 +112,6 @@ function Toast({ bottom = 76, tone = 'border-slate-600/60', children, testId }: 
     </div>
   </div>;
 }
-const primaryButton = 'rounded-xl bg-amber-500 px-4 py-2 text-xs font-bold text-slate-950 hover:bg-amber-400 active:scale-95 transition-all';
 const ghostButton = 'rounded-xl border border-slate-600 px-4 py-2 text-xs font-bold text-slate-200 hover:bg-slate-800 active:scale-95 transition-all';
 
 /** Números do jogador na batalha, numa linha só (sem "Puzzle nº": o índice já aparece no cartão do topo). */
@@ -131,16 +140,19 @@ export function PuzzleHUD({ onLeaveDaily = leaveDailyTable, onOpenDaily, onForfe
   const moveNumber = usePuzzleSessionStore((s) => s.moveNumber);
   const feedback = usePuzzleSessionStore((s) => s.feedback);
   const solutionStep = usePuzzleSessionStore((s) => s.solutionStep);
+  const manualSolution = usePuzzleSessionStore((s) => s.manualSolution);
+  const setupFen = usePuzzleSessionStore((s) => s.setupFen);
   const daily = usePuzzleStore((s) => s.daily);
   const dailyOpen = usePuzzleStore((s) => s.dailyOpen);
   const receivedAt = useBattleStore((s) => s.receivedAt);
   const myName = useAuthStore((s) => s.profile?.username) ?? 'Você';
   const [showOptions, setShowOptions] = useState(false);
+  const [confirmForfeit, setConfirmForfeit] = useState(false);
   const optionsRef = useRef<HTMLDivElement>(null);
   const battle = table?.battle ?? null;
   const now = useNow(200, !!battle && battle.phase !== 'finished');
 
-  useEffect(() => { setShowOptions(false); }, [table?.kind, table?.boardId, battle?.phase]);
+  useEffect(() => { setShowOptions(false); setConfirmForfeit(false); }, [table?.kind, table?.boardId, battle?.phase]);
   useEffect(() => {
     if (!showOptions) return;
     const onDown = (e: MouseEvent | TouchEvent) => { if (!optionsRef.current?.contains(e.target as Node)) setShowOptions(false); };
@@ -152,7 +164,7 @@ export function PuzzleHUD({ onLeaveDaily = leaveDailyTable, onOpenDaily, onForfe
   if (!table || table.kind === 'lesson' || dailyOpen) return null;
   const hasPuzzle = !!puzzle && puzzle.boardId === table.boardId;
   const myColor = table.orientation;
-  const oppColor = myColor === 'w' ? 'b' : 'w';
+  const dailyColor = hasPuzzle ? (setupFen.split(' ')[1] === 'b' ? 'b' : 'w') : myColor;
   const status = hasPuzzle ? phaseText(phase, moveNumber, puzzle.solutionLength, feedback?.puzzleOverReason) : null;
   const solution = feedback?.solutionMoves;
   const openDaily = () => {
@@ -175,10 +187,11 @@ export function PuzzleHUD({ onLeaveDaily = leaveDailyTable, onOpenDaily, onForfe
     const meta = hasPuzzle
       ? [`${puzzleDifficultyLabel(puzzle.rating)} (${puzzle.rating})`, ...(themes.length ? [themes.map(puzzleThemeLabel).join(', ')] : [])].join(' · ')
       : 'Escolha um puzzle';
+    const showingStrip = hasPuzzle && (phase === 'solved' || (phase === 'solution' && !!solution));
     return <>
       <TopCard testId="puzzle-hud-daily" title={`Puzzle do dia${slot ? ` · slot ${slot}` : ''}`} meta={meta} status={status} />
 
-      <BottomRow left={<div ref={optionsRef} className="relative w-full">
+       {!showingStrip && <BottomRow left={<div ref={optionsRef} className="relative w-full">
         {showOptions && <OptionsCard onClose={() => setShowOptions(false)}>
           {!inProgress && <button type="button" data-testid="puzzle-another" onClick={() => { setShowOptions(false); openDaily(); }} className={`${optionButton} bg-amber-500 text-slate-950 hover:bg-amber-400`}>
             <Puzzle className="h-4 w-4 flex-shrink-0" />Outro puzzle</button>}
@@ -186,33 +199,38 @@ export function PuzzleHUD({ onLeaveDaily = leaveDailyTable, onOpenDaily, onForfe
             <LogOut className="h-4 w-4 flex-shrink-0" />Levantar</button>
         </OptionsCard>}
         <PlayerCard active={hasPuzzle && phase === 'ready'} clickable onClick={() => setShowOptions((v) => !v)} testId="puzzle-me-chip"
-          color={myColor} name={myName} tag={hasPuzzle ? (myColor === 'w' ? '(Brancas)' : '(Pretas)') : undefined}>
+           color={dailyColor} name={myName} tag={hasPuzzle ? (dailyColor === 'w' ? '(Brancas)' : '(Pretas)') : undefined}>
           <span className="text-rose-400" aria-label={`${lives ?? 0} vidas`}>{hearts(lives ?? 0)}</span>
           {hasPuzzle && <span className={phase === 'ready' ? 'text-emerald-400' : 'text-slate-400'}>{Math.min(moveNumber, puzzle.solutionLength)}/{puzzle.solutionLength}</span>}
           {hasPuzzle && slotView && !finished && lives !== undefined && <span className="text-[10px] font-normal text-amber-300">até {dailyRewardFor(slotView.rewardGambits, lives)} G</span>}
         </PlayerCard>
-      </div>} />
+       </div>} />}
 
       {hasPuzzle && phase === 'wrong' && <Toast tone="border-red-500/50" testId="puzzle-toast-wrong">
         <p className="text-xs font-semibold text-red-300">Lance errado</p>
         {lives !== undefined && <p className="text-[10px] text-slate-400">{lives > 0 ? `${lives} ${lives === 1 ? 'vida restante' : 'vidas restantes'} · o puzzle recomeça` : 'Sem vidas'}</p>}
       </Toast>}
-      {hasPuzzle && phase === 'solved' && <Toast tone="border-emerald-500/50" testId="puzzle-toast-solved">
-        <p className="text-sm font-bold text-emerald-300">Resolvido! +{feedback?.rewardGambits ?? 0} Gambitos</p>
-        <div className="flex gap-2"><button type="button" onClick={openDaily} className={primaryButton}>Outro puzzle</button>
-          <button type="button" onClick={onLeaveDaily} className={ghostButton}>Levantar</button></div>
-      </Toast>}
-      {hasPuzzle && phase === 'solution' && solution && <Toast tone="border-red-500/40" testId="puzzle-toast-solution">
-        <p className="text-xs font-semibold text-red-300">Sem vidas — veja a solução</p>
-        <div className="flex items-center gap-2 text-xs text-slate-200">
-          <button type="button" aria-label="Lance anterior" disabled={solutionStep === 0} onClick={() => usePuzzleSessionStore.getState().setSolutionStep(solutionStep - 1)} className="rounded-lg border border-slate-600/40 bg-slate-700/50 p-1.5 disabled:opacity-40"><ChevronLeft className="h-3.5 w-3.5" /></button>
-          <span className="font-mono">Solução {solutionStep}/{solution.length}</span>
-          <button type="button" aria-label="Próximo lance" disabled={solutionStep >= solution.length} onClick={() => usePuzzleSessionStore.getState().setSolutionStep(solutionStep + 1)} className="rounded-lg border border-slate-600/40 bg-slate-700/50 p-1.5 disabled:opacity-40"><ChevronRight className="h-3.5 w-3.5" /></button>
-          <button type="button" aria-label="Repetir" onClick={() => usePuzzleSessionStore.getState().setSolutionStep(0)} className="rounded-lg border border-slate-600/40 bg-slate-700/50 p-1.5"><RotateCcw className="h-3.5 w-3.5" /></button>
-        </div>
-        <div className="flex gap-2"><button type="button" onClick={openDaily} className={primaryButton}>Outro puzzle</button>
-          <button type="button" onClick={onLeaveDaily} className={ghostButton}>Levantar</button></div>
-      </Toast>}
+       {hasPuzzle && phase === 'solved' && <BottomStrip tone="border-emerald-500/50" testId="puzzle-toast-solved">
+         <span className="min-w-0 truncate font-bold text-emerald-300">Resolvido! +{feedback?.rewardGambits ?? 0} G</span>
+         <div className="flex flex-shrink-0 gap-1"><button type="button" onClick={openDaily} className={stripButton}>Outro puzzle</button>
+           <button type="button" onClick={onLeaveDaily} className={stripButton}>Levantar</button></div>
+       </BottomStrip>}
+       {hasPuzzle && phase === 'solution' && solution && <BottomStrip tone="border-red-500/40" testId="puzzle-toast-solution">
+         <span className="flex-shrink-0 font-mono text-[11px] text-red-300">Solução {solutionStep}/{solution.length}</span>
+         <div className="flex items-center gap-0.5">
+           <button type="button" aria-label="Repetir" onClick={() => { usePuzzleSessionStore.getState().setSolutionStep(0); usePuzzleSessionStore.getState().setSolutionAutoplay(true); }} className={stripButton}><RotateCcw className="h-3.5 w-3.5" /></button>
+           <button type="button" aria-label="Lance anterior" disabled={solutionStep === 0} onClick={() => usePuzzleSessionStore.getState().navigateSolution(solutionStep - 1)} className={stripButton}><ChevronLeft className="h-3.5 w-3.5" /></button>
+           <button type="button" aria-label="Próximo lance" disabled={solutionStep >= solution.length} onClick={() => usePuzzleSessionStore.getState().navigateSolution(solutionStep + 1)} className={stripButton}><ChevronRight className="h-3.5 w-3.5" /></button>
+           <button type="button" aria-label={manualSolution || solutionStep >= solution.length ? 'Reproduzir solução' : 'Pausar solução'} onClick={() => {
+             if (solutionStep >= solution.length) usePuzzleSessionStore.getState().setSolutionStep(0);
+             usePuzzleSessionStore.getState().setSolutionAutoplay(manualSolution || solutionStep >= solution.length);
+           }} className={stripButton}>
+             {manualSolution || solutionStep >= solution.length ? <Play className="h-3.5 w-3.5" /> : <Pause className="h-3.5 w-3.5" />}
+           </button>
+         </div>
+         <div className="flex flex-shrink-0 gap-0.5"><button type="button" onClick={openDaily} className={stripButton}>Outro puzzle</button>
+           <button type="button" onClick={onLeaveDaily} className={stripButton}>Levantar</button></div>
+       </BottomStrip>}
     </>;
   }
 
@@ -225,29 +243,41 @@ export function PuzzleHUD({ onLeaveDaily = leaveDailyTable, onOpenDaily, onForfe
     : battle.bestOf ? `${battle.bestOf.current + 1}/${battle.bestOf.total} · ${clock(battle.bestOf.deadlineAt - serverTime)}` : '';
   const outcome = battle.result?.winnerId === '' ? 'Empate' : battle.result?.winnerId === battle.me.playerId ? 'Você venceu!' : 'Você perdeu';
   const themes = hasPuzzle && battle.showThemes ? puzzleMainThemes(puzzle.themes) : [];
-  const title = [BATTLE_MODE_INFO[battle.mode].label, PUZZLE_BAND_INFO[battle.band].label, ...(battle.theme ? [puzzleThemeLabel(battle.theme)] : [])].join(' · ');
+   const requestedTheme = hasPuzzle && puzzle.themeFallback
+     ? `Tema: ${themes.length ? themes.map(puzzleThemeLabel).join(', ') : 'variado'}`
+     : battle.theme ? puzzleThemeLabel(battle.theme) : '';
+   const title = [BATTLE_MODE_INFO[battle.mode].label, PUZZLE_BAND_INFO[battle.band].label, requestedTheme].filter(Boolean).join(' · ');
   const meta = hasPuzzle && !finished
     ? [`Puzzle ${battle.me.index + 1}`, `${puzzleDifficultyLabel(puzzle.rating)} (${puzzle.rating})`, ...(themes.length ? [themes.map(puzzleThemeLabel).join(', ')] : [])].join(' · ')
     : undefined;
   return <>
     <TopCard testId="puzzle-hud-battle" title={title} timer={!finished && timer ? timer : undefined} meta={meta} status={!finished ? status : null} />
 
-    <BottomRow
+     <BottomRow
       left={<div ref={optionsRef} className="relative w-full">
         {showOptions && <OptionsCard onClose={() => setShowOptions(false)}>
-          {!finished && <button type="button" data-testid="battle-forfeit" onClick={() => { setShowOptions(false); if (window.confirm('Desistir desta batalha?')) onForfeit(battle.battleId); }} className={`${optionButton} bg-red-600 hover:bg-red-500 active:bg-red-700`}>
+           {!finished && <button type="button" data-testid="battle-forfeit" onClick={() => { setShowOptions(false); setConfirmForfeit(true); }} className={`${optionButton} bg-red-600 hover:bg-red-500 active:bg-red-700`}>
             <Flag className="h-4 w-4 flex-shrink-0" />Desistir</button>}
           {finished && <button type="button" onClick={() => { setShowOptions(false); onDismissBattle(); }} className={`${optionButton} bg-amber-500 text-slate-950 hover:bg-amber-400`}>
             <LogOut className="h-4 w-4 flex-shrink-0" />Levantar</button>}
         </OptionsCard>}
-        <PlayerCard active={!finished && hasPuzzle && phase === 'ready'} clickable onClick={() => setShowOptions((v) => !v)} testId="puzzle-me-chip" color={myColor} name={myName}>
+         <PlayerCard active={!finished && hasPuzzle && phase === 'ready'} clickable onClick={() => setShowOptions((v) => !v)} testId="puzzle-me-chip" color={battle.me.color} name={myName} tag={battle.me.color === 'w' ? '(Brancas)' : '(Pretas)'}>
           <BattleStats player={battle.me} elapsed={elapsed} />
         </PlayerCard>
       </div>}
-      right={<PlayerCard active={!finished && !battle.opponent.done} testId="battle-opponent-chip" color={oppColor} name={battle.opponent.name}>
+       right={<PlayerCard active={!finished && !battle.opponent.done} testId="battle-opponent-chip" color={battle.opponent.color} name={battle.opponent.name} tag={battle.opponent.color === 'w' ? '(Brancas)' : '(Pretas)'}>
         <BattleStats player={battle.opponent} elapsed={elapsed} />
       </PlayerCard>}
     />
+
+     {confirmForfeit && !finished && <div className="pointer-events-auto fixed inset-0 z-[240] flex items-center justify-center bg-black/40 p-4">
+       <section role="dialog" aria-modal="true" aria-label="Desistir da batalha?" className="w-full max-w-sm space-y-3 rounded-2xl border border-red-500/50 bg-slate-900 p-5 text-center text-white shadow-2xl">
+         <h3 className="text-xl font-bold">Desistir da batalha?</h3>
+         <p className="text-sm text-slate-300">Você perderá esta batalha.</p>
+         <div className="flex gap-2"><button type="button" onClick={() => setConfirmForfeit(false)} className={`${ghostButton} flex-1`}>Cancelar</button>
+           <button type="button" onClick={() => { setConfirmForfeit(false); onForfeit(battle.battleId); }} className="flex-1 rounded-xl bg-red-600 px-4 py-2 text-xs font-bold text-white hover:bg-red-500">Desistir</button></div>
+       </section>
+     </div>}
 
     {!finished && hasPuzzle && (phase === 'wrong' || phase === 'over' || phase === 'solved') && status && <Toast tone={phase === 'solved' ? 'border-emerald-500/50' : 'border-red-500/50'} testId="battle-toast">
       <p className={`text-xs font-semibold ${status.tone}`}>{status.text}</p>

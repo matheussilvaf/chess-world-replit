@@ -9,6 +9,7 @@ import { buildDailyState, invalidateDailyCache, previewDailyPuzzles } from './pu
 import { deleteDailyConfig, getBattleRewards, listDailyConfigs, listDailyPins, resolveDailyConfigFor, saveBattleRewards, saveDailyConfig, saveDailyPin } from './puzzles/puzzleConfigRepository.js';
 import { checkPuzzleError, countPuzzles, drawPuzzle, getPuzzleById, listThemeCounts, puzzleClient, PuzzleStorageError } from './puzzles/puzzleRepository.js';
 import { buildLessonState } from './lessons/lessonRepository.js';
+import { academyBoard, academySummary, statsBoards, statsPeriods, type StatsBoard, type StatsPeriod } from './stats/academyStatsService.js';
 
 export const academyRouter = Router();
 export const academyAdminRouter = Router();
@@ -87,6 +88,21 @@ academyRouter.get('/daily/me', requireSupabaseAuth, route(async (req, res) => {
 }));
 academyRouter.get('/lessons/me', requireSupabaseAuth, route(async (req, res) => {
   res.json(await buildLessonState((req as Request & { userId: string }).userId));
+}));
+academyRouter.get('/stats/board', requireSupabaseAuth, route(async (req, res) => {
+  const { board, period } = req.query;
+  const page = Number(req.query.page ?? 1);
+  const size = Number(req.query.size ?? 8);
+  if (typeof board !== 'string' || !statsBoards.includes(board as StatsBoard) ||
+    typeof period !== 'string' || !statsPeriods.includes(period as StatsPeriod) ||
+    !Number.isInteger(page) || page < 1 || page > 500 ||
+    !Number.isInteger(size) || size < 1 || size > 10) {
+    bad(res, 'Ranking, período ou paginação inválidos.'); return;
+  }
+  res.json(await academyBoard(board as StatsBoard, period as StatsPeriod, page, size, (req as Request & { userId: string }).userId));
+}));
+academyRouter.get('/stats/summary', requireSupabaseAuth, route(async (req, res) => {
+  res.json(await academySummary((req as Request & { userId: string }).userId));
 }));
 academyRouter.get('/battles/me', requireSupabaseAuth, route(async (req, res) => {
   const id = (req as Request & { userId: string }).userId;

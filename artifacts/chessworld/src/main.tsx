@@ -98,6 +98,7 @@ const BotsBenchPage = lazy(() => import('./components/dev/BotsBenchPage.tsx'));
 const BattlesBenchPage = import.meta.env.DEV ? lazy(() => import('./components/dev/BattlesBenchPage.tsx')) : null;
 const PuzzlesBenchPage = import.meta.env.DEV ? lazy(() => import('./components/dev/PuzzlesBenchPage.tsx')) : null;
 const LessonsBenchPage = import.meta.env.DEV ? lazy(() => import('./components/dev/LessonsBenchPage.tsx')) : null;
+const StatsBenchPage = import.meta.env.DEV ? lazy(() => import('./components/dev/StatsBenchPage.tsx').then((m) => ({ default: m.StatsBenchPage }))) : null;
 
 function RouteFallback() {
   return (
@@ -134,6 +135,7 @@ createRoot(document.getElementById('root')!).render(
         {BattlesBenchPage && <Route path="/dev/batalhas" element={<BattlesBenchPage />} />}
         {PuzzlesBenchPage && <Route path="/dev/puzzles" element={<PuzzlesBenchPage />} />}
         {LessonsBenchPage && <Route path="/dev/licoes" element={<LessonsBenchPage />} />}
+        {StatsBenchPage && <Route path="/dev/estatisticas" element={<StatsBenchPage />} />}
         <Route path="*" element={<App />} />
       </Routes>
     </Suspense>

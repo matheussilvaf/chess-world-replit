@@ -194,6 +194,8 @@ export interface PuzzleStartedPayload extends PuzzleSummary {
   deadlineAt?: number;
   /** Temas só quando visíveis (diário: config do admin; batalha: `showThemes`). Vazio caso contrário. */
   themes: string[];
+  /** Batalha: o tema pedido não tinha puzzle na faixa e o sorteio caiu em qualquer tema — `themes` traz o tema real. */
+  themeFallback?: boolean;
 }
 
 /** cliente → servidor (`PUZZLE_MSG.puzzleMove`). `uci` com promoção quando houver (e7e8q). */
@@ -223,6 +225,8 @@ export interface PuzzleFeedbackPayload {
   gambitsBalance?: number | null;
   /** Diário: status final do slot depois deste lance. */
   dailyStatus?: DailySlotStatus;
+  /** Temas revelados ao terminar um puzzle que estava com o tema oculto (problemas "Misto"). */
+  themes?: string[];
   /** Batalha: o puzzle foi encerrado para este jogador (errou / adversário resolveu antes / prazo). */
   puzzleOver?: boolean;
   puzzleOverReason?: 'wrong' | 'opponent_first' | 'timeout';
@@ -313,6 +317,8 @@ export type BattlePhase = 'countdown' | 'running' | 'finished';
 export interface BattlePlayerView {
   playerId: string;
   name: string;
+  /** Cor do solucionador no puzzle atual deste participante. */
+  color: PuzzleColor;
   /** Índice do puzzle atual na sequência (0-based). */
   index: number;
   solved: number;

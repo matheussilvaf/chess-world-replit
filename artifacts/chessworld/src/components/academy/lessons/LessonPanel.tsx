@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { X, ChevronLeft, ChevronRight } from 'lucide-react';
-import { LESSON_CATEGORIES, LESSON_THEMES, LESSON_DIFFICULTIES, PROBLEM_THEME_GROUPS, PROBLEM_DIFFICULTIES, PROBLEM_LENGTHS, PROBLEM_PHASES, isProblemFilters, openingTagLabel, problemThemeLabel, type LessonDifficultyId, type ProblemFilters } from '../../../shared/academy/LessonShapes';
+import { LESSON_CATEGORIES, LESSON_THEMES, LESSON_DIFFICULTIES, PROBLEM_THEME_GROUPS, PROBLEM_DIFFICULTIES, PROBLEM_LENGTHS, PROBLEM_PHASES, OPENING_FAMILIES, isProblemFilters, problemThemeLabel, type LessonDifficultyId, type ProblemFilters } from '../../../shared/academy/LessonShapes';
 import { LESSON_EXAMPLES } from '../../../shared/academy/lessonExamples';
 import { useLessonStore } from '../../../stores/lessonStore';
 import { usePuzzleStore } from '../../../stores/puzzleStore';
@@ -70,13 +70,30 @@ export function LessonPanel({ boardId, transport = realTransport, onClose }: { b
     useLessonStore.getState().showExample(theme, index);
     usePuzzleSessionStore.getState().showExample({ boardId, seat: seat.seat, fen: item.fen, moves: item.moves, playerColor: item.playerColor });
   };
-  const chosen = example && theme === example.theme ? LESSON_EXAMPLES[theme][example.exampleIndex] : null;
+  const chosen = example ? LESSON_EXAMPLES[example.theme][example.exampleIndex] : null;
   const updateFilter = <K extends keyof ProblemFilters>(key: K, value: ProblemFilters[K]) => useLessonStore.getState().setFilters({ ...filters, [key]: value });
   const valid = isProblemFilters(filters);
-  const percent = (v: number) => `${Math.round(v * 100)}%`;
+  const returnToExamples = () => {
+    usePuzzleSessionStore.getState().clear();
+    useLessonStore.getState().setStep('exemplos');
+    useLessonStore.setState({ example: null });
+  };
+  if (chosen && example) return <div className="pointer-events-none fixed inset-0 z-[1000]" data-testid="lesson-panel">
+    <section role="dialog" aria-label="Exemplo no tabuleiro" style={placement !== 'bottom' ? { width: sideWidth, top: Math.max(12, (window as any).__tableScreenRects?.[boardId]?.y ?? 12) } : undefined}
+      className={`pointer-events-auto absolute max-h-[30vh] overflow-y-auto rounded-2xl border border-amber-500/40 bg-slate-900/95 p-3 text-xs text-white shadow-2xl backdrop-blur-md ${placement === 'bottom' ? 'inset-x-3 bottom-3' : placement === 'left' ? 'left-4' : 'right-4'}`}>
+      <p className="font-bold text-amber-200">Exemplo {example.exampleIndex + 1}/{LESSON_EXAMPLES[example.theme].length} · {LESSON_THEMES[example.theme].label} · lance {solutionStep}/{chosen.moves.length}</p>
+      <p className="my-2 text-slate-200">{solutionStep ? chosen.comments[solutionStep - 1] ?? chosen.outro : chosen.intro}</p>
+      <div className="flex flex-wrap items-center gap-2">
+        <button aria-label="Lance anterior" className={button} disabled={!solutionStep} onClick={() => usePuzzleSessionStore.getState().navigateSolution(solutionStep - 1)}><ChevronLeft size={16}/></button>
+        <button className={button} disabled={solutionStep >= chosen.moves.length} onClick={() => usePuzzleSessionStore.getState().navigateSolution(solutionStep + 1)}>Próximo lance <ChevronRight size={14} className="inline"/></button>
+        {example.exampleIndex + 1 < LESSON_EXAMPLES[example.theme].length && <button className={button} onClick={() => selectExample(example.exampleIndex + 1)}>Próximo exemplo →</button>}
+      </div>
+      <button className="mt-2 text-amber-300" onClick={returnToExamples}>← Voltar aos exemplos</button>
+    </section>
+  </div>;
 
   return <div className="pointer-events-none fixed inset-0 z-[1000]" data-testid="lesson-panel">
-    <section role="dialog" aria-label="Sala de Lições" style={placement !== 'bottom' ? { width: sideWidth } : undefined} className={`pointer-events-auto absolute flex w-[calc(100%-24px)] flex-col overflow-hidden rounded-2xl border border-amber-500/40 bg-slate-900/95 text-white shadow-2xl backdrop-blur-md ${placement === 'bottom' ? `${example ? 'max-h-[28vh]' : 'max-h-[min(68vh,620px)]'} bottom-3 left-3 sm:left-4` : placement === 'left' ? 'max-h-[min(80vh,690px)] left-4 top-1/2 -translate-y-1/2' : 'max-h-[min(80vh,690px)] right-4 top-1/2 -translate-y-1/2'}`}>
+    <section role="dialog" aria-label="Sala de Lições" style={placement !== 'bottom' ? { width: sideWidth } : undefined} className={`pointer-events-auto absolute flex w-[calc(100%-24px)] flex-col overflow-hidden rounded-2xl border border-amber-500/40 bg-slate-900/95 text-white shadow-2xl backdrop-blur-md ${placement === 'bottom' ? 'max-h-[min(68vh,620px)] bottom-3 left-3 sm:left-4' : placement === 'left' ? 'max-h-[min(80vh,690px)] left-4 top-1/2 -translate-y-1/2' : 'max-h-[min(80vh,690px)] right-4 top-1/2 -translate-y-1/2'}`}>
       <header className="flex items-center justify-between border-b border-slate-700 px-4 py-3">
         <div><h2 className="font-bold text-amber-200">Sala de Lições</h2><p className="text-[11px] text-slate-400">Lições concluídas {state.stats.lessonsCompleted}/{state.stats.lessonsTotal}</p></div>
         <button type="button" aria-label="Fechar" onClick={close}><X className="h-5 w-5" /></button>
@@ -101,9 +118,6 @@ export function LessonPanel({ boardId, transport = realTransport, onClose }: { b
           {step === 'explicacao' && <><p className="leading-relaxed text-slate-200">{LESSON_THEMES[theme].explanation}</p><button className={primary} onClick={() => useLessonStore.getState().setStep('exemplos')}>Ver exemplos →</button></>}
           {step === 'exemplos' && <>
             {LESSON_EXAMPLES[theme].map((item, index) => <div key={item.puzzleId} className="rounded-xl border border-slate-700 p-3"><p className="font-semibold">{index + 1}. {item.title}</p><p className="my-1 text-xs text-slate-400">{item.intro}</p><button type="button" className={button} onClick={() => selectExample(index)}>Ver no tabuleiro</button></div>)}
-            {chosen && <div className="rounded-xl border border-amber-500/40 bg-slate-800 p-3"><p className="text-xs text-amber-300">Exemplo {example!.exampleIndex + 1}/2 · lance {solutionStep}/{chosen.moves.length}</p><p className="my-2 text-xs text-slate-200">{solutionStep ? chosen.comments[solutionStep - 1] ?? chosen.outro : chosen.intro}</p>
-              <div className="flex items-center gap-2"><button aria-label="Lance anterior" className={button} disabled={!solutionStep} onClick={() => usePuzzleSessionStore.getState().setSolutionStep(solutionStep - 1)}><ChevronLeft size={16}/></button><button className={button} disabled={solutionStep >= chosen.moves.length} onClick={() => usePuzzleSessionStore.getState().setSolutionStep(solutionStep + 1)}>Próximo lance <ChevronRight size={14} className="inline"/></button></div>
-            </div>}
             <button className={primary} onClick={() => useLessonStore.getState().setStep('pratica')}>Ir para prática →</button>
           </>}
           {step === 'pratica' && <><label className="block text-xs text-slate-300">Dificuldade<select className="mt-1 w-full rounded-lg bg-slate-800 p-2 text-white" value={difficulty} onChange={(e) => useLessonStore.getState().setDifficulty(e.target.value as LessonDifficultyId)}>{Object.entries(LESSON_DIFFICULTIES).map(([id, info]) => <option key={id} value={id}>{info.label}</option>)}</select></label>
@@ -112,19 +126,13 @@ export function LessonPanel({ boardId, transport = realTransport, onClose }: { b
         {tab === 'problemas' && <>
           <h3 className="font-semibold text-amber-200">Treino livre</h3>
           <label className="block text-xs">Tema<select className="mt-1 w-full rounded-lg bg-slate-800 p-2" value={filters.theme} onChange={(e) => updateFilter('theme', e.target.value)}>{PROBLEM_THEME_GROUPS.map((group) => <optgroup label={group.label} key={group.id}>{group.themes.map((id) => <option key={id} value={id}>{problemThemeLabel(id)}</option>)}</optgroup>)}</select></label>
+          {filters.theme === 'mixed' && <label className="flex items-center gap-2 text-xs"><input type="checkbox" checked={filters.showTheme !== false} onChange={(e) => updateFilter('showTheme', e.target.checked)} className="accent-amber-500" />Mostrar tema durante resolução</label>}
           {([
             ['difficulty', PROBLEM_DIFFICULTIES, 'Dificuldade'], ['length', PROBLEM_LENGTHS, 'Extensão'], ['phase', PROBLEM_PHASES, 'Fase'],
           ] as const).map(([key, choices, label]) => <label key={key} className="block text-xs">{label}<select className="mt-1 w-full rounded-lg bg-slate-800 p-2" value={filters[key]} onChange={(e) => useLessonStore.getState().setFilters({ ...filters, [key]: e.target.value })}>{Object.entries(choices).map(([id, info]) => <option key={id} value={id}>{typeof info === 'string' ? info : info.label}</option>)}</select></label>)}
-          <label className="block text-xs">Tag de abertura<input className="mt-1 w-full rounded-lg bg-slate-800 p-2" maxLength={64} placeholder="Ex.: Sicilian_Defense" value={filters.opening ?? ''} onChange={(e) => updateFilter('opening', e.target.value || undefined)} />{filters.opening && <span className="text-slate-400">{openingTagLabel(filters.opening)}</span>}</label>
-          {!valid && <p role="alert" className="text-xs text-red-300">Use até 64 letras, números, hífens ou sublinhados na abertura.</p>}
+          <label className="block text-xs">Abertura<select className="mt-1 w-full rounded-lg bg-slate-800 p-2" value={filters.opening ?? ''} onChange={(e) => updateFilter('opening', e.target.value || undefined)}><option value="">Qualquer abertura</option>{OPENING_FAMILIES.map(([tag, label]) => <option key={tag} value={tag}>{label}</option>)}</select><span className="mt-1 block text-slate-400">Filtra pela abertura da partida real de onde o problema veio.</span></label>
+          {!valid && <p role="alert" className="text-xs text-red-300">Selecione filtros válidos para continuar.</p>}
           <button disabled={!valid} className={primary} onClick={() => { if (valid) { transport.problemStart(boardId, filters); close(); } }}>Resolver</button>
-          <div className="border-t border-slate-700 pt-3 text-xs"><h3 className="mb-2 font-bold text-amber-300">Estatísticas de treino</h3>
-            <p>Lições concluídas: {state.stats.lessonsCompleted}/{state.stats.lessonsTotal}</p><p>Tentados: {state.stats.attempted} · Acertos de primeira: {state.stats.solvedFirstTry}</p>
-            <p>Precisão geral: {state.stats.attempted ? percent(state.stats.accuracy) : 'Ainda sem dados'}</p>
-            <h4 className="mt-2 font-semibold">Precisão por tema</h4><p>{state.stats.byTheme.length ? state.stats.byTheme.map((s) => `${s.label}: ${percent(s.accuracy)}`).join(' · ') : 'Ainda sem dados'}</p>
-            <h4 className="mt-2 font-semibold">Pontos fortes</h4><p>{state.stats.strongest.length ? state.stats.strongest.map((s) => s.label).join(', ') : 'Ainda sem dados'}</p>
-            <h4 className="mt-2 font-semibold">Precisa praticar</h4><p>{state.stats.needsPractice.length ? state.stats.needsPractice.map((s) => s.label).join(', ') : 'Ainda sem dados'}</p>
-          </div>
         </>}
         <button className="text-xs text-red-300" onClick={() => { transport.leave(); close(); }}>Levantar da carteira</button>
       </div>

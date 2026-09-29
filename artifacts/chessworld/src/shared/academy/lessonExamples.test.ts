@@ -52,6 +52,9 @@ describe('contratos e exemplos', () => {
   });
   it('rejeita filtros inválidos e combina temas', () => {
     expect(isProblemFilters({ theme: 'mixed', difficulty: 'any', length: 'oneMove', phase: 'opening', opening: 'Sicilian_Defense' })).toBe(true);
+    expect(isProblemFilters({ theme: 'mixed', difficulty: 'any', length: 'oneMove', phase: 'opening', opening: '', showTheme: false })).toBe(true);
+    expect(isProblemFilters({ theme: 'mixed', difficulty: 'any', length: 'oneMove', phase: 'opening', showTheme: 'false' })).toBe(false);
+    expect(isProblemFilters({ theme: 'mixed', difficulty: 'any', length: 'oneMove', phase: 'opening', opening: 'Invented_Defense' })).toBe(false);
     expect(isProblemFilters({ theme: 'fork', difficulty: 'any', length: 'short', phase: 'any', opening: '%bad' })).toBe(false);
     expect(problemFilterThemes({ theme: 'fork', difficulty: 'any', length: 'short', phase: 'opening' })).toEqual(['fork', 'short', 'opening']);
   });

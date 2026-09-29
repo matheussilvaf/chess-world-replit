@@ -20,7 +20,7 @@ import { checkPuzzleError, drawPuzzle, puzzleClient, PuzzleStorageError, type Pu
 interface Session { id: string; userId: string; context: PuzzleContext; puzzle: PuzzleRow; k: number; date?: string; boardId: string; seat: PuzzleSeat }
 interface Battle {
   id: string; boardId: string; engine: BattleEngine; players: [string, string]; names: [string, string];
-  showThemes: boolean; theme: string | null; startedAt: string; puzzles: Map<number, PuzzleRow>; loading: Map<number, Promise<PuzzleRow>>;
+  showThemes: boolean; theme: string | null; startedAt: string; puzzles: Map<number, PuzzleRow>; fallbackIndices: Set<number>; loading: Map<number, Promise<PuzzleRow>>;
   rewards: Map<string, { amount: number; balance: number | null }>; offlineSince: number | null;
 }
 interface Context {
@@ -143,6 +143,7 @@ export class AcademyPuzzleManager {
   private async startSession(userId: string, context: PuzzleContext, puzzle: PuzzleRow, livesLeft?: number, date?: string, deadlineAt?: number) {
     let seatInfo: { boardId: string; seat: PuzzleSeat } | undefined;
     let showThemes = false;
+    let themeFallback = false;
     if (context.kind === 'daily') {
       showThemes = (await resolveDailyConfigFor(date ?? dailyPuzzleDate())).showThemes;
       // A cadeira é lida DEPOIS do await: dailyLeave/desconexão podem ter
@@ -153,6 +154,7 @@ export class AcademyPuzzleManager {
     } else if (context.kind === 'battle') {
       const battle = this.battles.get(context.battleId);
       showThemes = !!battle?.showThemes;
+      themeFallback = !!battle?.fallbackIndices.has(context.index);
       if (battle && battle.engine.phase === 'running' && battle.engine.currentIndex(userId) === context.index) {
         seatInfo = { boardId: battle.boardId, seat: this.battleSeat(battle, userId) };
       }
@@ -164,10 +166,18 @@ export class AcademyPuzzleManager {
     const id = randomUUID();
     this.sessions.set(id, { id, userId, context, puzzle, k: 0, date, boardId: seatInfo.boardId, seat: seatInfo.seat });
     const setup = puzzleSetup(puzzle);
+    if (context.kind === 'battle') {
+      const battle = this.battles.get(context.battleId);
+      if (battle) {
+        battle.engine.setPuzzleColor(userId, context.index, setup.playerColor);
+        this.sendState(battle);
+      }
+    }
     client.send(PUZZLE_MSG.puzzleStarted, {
       sessionId: id, context, puzzleId: puzzle.puzzleId, rating: puzzle.rating,
       boardId: seatInfo.boardId, seat: seatInfo.seat,
       themes: showThemes ? puzzleMainThemes(puzzle.themes) : [],
+      ...(themeFallback ? { themeFallback: true } : {}),
       fen: puzzle.fen, setupMove: setup.setupMove, playerColor: setup.playerColor,
       solutionLength: setup.solutionLength, ...(livesLeft !== undefined ? { livesLeft } : {}),
       ...(deadlineAt ? { deadlineAt } : {}),
@@ -278,7 +288,7 @@ export class AcademyPuzzleManager {
       const engine = new BattleEngine({ mode: board.battleMode as BattleCreatePayload['mode'], band: board.battleBand as BattleCreatePayload['band'],
         players: [{ id: players[0], name: names[0] }, { id: players[1], name: names[1] }], now: Date.now() });
       const battle: Battle = { id, boardId: board.id, engine, players, names, showThemes: board.battleShowThemes, theme: board.battleTheme || null,
-        startedAt: new Date().toISOString(), puzzles: new Map(), loading: new Map(), rewards: new Map(), offlineSince: null };
+        startedAt: new Date().toISOString(), puzzles: new Map(), fallbackIndices: new Set(), loading: new Map(), rewards: new Map(), offlineSince: null };
       this.battles.set(id, battle);
       this.room.updateRoomHold();
       board.status = 'playing'; board.matchId = id; board.whitePlayerId = players[0]; board.blackPlayerId = players[1];
@@ -295,9 +305,10 @@ export class AcademyPuzzleManager {
         const excludeIds = [...battle.puzzles.values()].map((p) => p.puzzleId);
         // Com filtro de tema: tenta na faixa; se o tema não tiver puzzle nessa
         // faixa (temas raros), amplia para qualquer tema em vez de travar a batalha.
-        const puzzle = (battle.theme && await drawPuzzle({ ratingMin: range.min, ratingMax: range.max, theme: battle.theme, excludeIds }))
-          || await drawPuzzle({ ratingMin: range.min, ratingMax: range.max, excludeIds });
+        const themed = battle.theme ? await drawPuzzle({ ratingMin: range.min, ratingMax: range.max, theme: battle.theme, excludeIds }) : null;
+        const puzzle = themed || await drawPuzzle({ ratingMin: range.min, ratingMax: range.max, excludeIds });
         if (!puzzle) throw new PuzzleStorageError('Nenhum puzzle disponível nesta faixa.');
+        if (battle.theme && !themed) battle.fallbackIndices.add(index);
         battle.puzzles.set(index, puzzle);
         return puzzle;
       })().finally(() => battle.loading.delete(index)));

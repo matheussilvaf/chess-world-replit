@@ -19,12 +19,16 @@ type BattlePlacement = BattleStatePayload;
 export function usePuzzleTable(): PuzzleTable | null {
   const battle = useBattleStore((s) => (s.screenOpen ? s.battle : null));
   const dailySeat = usePuzzleStore((s) => s.seat);
-  const playerColor = usePuzzleSessionStore((s) => s.puzzle?.playerColor);
-  if (battle) {
+  const puzzle = usePuzzleSessionStore((s) => s.puzzle);
+  // Batalha encerrada (resultado aberto, jogador já de pé) cede a vez a uma cadeira nova.
+  if (battle && !(battle.phase === 'finished' && dailySeat)) {
+    const playerColor = puzzle?.boardId === battle.boardId && puzzle.context.kind === 'battle' &&
+      puzzle.context.index === battle.me.index ? puzzle.playerColor : battle.me.color;
     return { kind: 'battle', boardId: battle.boardId, seat: battle.mySeat, battle, dailySeat: null,
       orientation: playerColor ?? (battle.mySeat === 'top' ? 'b' : 'w') };
   }
   if (dailySeat) {
+    const playerColor = puzzle?.boardId === dailySeat.boardId ? puzzle.playerColor : undefined;
     return { kind: academyTableKind(dailySeat.boardId) === 'lesson' ? 'lesson' : 'daily', boardId: dailySeat.boardId, seat: dailySeat.seat, battle: null, dailySeat,
       orientation: playerColor ?? (dailySeat.seat === 'top' ? 'b' : 'w') };
   }

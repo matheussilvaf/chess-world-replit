@@ -10,6 +10,7 @@ import { usePuzzleStore } from '../../stores/puzzleStore';
 import { useBattleStore } from '../../stores/battleStore';
 import { useLessonStore } from '../../stores/lessonStore';
 import { leavePuzzleTable, sitAtPuzzleTable } from '../puzzleTableClient';
+import { dismissFinishedBattle } from './battleHandlers';
 import { getActiveRoom, getActiveRoomType } from './colyseusClient';
 
 /**
@@ -31,6 +32,7 @@ export function registerDailyPuzzleHandlers(room: Room): () => void {
   const unsubscribe = [
     room.onMessage(PUZZLE_MSG.dailyState, (payload: DailyStatePayload) => usePuzzleStore.getState().setDaily(payload)),
     room.onMessage(PUZZLE_MSG.dailySeated, (payload: DailySeatedPayload) => {
+      dismissFinishedBattle();
       usePuzzleStore.getState().setSeat({ boardId: payload.boardId, seat: payload.seat });
       sitAtPuzzleTable(payload.boardId, payload.seat);
     }),

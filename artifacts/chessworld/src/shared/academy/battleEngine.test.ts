@@ -24,6 +24,19 @@ function result(game: BattleEngine) {
 }
 
 describe('BattleEngine', () => {
+  it('mostra a cor própria de cada participante e atualiza no puzzle seguinte', () => {
+    const game = battle('race');
+    game.setPuzzleColor('a', 0, 'b');
+    game.setPuzzleColor('b', 0, 'w');
+    expect(game.view('a', start).me.color).toBe('b');
+    expect(game.view('a', start).opponent.color).toBe('w');
+    expect(game.view('b', start).me.color).toBe('w');
+    game.playerMove('a', win, start + 100);
+    game.setPuzzleColor('a', 0, 'w'); // sessão anterior não pode sobrescrever o próximo puzzle
+    expect(game.view('a', start + 100).me.color).toBe('b');
+    game.setPuzzleColor('a', 1, 'w');
+    expect(game.view('a', start + 100).me.color).toBe('w');
+  });
   it('Corrida: avança os índices independentes, registra tempos e termina em empate', () => {
     const game = battle('race');
     expect(game.playerMove('a', { ok: true, solved: false }, start + 100)).toEqual([]);

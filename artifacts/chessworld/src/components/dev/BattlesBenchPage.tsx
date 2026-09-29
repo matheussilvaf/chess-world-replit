@@ -23,6 +23,7 @@ if (validPuzzles.length !== PUZZLES.length) throw new Error('Puzzle inválido na
 export default function BattlesBenchPage() {
   const [mode, setMode] = useState<BattleCreatePayload['mode']>('race');
   const [band, setBand] = useState<BattleCreatePayload['band']>('beginner');
+  const [simulateFallback, setSimulateFallback] = useState(false);
   const [modal, setModal] = useState(false);
   const [waiting, setWaiting] = useState(false);
   const engine = useRef<BattleEngine | null>(null);
@@ -43,10 +44,12 @@ export default function BattlesBenchPage() {
     const current = engine.current, settings = config.current;
     if (!current || !settings) return;
     const now = Date.now(), view = current.view('bench-me', now);
+    current.setPuzzleColor('bench-bot', view.opponent.index, puzzleSetup(validPuzzles[view.opponent.index % validPuzzles.length]).playerColor);
+    const updated = current.view('bench-me', now);
     const snapshot: BattleStatePayload = {
       battleId: 'bench-battle', boardId: BOARD_ID, mySeat: 'bottom', mode: settings.mode, band: settings.band,
-      showThemes: settings.showThemes, theme: settings.theme, serverNow: now, ...view,
-      result: view.result ? { ...view.result, myRewardGambits: 0, gambitsBalance: null } : undefined,
+      showThemes: settings.showThemes, theme: settings.theme, serverNow: now, ...updated,
+      result: updated.result ? { ...updated.result, myRewardGambits: 0, gambitsBalance: null } : undefined,
     };
     useBattleStore.getState().setBattle(snapshot);
     useBattleStore.getState().setScreenOpen(true);
@@ -54,9 +57,11 @@ export default function BattlesBenchPage() {
   const assign = (index: number) => {
     const p = validPuzzles[index % validPuzzles.length];
     const setup = puzzleSetup(p);
+    engine.current?.setPuzzleColor('bench-me', index, setup.playerColor);
+    const themeFallback = simulateFallback && !!config.current?.theme;
     moveIndex.current = 0;
     const started = {
-      puzzleId: p.puzzle_id, rating: p.rating, themes: config.current?.showThemes ? [...p.themes] : [], boardId: BOARD_ID, seat: 'bottom' as const,
+      puzzleId: p.puzzle_id, rating: p.rating, themes: config.current?.showThemes || themeFallback ? [...p.themes] : [], themeFallback, boardId: BOARD_ID, seat: 'bottom' as const,
       sessionId: `bench-${index}-${Date.now()}`, context: { kind: 'battle' as const, battleId: 'bench-battle', index },
       fen: setup.fen, setupMove: setup.setupMove, playerColor: setup.playerColor, solutionLength: setup.solutionLength,
       livesLeft: engine.current?.view('bench-me', Date.now()).me.lives,
@@ -136,6 +141,7 @@ export default function BattlesBenchPage() {
         <label>Modo <select data-testid="bench-mode" value={mode} onChange={(e) => setMode(e.target.value as BattleCreatePayload['mode'])} className="ml-2 bg-slate-800 p-2">{BATTLE_MODES.map((value) => <option key={value} value={value}>{BATTLE_MODE_INFO[value].label}</option>)}</select></label>
         <label>Faixa <select data-testid="bench-band" value={band} onChange={(e) => setBand(e.target.value as BattleCreatePayload['band'])} className="ml-2 bg-slate-800 p-2">{PUZZLE_BANDS.map((value) => <option key={value} value={value}>{PUZZLE_BAND_INFO[value].label}</option>)}</select></label>
       </div>
+      <label className="flex items-center gap-2 text-sm"><input type="checkbox" data-testid="bench-theme-fallback" checked={simulateFallback} onChange={(e) => setSimulateFallback(e.target.checked)} />Simular tema indisponível (mostrar tema real)</label>
       <button data-testid="bench-create" onClick={() => { board('idle'); setModal(true); }} className="rounded-xl bg-amber-500 px-6 py-3 font-bold text-slate-950">Criar desafio</button>
       {waiting && <p data-testid="bench-waiting">O bot aceitará o desafio em 2 segundos…</p>}
     </div>}
