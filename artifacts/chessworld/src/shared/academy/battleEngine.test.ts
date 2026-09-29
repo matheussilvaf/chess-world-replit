@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { BattleEngine } from './battleEngine.js';
-import { BATTLE_PREFETCH, BATTLE_BEST_OF_PUZZLE_MS, BATTLE_MODE_INFO, BATTLE_ROUND_RESULT_MS } from './PuzzleShapes.js';
+import { BATTLE_PREFETCH, BATTLE_BEST_OF_PUZZLE_MS, BATTLE_MODE_INFO, BATTLE_ROUND_RESULT_MS, BATTLE_WRONG_COOLDOWN_MS, PUZZLE_WRONG_BLINK_MS } from './PuzzleShapes.js';
 import type { BattleMode } from './PuzzleShapes.js';
 
 const start = 3000;
@@ -77,9 +77,9 @@ describe('BattleEngine', () => {
     expect(timed.tick(timed.endsAt!)).toContainEqual({ type: 'finished', winnerId: '', reason: 'time' });
   });
 
-  it.each(['best_of_5', 'best_of_10', 'best_of_15'] as const)('%s: pontos, avanço conjunto e encerramento por maioria', (mode) => {
+  it.each([['best_of_7', 4], ['best_of_15', 8], ['best_of_23', 12]] as const)('%s: pontos, avanço conjunto e encerramento por maioria', (mode, target) => {
     const game = battle(mode);
-    const target = Math.floor(BATTLE_MODE_INFO[mode].bestOf! / 2) + 1;
+    expect(target).toBe(Math.floor(BATTLE_MODE_INFO[mode].bestOf! / 2) + 1);
     let now = start;
     for (let index = 0; index < target; index++) {
       now += 1;
@@ -104,23 +104,46 @@ describe('BattleEngine', () => {
     expect(game.stats().a.points).toBe(target);
   });
 
-  it('Melhor de N: erro dá ponto ao adversário imediatamente, fecha ambos e bloqueia lances', () => {
-    const game = battle('best_of_5');
+  it('Melhor de N: erro reinicia o mesmo puzzle e bloqueia até o fim da espera, sem pontos', () => {
+    const game = battle('best_of_7');
     const events = game.playerMove('a', wrong, start + 1);
-    expect(events).toContainEqual({ type: 'puzzle_over', playerId: 'a', index: 0, reason: 'wrong' });
-    expect(events).toContainEqual({ type: 'puzzle_over', playerId: 'b', index: 0, reason: 'opponent_wrong' });
-    expect(events).not.toContainEqual(expect.objectContaining({ type: 'puzzle_assigned' }));
-    expect(game.view('a', start + 1).bestOf?.roundResult).toEqual({ index: 0, winnerId: 'b', reason: 'wrong', until: start + 1 + BATTLE_ROUND_RESULT_MS });
-    expect(game.stats().b.points).toBe(1);
+    const cooldownUntil = start + 1 + PUZZLE_WRONG_BLINK_MS + BATTLE_WRONG_COOLDOWN_MS;
+    expect(events).toEqual([{ type: 'puzzle_restart', playerId: 'a', index: 0, cooldownUntil }, { type: 'changed' }]);
+    expect(game.view('a', start + 1).me.cooldownUntil).toBe(cooldownUntil);
+    expect(game.view('b', start + 1).opponent.cooldownUntil).toBe(cooldownUntil);
+    expect(game.view('a', start + 1).bestOf?.roundResult).toBeUndefined();
+    expect(game.stats().b.points).toBe(0);
     expect(game.stats().a.failed).toBe(1);
-    expect(game.playerMove('b', win, start + 2)).toEqual([]);
-    expect(game.tick(start + 1 + BATTLE_ROUND_RESULT_MS)).toContainEqual({ type: 'puzzle_assigned', playerId: 'b', index: 1 });
-    expect(game.view('a', start).bestOf).toEqual({ total: 5, current: 1, deadlineAt: start + 1 + BATTLE_ROUND_RESULT_MS + BATTLE_BEST_OF_PUZZLE_MS });
+    expect(game.playerMove('a', win, cooldownUntil - 1)).toEqual([]);
+    expect(game.playerMove('a', win, cooldownUntil)).toContainEqual({ type: 'puzzle_over', playerId: 'b', index: 0, reason: 'opponent_first' });
+    expect(game.view('a', cooldownUntil).me.cooldownUntil).toBe(0);
+    game.tick(cooldownUntil + BATTLE_ROUND_RESULT_MS);
+    expect(game.view('a', cooldownUntil + BATTLE_ROUND_RESULT_MS).me.cooldownUntil).toBe(0);
+  });
+
+  it('Melhor de N: adversário resolve durante o bloqueio e leva a rodada', () => {
+    const game = battle('best_of_7');
+    game.playerMove('a', wrong, start + 1);
+    expect(game.playerMove('b', win, start + 2)).toContainEqual({ type: 'puzzle_over', playerId: 'a', index: 0, reason: 'opponent_first' });
+    expect(game.view('a', start + 2).bestOf?.roundResult?.winnerId).toBe('b');
+    expect(game.view('a', start + 2).me.cooldownUntil).toBe(0);
+    expect(game.stats().b.points).toBe(1);
+    game.tick(start + 2 + BATTLE_ROUND_RESULT_MS);
+    expect(game.view('a', start + 2 + BATTLE_ROUND_RESULT_MS).me.cooldownUntil).toBe(0);
+  });
+
+  it('Melhor de N: o prazo encerra a rodada mesmo durante o bloqueio', () => {
+    const game = battle('best_of_7');
+    const deadline = start + BATTLE_BEST_OF_PUZZLE_MS;
+    game.playerMove('a', wrong, deadline - 1);
+    expect(game.tick(deadline)).toContainEqual({ type: 'puzzle_over', playerId: 'a', index: 0, reason: 'timeout' });
+    expect(game.view('a', deadline).me.cooldownUntil).toBe(0);
+    expect(game.view('a', deadline).bestOf?.roundResult?.reason).toBe('timeout');
   });
 
   it('Melhor de N: prazo sem ponto; último puzzle termina só depois da pausa', () => {
-    const game = battle('best_of_5');
-    for (let index = 0; index < 5; index++) {
+    const game = battle('best_of_7');
+    for (let index = 0; index < 7; index++) {
       const deadline = game.view('a', start).bestOf!.deadlineAt;
       const events = game.tick(deadline);
       expect(events).toContainEqual({ type: 'puzzle_over', playerId: 'a', index, reason: 'timeout' });
@@ -128,7 +151,7 @@ describe('BattleEngine', () => {
       expect(game.view('a', deadline).bestOf?.roundResult).toEqual({ index, winnerId: '', reason: 'timeout', until: deadline + BATTLE_ROUND_RESULT_MS });
       expect(game.phase).toBe('running');
       const advance = game.tick(deadline + BATTLE_ROUND_RESULT_MS);
-      if (index < 4) expect(advance).toContainEqual({ type: 'puzzle_assigned', playerId: 'a', index: index + 1 });
+      if (index < 6) expect(advance).toContainEqual({ type: 'puzzle_assigned', playerId: 'a', index: index + 1 });
       else expect(advance).toContainEqual({ type: 'finished', winnerId: '', reason: 'all_puzzles' });
     }
     expect(result(game)).toEqual({ winnerId: '', reason: 'all_puzzles' });
@@ -136,9 +159,9 @@ describe('BattleEngine', () => {
   });
 
   it('Melhor de N: líder inalcançável encerra antes da maioria', () => {
-    const game = battle('best_of_5');
+    const game = battle('best_of_7');
     let now = start;
-    for (let index = 0; index < 2; index++) {
+    for (let index = 0; index < 3; index++) {
       game.playerMove('a', win, ++now);
       now += BATTLE_ROUND_RESULT_MS;
       game.tick(now);
@@ -151,35 +174,35 @@ describe('BattleEngine', () => {
       const advance = game.tick(now);
       if (index === 1) expect(advance).toContainEqual({ type: 'finished', winnerId: 'a', reason: 'score' });
     }
-    expect(game.stats().a.points).toBe(2);
+    expect(game.stats().a.points).toBe(3);
     expect(game.stats().b.points).toBe(0);
-    expect(game.currentIndex('a')).toBe(3);
+    expect(game.currentIndex('a')).toBe(4);
   });
 
   it('Melhor de N: desistir ou abortar durante o resultado é imediato', () => {
-    const game = battle('best_of_5');
+    const game = battle('best_of_7');
     game.playerMove('a', win, start + 1);
     expect(game.forfeit('a', start + 2)).toContainEqual({ type: 'finished', winnerId: 'b', reason: 'forfeit' });
-    const aborted = battle('best_of_5');
+    const aborted = battle('best_of_7');
     aborted.playerMove('a', wrong, start + 1);
     expect(aborted.abort(start + 2)).toContainEqual({ type: 'finished', winnerId: '', reason: 'aborted' });
   });
 
   it('Melhor de N: o último resultado só termina após a pausa', () => {
-    const game = battle('best_of_5');
+    const game = battle('best_of_7');
     let now = start;
-    for (let index = 0; index < 4; index++) {
+    for (let index = 0; index < 6; index++) {
       game.playerMove(index % 2 ? 'b' : 'a', win, ++now);
       now += BATTLE_ROUND_RESULT_MS;
       game.tick(now);
     }
     expect(game.phase).toBe('running');
-    game.playerMove('b', wrong, ++now);
-    expect(game.tick(now + BATTLE_ROUND_RESULT_MS)).toContainEqual({ type: 'finished', winnerId: 'a', reason: 'all_puzzles' });
+    game.playerMove('b', win, ++now);
+    expect(game.tick(now + BATTLE_ROUND_RESULT_MS)).toContainEqual({ type: 'finished', winnerId: 'b', reason: 'all_puzzles' });
   });
 
   it('Melhor de N: lance que chega depois do prazo não pontua na rodada seguinte', () => {
-    const game = battle('best_of_5');
+    const game = battle('best_of_7');
     const late = start + BATTLE_BEST_OF_PUZZLE_MS + 5;
     const events = game.playerMove('a', win, late, 0);
     expect(events).toContainEqual({ type: 'puzzle_over', playerId: 'a', index: 0, reason: 'timeout' });

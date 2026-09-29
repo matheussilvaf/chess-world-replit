@@ -5,6 +5,8 @@ import {
   BATTLE_PREFETCH,
   BATTLE_ROUND_RESULT_MS,
   BATTLE_STREAK_RATING_STEP,
+  BATTLE_WRONG_COOLDOWN_MS,
+  PUZZLE_WRONG_BLINK_MS,
   PUZZLE_BAND_INFO,
 } from './PuzzleShapes.js';
 import type { BattleMode, PuzzleBand, BattlePlayerView, BattlePhase, BattleEndReason } from './PuzzleShapes.js';
@@ -13,7 +15,8 @@ export interface BattlePlayerInit { id: string; name: string }
 
 export type BattleEngineEvent =
   | { type: 'puzzle_assigned'; playerId: string; index: number }
-  | { type: 'puzzle_over'; playerId: string; index: number; reason: 'wrong' | 'opponent_first' | 'opponent_wrong' | 'timeout' }
+  | { type: 'puzzle_restart'; playerId: string; index: number; cooldownUntil: number }
+  | { type: 'puzzle_over'; playerId: string; index: number; reason: 'wrong' | 'opponent_first' | 'timeout' }
   | { type: 'finished'; winnerId: string; reason: BattleEndReason }
   | { type: 'changed' };
 
@@ -27,6 +30,7 @@ interface Player {
   lives?: number;
   points?: number;
   penaltyMs: number;
+  cooldownUntil: number;
   assignedAt: number;
   solveTimeMs: number;
   done: boolean;
@@ -43,7 +47,7 @@ export class BattleEngine {
   private readonly players: [Player, Player];
   private readonly bestOfTotal?: number;
   private deadlineAt?: number;
-  private roundResult?: { index: number; winnerId: string; reason: 'solved' | 'wrong' | 'timeout'; until: number };
+  private roundResult?: { index: number; winnerId: string; reason: 'solved' | 'timeout'; until: number };
   private result?: { winnerId: string; reason: BattleEndReason };
   private finishedAt?: number;
 
@@ -59,7 +63,7 @@ export class BattleEngine {
     this.players = opts.players.map(({ id, name }) => ({
       id, name, color: 'w', index: 0, solved: 0, failed: 0,
       lives: info.lives, points: info.bestOf ? 0 : undefined,
-      penaltyMs: 0, assignedAt: this.startsAt, solveTimeMs: 0,
+      penaltyMs: 0, cooldownUntil: 0, assignedAt: this.startsAt, solveTimeMs: 0,
       done: false, offline: false,
     })) as [Player, Player];
   }
@@ -129,12 +133,13 @@ export class BattleEngine {
     this.deadlineAt = now + BATTLE_BEST_OF_PUZZLE_MS;
     return [...this.players.map((p) => {
       p.done = false;
+      p.cooldownUntil = 0;
       return this.advance(p, now);
     }), { type: 'changed' }];
   }
 
-  private endBestOfRound(winnerId: string, reason: 'solved' | 'wrong' | 'timeout', now: number, events: BattleEngineEvent[]): BattleEngineEvent[] {
-    this.players.forEach((p) => { p.done = true; });
+  private endBestOfRound(winnerId: string, reason: 'solved' | 'timeout', now: number, events: BattleEngineEvent[]): BattleEngineEvent[] {
+    this.players.forEach((p) => { p.done = true; p.cooldownUntil = 0; });
     this.roundResult = { index: this.players[0].index, winnerId, reason, until: now + BATTLE_ROUND_RESULT_MS };
     return [...events, { type: 'changed' }];
   }
@@ -147,6 +152,7 @@ export class BattleEngine {
     const player = this.player(playerId);
     if (player.index !== target) return timed;
     if (player.done || (this.bestOfTotal && player.index >= this.bestOfTotal)) return timed;
+    if (now < player.cooldownUntil) return timed;
     if (evaluation.ok && !evaluation.solved) return timed;
     const opponent = this.other(player);
     const events: BattleEngineEvent[] = [...timed];
@@ -167,12 +173,11 @@ export class BattleEngine {
       }
     } else {
       player.failed += 1;
-      events.push({ type: 'puzzle_over', playerId, index: player.index, reason: 'wrong' });
       if (this.bestOfTotal) {
-        opponent.points! += 1;
-        events.push({ type: 'puzzle_over', playerId: opponent.id, index: opponent.index, reason: 'opponent_wrong' });
-        return this.endBestOfRound(opponent.id, 'wrong', now, events);
+        player.cooldownUntil = now + PUZZLE_WRONG_BLINK_MS + BATTLE_WRONG_COOLDOWN_MS;
+        return [...events, { type: 'puzzle_restart', playerId, index: player.index, cooldownUntil: player.cooldownUntil }, { type: 'changed' }];
       }
+      events.push({ type: 'puzzle_over', playerId, index: player.index, reason: 'wrong' });
       if (this.mode === 'streak') {
         player.done = true;
         if (opponent.done) return [...events, ...this.finish(this.compare((p) => p.solved), 'both_done', now)];
@@ -266,7 +271,7 @@ export class BattleEngine {
 
   view(forPlayerId: string, now: number): {
     phase: BattlePhase; startsAt: number; endsAt?: number;
-    bestOf?: { total: number; current: number; deadlineAt: number; roundResult?: { index: number; winnerId: string; reason: 'solved' | 'wrong' | 'timeout'; until: number } };
+    bestOf?: { total: number; current: number; deadlineAt: number; roundResult?: { index: number; winnerId: string; reason: 'solved' | 'timeout'; until: number } };
     me: BattlePlayerView; opponent: BattlePlayerView;
     result?: { winnerId: string; reason: BattleEndReason };
   } {
@@ -276,7 +281,7 @@ export class BattleEngine {
       lives: p.lives, clockMs: this.mode === 'pressure'
         ? this.clock(p, this.phase === 'countdown' ? this.startsAt : this.phase === 'finished' ? this.finishedAt ?? now : now)
         : undefined,
-      points: p.points, done: p.done, solveTimeMs: p.solveTimeMs, offline: p.offline,
+      points: p.points, cooldownUntil: p.cooldownUntil, done: p.done, solveTimeMs: p.solveTimeMs, offline: p.offline,
     });
     return {
       phase: this.phase, startsAt: this.startsAt, endsAt: this.endsAt,

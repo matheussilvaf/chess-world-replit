@@ -2,6 +2,7 @@ import { create } from 'zustand';
 import { Chess } from 'chess.js';
 import { parseUci } from '../shared/academy/puzzleSolver';
 import type { PuzzleFeedbackPayload, PuzzleStartedPayload } from '../shared/academy/PuzzleShapes';
+import { PUZZLE_WRONG_BLINK_MS } from '../shared/academy/PuzzleShapes';
 
 /**
  * Estado do puzzle em resolução NA MESA do mapa (diário e batalha usam o mesmo
@@ -18,8 +19,6 @@ export type PuzzlePhase = 'setup' | 'ready' | 'waiting' | 'reply' | 'wrong' | 's
 export interface Squares { from: string; to: string }
 export interface MoveAnimation extends Squares { key: number }
 
-/** Duração do piscar vermelho do lance errado (ms). */
-export const WRONG_MOVE_BLINK_MS = 720;
 /** Intervalo entre lances no replay automático da solução (ms). */
 export const SOLUTION_STEP_MS = 700;
 
@@ -112,7 +111,7 @@ export const usePuzzleSessionStore = create<PuzzleSessionState>((set, get) => ({
         if (feedback.solutionMoves) set({ fen: setupFen, solutionStep: 0, phase: 'solution', error: null });
         else if (feedback.puzzleOver) set({ phase: 'over', error: null });
         else set({ error: null });
-      }, WRONG_MOVE_BLINK_MS);
+      }, PUZZLE_WRONG_BLINK_MS);
       return;
     }
     if (feedback.solved) { set({ feedback, phase: 'solved', error: null }); return; }

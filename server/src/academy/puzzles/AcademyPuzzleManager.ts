@@ -140,7 +140,7 @@ export class AcademyPuzzleManager {
       await this.startSession(user.id, { kind: 'daily', slot }, draw.puzzle, attempt.livesLeft, date);
     });
   }
-  private async startSession(userId: string, context: PuzzleContext, puzzle: PuzzleRow, livesLeft?: number, date?: string, deadlineAt?: number) {
+  private async startSession(userId: string, context: PuzzleContext, puzzle: PuzzleRow, livesLeft?: number, date?: string, deadlineAt?: number, cooldownUntil?: number) {
     let seatInfo: { boardId: string; seat: PuzzleSeat } | undefined;
     let showThemes = false;
     let themeFallback = false;
@@ -182,6 +182,7 @@ export class AcademyPuzzleManager {
       fen: puzzle.fen, setupMove: setup.setupMove, playerColor: setup.playerColor,
       solutionLength: setup.solutionLength, ...(livesLeft !== undefined ? { livesLeft } : {}),
       ...(deadlineAt ? { deadlineAt } : {}),
+      ...(cooldownUntil ? { cooldownUntil } : {}),
     });
   }
   async puzzleMove(client: Client, payload: unknown) {
@@ -204,6 +205,15 @@ export class AcademyPuzzleManager {
           this.sessions.delete(session.id);
           this.error(client, 'session_invalid', 'Este puzzle já foi encerrado.'); return;
         }
+        const view = battle.engine.view(user.id, now);
+        if (now < (view.me.cooldownUntil ?? 0)) {
+          // Lance durante a pausa do erro (cliente dessincronizado/reconectado): ressincroniza a posição
+          // com o mesmo puzzle e a pausa restante em vez de deixar o lance otimista pendurado.
+          this.sessions.delete(session.id);
+          await this.startSession(user.id, session.context, await this.puzzleAt(battle, session.context.index),
+            view.me.lives, undefined, view.bestOf?.deadlineAt, view.me.cooldownUntil);
+          return;
+        }
       }
       if (session.context.kind === 'daily' && dailyPuzzleDate() !== session.date) {
         this.sessions.delete(session.id); this.error(client, 'daily_unavailable', 'O dia mudou. Abra os puzzles do novo dia.');
@@ -216,7 +226,8 @@ export class AcademyPuzzleManager {
         feedback.reply = evaluation.reply; session.k++;
         client.send(PUZZLE_MSG.puzzleFeedback, feedback); return;
       }
-      this.sessions.delete(session.id);
+      if (session.context.kind !== 'battle' || evaluation.ok ||
+        !this.battles.get(session.context.battleId)?.engine.view(user.id, now).bestOf) this.sessions.delete(session.id);
       if (session.context.kind === 'daily') {
         const slot = session.context.slot;
         const date = session.date!;
@@ -237,9 +248,13 @@ export class AcademyPuzzleManager {
       }
       // Lições/problemas têm o próprio gerente de sessões (LessonManager); aqui só diário e batalha.
       if (session.context.kind !== 'battle') return;
-      // Batalha validada acima com este mesmo `now` (sem await desde então): o `playerMove` não pode descartar
-      // o lance por prazo, então o feedback enviado antes dele bate com os pontos concedidos.
+      // Mesmo instante de validação e avaliação: um erro no Melhor de N é respondido pelo evento
+      // de reinício (uma única mensagem de feedback), sem encerrar a rodada.
       const battle = this.battles.get(session.context.battleId)!;
+      if (!evaluation.ok && battle.engine.view(user.id, now).bestOf) {
+        await this.events(battle, battle.engine.playerMove(user.id, { ok: false, solved: false }, now, session.context.index));
+        return;
+      }
       if (!evaluation.ok) Object.assign(feedback, { puzzleOver: true, puzzleOverReason: 'wrong' });
       client.send(PUZZLE_MSG.puzzleFeedback, feedback);
       await this.events(battle, battle.engine.playerMove(user.id, { ok: evaluation.ok, solved: evaluation.solved }, now, session.context.index));
@@ -345,6 +360,22 @@ export class AcademyPuzzleManager {
   }
   private async events(battle: Battle, events: BattleEngineEvent[]) {
     for (const event of events) {
+      if (event.type === 'puzzle_restart') {
+        for (const [key, session] of this.sessions) if (session.userId === event.playerId &&
+          session.context.kind === 'battle' && session.context.battleId === battle.id && session.context.index === event.index) {
+          this.sessions.delete(key);
+          this.client(event.playerId)?.send(PUZZLE_MSG.puzzleFeedback, {
+            sessionId: key, ok: false, moveIndex: session.k, solved: false, restart: true, cooldownUntil: event.cooldownUntil,
+          });
+        }
+        const puzzle = await this.puzzleAt(battle, event.index);
+        if (battle.engine.phase === 'running' && battle.engine.currentIndex(event.playerId) === event.index &&
+          !battle.engine.view(event.playerId, Date.now()).me.done) {
+          const view = battle.engine.view(event.playerId, Date.now());
+          await this.startSession(event.playerId, { kind: 'battle', battleId: battle.id, index: event.index },
+            puzzle, view.me.lives, undefined, view.bestOf?.deadlineAt, event.cooldownUntil);
+        }
+      }
       if (event.type === 'puzzle_over') {
         for (const [key, session] of this.sessions) if (session.userId === event.playerId &&
           session.context.kind === 'battle' && session.context.battleId === battle.id) {
@@ -438,8 +469,9 @@ export class AcademyPuzzleManager {
         try {
           const index = battle.engine.currentIndex(id);
           const puzzle = await this.puzzleAt(battle, index);
-          await this.startSession(id, { kind: 'battle', battleId: battle.id, index }, puzzle, battle.engine.view(id, Date.now()).me.lives,
-            undefined, battle.engine.view(id, Date.now()).bestOf?.deadlineAt);
+          const view = battle.engine.view(id, Date.now());
+          await this.startSession(id, { kind: 'battle', battleId: battle.id, index }, puzzle, view.me.lives,
+            undefined, view.bestOf?.deadlineAt, view.me.cooldownUntil || undefined);
         } catch (e) { this.failure(client, e); }
       }
     }

@@ -192,6 +192,8 @@ export interface PuzzleStartedPayload extends PuzzleSummary {
   livesLeft?: number;
   /** Prazo (epoch ms) deste puzzle (Melhor de N). */
   deadlineAt?: number;
+  /** Fim do bloqueio após erro em Melhor de N (epoch ms do servidor). */
+  cooldownUntil?: number;
   /** Temas só quando visíveis (diário: config do admin; batalha: `showThemes`). Vazio caso contrário. */
   themes: string[];
   /** Batalha: o tema pedido não tinha puzzle na faixa e o sorteio caiu em qualquer tema — `themes` traz o tema real. */
@@ -229,15 +231,17 @@ export interface PuzzleFeedbackPayload {
   themes?: string[];
   /** Batalha: o puzzle foi encerrado para este jogador (errou / adversário resolveu antes / prazo). */
   puzzleOver?: boolean;
-  puzzleOverReason?: 'wrong' | 'opponent_first' | 'opponent_wrong' | 'timeout';
+  puzzleOverReason?: 'wrong' | 'opponent_first' | 'timeout';
+  /** Fim do bloqueio após um lance errado (epoch ms do servidor). */
+  cooldownUntil?: number;
 }
 
 // ---------------------------------------------------------------------------
 // Batalhas de puzzle (4 tabuleiros de desafio)
 // ---------------------------------------------------------------------------
 
-export type BattleMode = 'race' | 'streak' | 'best_of_5' | 'best_of_10' | 'best_of_15' | 'survival' | 'pressure';
-export const BATTLE_MODES: readonly BattleMode[] = ['race', 'streak', 'best_of_5', 'best_of_10', 'best_of_15', 'survival', 'pressure'] as const;
+export type BattleMode = 'race' | 'streak' | 'best_of_7' | 'best_of_15' | 'best_of_23' | 'survival' | 'pressure';
+export const BATTLE_MODES: readonly BattleMode[] = ['race', 'streak', 'best_of_7', 'best_of_15', 'best_of_23', 'survival', 'pressure'] as const;
 export function isBattleMode(v: unknown): v is BattleMode {
   return typeof v === 'string' && (BATTLE_MODES as readonly string[]).includes(v);
 }
@@ -260,9 +264,9 @@ export interface BattleModeInfo {
 export const BATTLE_MODE_INFO: Record<BattleMode, BattleModeInfo> = {
   race: { label: 'Corrida', description: '3 minutos. Vence quem resolver mais puzzles.', durationMs: 3 * 60_000 },
   streak: { label: 'Sequência', description: 'A dificuldade sobe a cada acerto. Um erro encerra a sua vez. Vence quem for mais longe.', durationMs: 10 * 60_000 },
-  best_of_5: { label: 'Melhor de 5', description: 'Quem resolver primeiro leva a rodada; errar dá o ponto ao adversário.', bestOf: 5 },
-  best_of_10: { label: 'Melhor de 10', description: 'Quem resolver primeiro leva a rodada; errar dá o ponto ao adversário.', bestOf: 10 },
-  best_of_15: { label: 'Melhor de 15', description: 'Quem resolver primeiro leva a rodada; errar dá o ponto ao adversário.', bestOf: 15 },
+  best_of_7: { label: 'Melhor de 7', description: 'Quem resolver primeiro leva a rodada; um erro reinicia a posição após 3 s de espera.', bestOf: 7 },
+  best_of_15: { label: 'Melhor de 15', description: 'Quem resolver primeiro leva a rodada; um erro reinicia a posição após 3 s de espera.', bestOf: 15 },
+  best_of_23: { label: 'Melhor de 23', description: 'Quem resolver primeiro leva a rodada; um erro reinicia a posição após 3 s de espera.', bestOf: 23 },
   survival: { label: 'Survival', description: '3 vidas e 3 minutos. Errar tira uma vida; quem zerar as vidas perde. Desempate: vidas, acertos e tempo.', durationMs: 3 * 60_000, lives: 3 },
   pressure: { label: 'Pressão', description: 'Os dois começam com 2 minutos. Cada acerto tira 10 segundos do relógio do adversário. Vence quem zerar o relógio do outro.', clockMs: 2 * 60_000, penaltyMs: 10_000 },
 };
@@ -275,6 +279,10 @@ export const BATTLE_COUNTDOWN_MS = 3_000;
 export const BATTLE_BEST_OF_PUZZLE_MS = 90_000;
 /** Pausa para mostrar o resultado da rodada antes do próximo puzzle. */
 export const BATTLE_ROUND_RESULT_MS = 2_500;
+/** Duração do piscar vermelho antes de reiniciar a posição. */
+export const PUZZLE_WRONG_BLINK_MS = 720;
+/** Bloqueio depois do piscar vermelho num erro em Melhor de N. */
+export const BATTLE_WRONG_COOLDOWN_MS = 3_000;
 /** Sequência: incremento de rating alvo a cada puzzle (a partir do mínimo da faixa). */
 export const BATTLE_STREAK_RATING_STEP = 50;
 /** Puzzles que o servidor mantém pré-sorteados à frente de cada jogador. */
@@ -331,6 +339,8 @@ export interface BattlePlayerView {
   clockMs?: number;
   /** Melhor de N: pontos. */
   points?: number;
+  /** Melhor de N: instante em que pode voltar a jogar (0 = sem bloqueio). */
+  cooldownUntil?: number;
   /** Terminou a própria vez (Sequência: errou; Survival: 0 vidas; Pressão: relógio zerou). */
   done: boolean;
   /** Soma do tempo (ms) gasto nos puzzles resolvidos (desempate do Survival). */

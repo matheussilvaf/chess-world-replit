@@ -331,7 +331,7 @@ export function TableBoardOverlay({
             <button type="button" onClick={() => setPromotion(null)} className="mt-2 w-full text-center text-[10px] text-slate-400 hover:text-white">Cancelar</button>
           </div>
         </div>}
-        {children && <div className="absolute inset-0 z-[8] flex items-center justify-center">{children}</div>}
+        {children && <div className="pointer-events-none absolute inset-0 z-[8] flex items-center justify-center">{children}</div>}
       </div>
     </div>
     {isDragging && dragPiece && <div className="pointer-events-none fixed z-[300]"

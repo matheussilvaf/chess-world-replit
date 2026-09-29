@@ -8,8 +8,6 @@ import { WORLD_TILESETS, ALL_TILESETS, EXTRA_TILESETS, findTilesetForGid, findTi
 import { embedExternalTilesets } from '../config/externalTilesets';
 import { ACADEMY_MAP_KEY, academyTableIdFromFolder } from '../../shared/academy/AcademyShapes';
 import { puzzleThemeLabel } from '../../shared/academy/PuzzleShapes';
-import { AcademyStatsBoard } from '../academy/AcademyStatsBoard';
-import { useAcademyStatsStore } from '../../stores/academyStatsStore';
 import { ArenaModuleManager } from '../map/ArenaModuleManager';
 import {
   getSelectedCharacter,
@@ -86,6 +84,14 @@ import type { HuntShotHitPayload, HuntShotPayload } from '../../shared/hunting/H
 import { huntCompassBus } from '../hunting/huntCompassBus';
 import { computeCompassArrows, type CompassTarget } from '../hunting/huntCompassMath';
 import { NpcLayer, type NpcView } from '../hunting/NpcLayer';
+
+type UiScreenRect = { x: number; y: number; width: number; height: number };
+declare global {
+  interface Window {
+    __tableScreenRects?: Record<string, UiScreenRect>;
+    __uiAnchorScreenRects?: Record<string, UiScreenRect>;
+  }
+}
 
 interface ChessArenaZone {
   id: string;
@@ -406,7 +412,7 @@ export class WorldScene extends Phaser.Scene {
   private interactionSystem!: InteractionSystem;
   public tableRegistry: TableRegistry | null = null;
   private tournamentPanelAnchors: { registry: { x: number; y: number; width: number; height: number } | null; standings: { x: number; y: number; width: number; height: number } | null } = { registry: null, standings: null };
-  private academyStatsBoard: AcademyStatsBoard | null = null;
+  private uiAnchorRects = new Map<string, UiScreenRect>();
   private currentSeatInfo: { tableId: string; role: 'player' | 'spectator'; seat: string } | null = null;
   private seatTween: Phaser.Tweens.Tween | null = null;
   private savedCollisionFilter: any = null;
@@ -613,7 +619,6 @@ export class WorldScene extends Phaser.Scene {
       if (dist > DRAG_THRESHOLD) return;
       const worldPoint = this.cameras.main.getWorldPoint(pointer.x, pointer.y);
       // Don't walk if pointer is over an interactive object (handled by InteractionSystem)
-      if (this.academyStatsBoard?.hitTest(worldPoint.x, worldPoint.y)) return;
       if (this.interactionSystem?.hitTestPointer(worldPoint.x, worldPoint.y)) return;
       // Estação portátil posicionada: o clique abre o painel (zona interativa), não anda.
       if (this.placedStationLayer?.hitTest(worldPoint.x, worldPoint.y)) return;
@@ -658,8 +663,8 @@ export class WorldScene extends Phaser.Scene {
     );
 
     this.events.once('shutdown', () => {
-      this.academyStatsBoard?.destroy();
-      this.academyStatsBoard = null;
+      this.uiAnchorRects.clear();
+      window.__uiAnchorScreenRects = {};
       this.keyboardControls?.destroy();
       this.keyboardControls = null;
       this.interactionSystem?.destroy();
@@ -787,6 +792,9 @@ export class WorldScene extends Phaser.Scene {
         this.publishTableScreenRects();
         this.publishTournamentPanelRects();
       }
+      // The DOM academy panel tracks this anchor on every postupdate, even if
+      // only the canvas CSS bounds changed while the camera remained still.
+      this.publishUiAnchorScreenRects();
     }
 
     // Remotos: posição interpolada SEM floor em world-space — o floor aqui
@@ -1546,8 +1554,6 @@ export class WorldScene extends Phaser.Scene {
     const wp = this.cameras.main.getWorldPoint(pointer.x, pointer.y);
     // Hovering an interactive object mid-hold: keep the current path.
     if (this.interactionSystem?.hitTestPointer(wp.x, wp.y)) return;
-    // Segurar sobre o painel de estatísticas não caminha (as áreas clicáveis vencem o toque-para-andar).
-    if (this.academyStatsBoard?.contains(wp.x, wp.y)) return;
     this.lastHoldRepath = now;
     const last = this.lastHoldTarget;
     if (last && this.target && Math.hypot(wp.x - last.x, wp.y - last.y) <= HOLD_MOVE_MIN_DELTA_PX) {
@@ -2346,7 +2352,7 @@ export class WorldScene extends Phaser.Scene {
     this.battleBannerTimers.delete(arenaId);
     if (/^academy_challenge_\d+$/.test(arenaId) && this.chessOverlay) {
       if (status === 'waiting') {
-        const labels: Record<string, string> = { race: 'Corrida', streak: 'Sequência', best_of_5: 'Melhor de 5', best_of_10: 'Melhor de 10', best_of_15: 'Melhor de 15', survival: 'Survival', pressure: 'Pressão' };
+        const labels: Record<string, string> = { race: 'Corrida', streak: 'Sequência', best_of_7: 'Melhor de 7', best_of_15: 'Melhor de 15', best_of_23: 'Melhor de 23', survival: 'Survival', pressure: 'Pressão' };
         const bands: Record<string, string> = { beginner: 'Iniciante', intermediate: 'Intermediário', advanced: 'Avançado', master: 'Mestre' };
         const refresh = () => {
           const seconds = Math.max(0, Math.ceil(((info?.battleExpiresAt ?? Date.now()) - Date.now()) / 1000));
@@ -2560,44 +2566,50 @@ export class WorldScene extends Phaser.Scene {
     (window as any).__tournamentPanelRects = result;
   }
 
-  private publishTableScreenRects() {
-    if (!this.chessOverlay || !this.tableRegistry) return;
+  private worldToViewportPoint(wx: number, wy: number) {
     const cam = this.cameras.main;
-    this.refreshCanvasRectCache();
-    const canvasRect = { left: this.canvasRectLeft, top: this.canvasRectTop };
-    const scaleX = this.canvasRectScaleX;
-    const scaleY = this.canvasRectScaleY;
     const cx = cam.scrollX + cam.width * 0.5;
     const cy = cam.scrollY + cam.height * 0.5;
     const cos = Math.cos(-this.currentCameraRotation);
     const sin = Math.sin(-this.currentCameraRotation);
-    const zoom = cam.zoom;
-
-    const toScreen = (wx: number, wy: number) => {
-      const dx = wx - cx;
-      const dy = wy - cy;
-      const rx = dx * cos - dy * sin;
-      const ry = dx * sin + dy * cos;
-      return {
-        x: (rx * zoom + cam.width * 0.5) * scaleX + canvasRect.left,
-        y: (ry * zoom + cam.height * 0.5) * scaleY + canvasRect.top,
-      };
+    const dx = wx - cx;
+    const dy = wy - cy;
+    const rx = dx * cos - dy * sin;
+    const ry = dx * sin + dy * cos;
+    return {
+      x: (rx * cam.zoom + cam.width * 0.5) * this.canvasRectScaleX + this.canvasRectLeft,
+      y: (ry * cam.zoom + cam.height * 0.5) * this.canvasRectScaleY + this.canvasRectTop,
     };
+  }
 
-    const rects: Record<string, { x: number; y: number; width: number; height: number }> = {};
+  private worldToViewportRect(rect: UiScreenRect): UiScreenRect {
+    const tl = this.worldToViewportPoint(rect.x, rect.y);
+    const br = this.worldToViewportPoint(rect.x + rect.width, rect.y + rect.height);
+    return {
+      x: Math.min(tl.x, br.x),
+      y: Math.min(tl.y, br.y),
+      width: Math.abs(br.x - tl.x),
+      height: Math.abs(br.y - tl.y),
+    };
+  }
+
+  private publishUiAnchorScreenRects() {
+    this.refreshCanvasRectCache();
+    const rects: Record<string, UiScreenRect> = {};
+    for (const [name, rect] of this.uiAnchorRects) rects[name] = this.worldToViewportRect(rect);
+    window.__uiAnchorScreenRects = rects;
+  }
+
+  private publishTableScreenRects() {
+    if (!this.chessOverlay || !this.tableRegistry) return;
+    this.refreshCanvasRectCache();
+    const rects: Record<string, UiScreenRect> = {};
     for (const [tableId] of this.tableRegistry.tables) {
       const config = this.chessOverlay.getTableConfig(tableId);
       if (!config) continue;
-      const tl = toScreen(config.x, config.y);
-      const br = toScreen(config.x + config.width, config.y + config.height);
-      rects[tableId] = {
-        x: Math.min(tl.x, br.x),
-        y: Math.min(tl.y, br.y),
-        width: Math.abs(br.x - tl.x),
-        height: Math.abs(br.y - tl.y),
-      };
+      rects[tableId] = this.worldToViewportRect(config);
     }
-    (window as any).__tableScreenRects = rects;
+    window.__tableScreenRects = rects;
 
     // Publish the active table's camera_focus_area rect (screen-space AABB +
     // its world width) so the DOM MatchHUD can anchor time boxes / buttons to
@@ -2605,8 +2617,8 @@ export class WorldScene extends Phaser.Scene {
     const activeId = this.activeOverlayTableId;
     const focus = activeId ? this.tableRegistry.tables.get(activeId)?.cameraFocus : null;
     if (focus && focus.width > 0) {
-      const ftl = toScreen(focus.x, focus.y);
-      const fbr = toScreen(focus.x + focus.width, focus.y + focus.height);
+      const ftl = this.worldToViewportPoint(focus.x, focus.y);
+      const fbr = this.worldToViewportPoint(focus.x + focus.width, focus.y + focus.height);
       (window as any).__activeCameraFocusRect = {
         x: Math.min(ftl.x, fbr.x),
         y: Math.min(ftl.y, fbr.y),
@@ -2733,6 +2745,7 @@ export class WorldScene extends Phaser.Scene {
 
     // Extract tournament panel anchors from ui_anchors layer
     this.tournamentPanelAnchors = { registry: null, standings: null };
+    this.uiAnchorRects.clear();
     const findUiAnchors = (layers: any[]): void => {
       for (const l of layers) {
         if (l.type === 'group') findUiAnchors(l.layers || []);
@@ -2743,11 +2756,9 @@ export class WorldScene extends Phaser.Scene {
             } else if (obj.name === 'tournament_standings_anchor') {
               this.tournamentPanelAnchors.standings = { x: obj.x, y: obj.y, width: obj.width, height: obj.height };
             } else if (obj.name === 'tactics_academy_stats' && key === ACADEMY_MAP_KEY) {
-              this.academyStatsBoard?.destroy();
-              this.academyStatsBoard = new AcademyStatsBoard(this, {
+              this.uiAnchorRects.set(obj.name, {
                 x: obj.x, y: obj.y, width: obj.width, height: obj.height,
-              }, undefined, { onOpen: (board, period, page) =>
-                useAcademyStatsStore.getState().openModal({ board, period, page }) });
+              });
             }
           }
         }
@@ -3172,8 +3183,8 @@ export class WorldScene extends Phaser.Scene {
   // =========================================================
 
   private teardownCurrentMap() {
-    this.academyStatsBoard?.destroy();
-    this.academyStatsBoard = null;
+    this.uiAnchorRects.clear();
+    window.__uiAnchorScreenRects = {};
     // Mundo de Coleta: sprites de recursos/collections e timer da água
     this.craftingRuntime.teardown();
 

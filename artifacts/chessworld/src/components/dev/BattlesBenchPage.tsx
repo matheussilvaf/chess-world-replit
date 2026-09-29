@@ -54,7 +54,7 @@ export default function BattlesBenchPage() {
     useBattleStore.getState().setBattle(snapshot);
     useBattleStore.getState().setScreenOpen(true);
   };
-  const assign = (index: number) => {
+  const assign = (index: number, cooldownUntil?: number) => {
     const p = validPuzzles[index % validPuzzles.length];
     const setup = puzzleSetup(p);
     engine.current?.setPuzzleColor('bench-me', index, setup.playerColor);
@@ -66,6 +66,7 @@ export default function BattlesBenchPage() {
       fen: setup.fen, setupMove: setup.setupMove, playerColor: setup.playerColor, solutionLength: setup.solutionLength,
       livesLeft: engine.current?.view('bench-me', Date.now()).me.lives,
       deadlineAt: engine.current?.view('bench-me', Date.now()).bestOf?.deadlineAt,
+       cooldownUntil,
     };
     useBattleStore.getState().setPuzzle(started);
     usePuzzleSessionStore.getState().start(started);
@@ -79,6 +80,15 @@ export default function BattlesBenchPage() {
           useBattleStore.getState().setFeedback(feedback);
           usePuzzleSessionStore.getState().applyFeedback(feedback);
         }
+      }
+      if (event.type === 'puzzle_restart' && event.playerId === 'bench-me') {
+        const p = useBattleStore.getState().puzzle;
+        if (p) {
+          const feedback = { sessionId: p.sessionId, ok: false, solved: false, moveIndex: moveIndex.current, restart: true, cooldownUntil: event.cooldownUntil };
+          useBattleStore.getState().setFeedback(feedback);
+          usePuzzleSessionStore.getState().applyFeedback(feedback);
+        }
+        assign(event.index, event.cooldownUntil);
       }
       if (event.type === 'puzzle_assigned' && event.playerId === 'bench-me') assign(event.index);
     }
@@ -118,18 +128,22 @@ export default function BattlesBenchPage() {
   }, [waiting]);
   const move = (sessionId: string, uci: string) => {
     const active = useBattleStore.getState().puzzle;
-     if (!active || active.sessionId !== sessionId || !engine.current || engine.current.phase !== 'running' ||
-       engine.current.view('bench-me', Date.now()).me.done) return;
+      if (!active || active.sessionId !== sessionId || !engine.current || engine.current.phase !== 'running' ||
+        engine.current.view('bench-me', Date.now()).me.done ||
+        Date.now() < (engine.current.view('bench-me', Date.now()).me.cooldownUntil ?? 0)) return;
     const p = validPuzzles[active.context.kind === 'battle' ? active.context.index % validPuzzles.length : 0] as PuzzleMoves;
     const evaluation = evaluatePlayerMove(p, moveIndex.current, uci);
     if (!evaluation.legal) return;
     const feedback = {
       sessionId, ok: evaluation.ok, solved: evaluation.solved, moveIndex: moveIndex.current,
-      reply: evaluation.reply, puzzleOver: !evaluation.ok, puzzleOverReason: evaluation.ok ? undefined : 'wrong' as const,
+       reply: evaluation.reply, puzzleOver: !evaluation.ok && !engine.current.view('bench-me', Date.now()).bestOf,
+       puzzleOverReason: evaluation.ok || engine.current.view('bench-me', Date.now()).bestOf ? undefined : 'wrong' as const,
       livesLeft: engine.current.view('bench-me', Date.now()).me.lives,
     };
-    useBattleStore.getState().setFeedback(feedback);
-    usePuzzleSessionStore.getState().applyFeedback(feedback);
+    if (evaluation.ok || !engine.current.view('bench-me', Date.now()).bestOf) {
+      useBattleStore.getState().setFeedback(feedback);
+      usePuzzleSessionStore.getState().applyFeedback(feedback);
+    }
     if (evaluation.ok && !evaluation.solved) { moveIndex.current += 1; return; }
      applyEvents(engine.current.playerMove('bench-me', evaluation, Date.now()));
   };

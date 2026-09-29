@@ -1,9 +1,8 @@
-import { useEffect, useRef } from 'react';
-import Phaser from 'phaser';
-import { AcademyStatsBoard } from '../../game/academy/AcademyStatsBoard';
+import { useEffect, useState } from 'react';
 import type { BoardResponse, SummaryResponse } from '../../game/academy/academyStatsLayout';
 import { ACADEMY_POINT_ACTIONS } from '../../shared/academy/StatsShapes';
 import { AcademyStatsModal, type StatsModalSource } from '../academy/stats/AcademyStatsModal';
+import { AcademyStatsPanelOverlay } from '../academy/stats/AcademyStatsPanelOverlay';
 import { useAcademyStatsStore } from '../../stores/academyStatsStore';
 
 const board: BoardResponse = {
@@ -34,49 +33,50 @@ const source: StatsModalSource = {
 };
 
 export function StatsBenchPage() {
-  const host = useRef<HTMLDivElement>(null);
+  const [zoom, setZoom] = useState(1.6);
+  const [viewport, setViewport] = useState({ width: window.innerWidth, height: window.innerHeight });
+  const width = 320 * zoom;
+  const height = 420 * zoom;
   useEffect(() => {
     if (new URLSearchParams(window.location.search).get('modal') === '1') useAcademyStatsStore.getState().openModal();
     return () => useAcademyStatsStore.getState().close();
   }, []);
   useEffect(() => {
-    if (!host.current) return;
-    const width = Math.min(window.innerWidth - 16, 600);
-    const game = new Phaser.Game({
-      type: Phaser.CANVAS, parent: host.current, width, height: 690,
-      backgroundColor: '#15202b', render: { pixelArt: false },
-      scene: {
-        create(this: Phaser.Scene) {
-          const g = this.add.graphics();
-          g.fillStyle(0x263948).fillRect(0, 0, width, 690);
-          g.lineStyle(1, 0x405363, 0.45);
-          for (let y = 0; y < 690; y += 32) g.lineBetween(0, y, width, y);
-          for (let x = 0; x < width; x += 32) g.lineBetween(x, 0, x, 690);
-          const offset = (width - 320.5) / 2;
-          const stats = new AcademyStatsBoard(this, { x: offset, y: 100, width: 320.5, height: 420.3 },
-            { board, summary, userId: 'me' }, { onOpen: (selectedBoard, period, page) =>
-              useAcademyStatsStore.getState().openModal({ board: selectedBoard, period, page }) });
-          // Silhueta acima do painel, como o jogador no mundo (depth 100).
-          const player = this.add.graphics().setDepth(100);
-          player.fillStyle(0x14151d).fillEllipse(width / 2, 455, 22, 8);
-          player.fillStyle(0x425b91).fillRoundedRect(width / 2 - 9, 428, 17, 25, 4);
-          player.fillStyle(0xf0c69b).fillCircle(width / 2, 423, 9);
-          this.input.on('pointerup', (pointer: Phaser.Input.Pointer) => stats.hitTest(pointer.worldX, pointer.worldY));
-          this.events.once('shutdown', () => stats.destroy());
-        },
-      },
-    });
-    return () => game.destroy(true);
+    const onResize = () => setViewport({ width: window.innerWidth, height: window.innerHeight });
+    window.addEventListener('resize', onResize);
+    return () => window.removeEventListener('resize', onResize);
   }, []);
-  return <main style={{ minHeight: '100vh', background: '#0c1520', color: '#e7d6b6',
-    display: 'flex', flexDirection: 'column', alignItems: 'center', padding: '18px 8px',
+  useEffect(() => {
+    window.__uiAnchorScreenRects = {
+      ...window.__uiAnchorScreenRects,
+      tactics_academy_stats: {
+        x: (viewport.width - width) / 2,
+        y: (viewport.height - height) / 2,
+        width, height,
+      },
+    };
+    return () => {
+      if (!window.__uiAnchorScreenRects) return;
+      const { tactics_academy_stats: _anchor, ...others } = window.__uiAnchorScreenRects;
+      window.__uiAnchorScreenRects = others;
+    };
+  }, [viewport, width, height]);
+  return <main style={{ minHeight: '100vh', color: '#f5edd9',
+    backgroundColor: '#c3c0b9',
+    backgroundImage: 'linear-gradient(#8f8b83 2px, transparent 2px), linear-gradient(90deg, #8f8b83 2px, transparent 2px), linear-gradient(90deg, #8f8b83 2px, transparent 2px)',
+    backgroundSize: '100px 42px, 100px 84px, 100px 84px',
+    backgroundPosition: '0 0, 0 0, 50px 42px',
     fontFamily: 'Georgia, serif' }}>
-    <h1 style={{ fontSize: 20, margin: '8px 0' }}>Tactics Academy · Estatísticas</h1>
-    <p style={{ fontSize: 12, color: '#a6afac', margin: '0 0 12px' }}>Bancada visual · jogador acima do painel · clique nas abas</p>
-    <button type="button" onClick={() => useAcademyStatsStore.getState().openModal()}
-      style={{ background: '#b48a45', color: '#111c26', borderRadius: 8, padding: '8px 16px', marginBottom: 12, fontWeight: 700 }}>Abrir modal</button>
-    <div ref={host} style={{ width: 'fit-content', maxWidth: '100%', overflow: 'hidden',
-      boxShadow: '0 15px 60px #0008', border: '1px solid #79623d' }} />
+    <div className="relative z-[110] mx-auto flex w-fit flex-wrap items-center justify-center gap-3 rounded-b-lg border border-[#8d7349] bg-[#111c26] px-5 py-3 shadow-xl">
+      <strong className="text-[#e3b975]">Estatísticas da Academia · bancada</strong>
+      <label htmlFor="stats-bench-zoom">Zoom</label>
+      <input id="stats-bench-zoom" type="range" min="0.8" max="3" step="0.01" value={zoom}
+        onChange={(event) => setZoom(Number(event.target.value))} aria-label="Zoom do painel" />
+      <span className="tabular-nums">{zoom.toFixed(2)}× · {width.toFixed(1)} × {height.toFixed(1)} px CSS</span>
+      <button type="button" onClick={() => useAcademyStatsStore.getState().openModal()}
+        className="rounded bg-[#b48a45] px-3 py-1 font-bold text-[#111c26]">Abrir modal</button>
+    </div>
+    <AcademyStatsPanelOverlay source={source} mockUserId="b" />
     <AcademyStatsModal source={source} />
   </main>;
 }

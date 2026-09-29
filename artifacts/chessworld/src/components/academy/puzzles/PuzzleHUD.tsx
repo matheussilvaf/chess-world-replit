@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { ChevronLeft, ChevronRight, Flag, LogOut, Pause, Play, Puzzle, RotateCcw, X } from 'lucide-react';
 import {
-  BATTLE_MODE_INFO, PUZZLE_BAND_INFO, dailyRewardFor, puzzleDifficultyLabel, puzzleMainThemes, puzzleThemeLabel,
+  BATTLE_MODE_INFO, BATTLE_WRONG_COOLDOWN_MS, PUZZLE_BAND_INFO, dailyRewardFor, puzzleDifficultyLabel, puzzleMainThemes, puzzleThemeLabel,
   type BattleEndReason, type BattlePlayerView,
 } from '../../../shared/academy/PuzzleShapes';
 import { useNow } from '../../../hooks/useNow';
@@ -34,7 +34,7 @@ function phaseText(phase: PuzzlePhase, moveNumber: number, total: number, overRe
     case 'wrong': return { text: 'Lance errado', tone: 'text-red-400' };
     case 'solved': return { text: 'Resolvido!', tone: 'text-emerald-400' };
     case 'solution': return { text: 'Sem vidas — veja a solução', tone: 'text-red-400' };
-    case 'over': return { text: overReason === 'opponent_first' ? 'Adversário resolveu antes' : overReason === 'opponent_wrong' ? 'Adversário errou — rodada sua' : overReason === 'timeout' ? 'Tempo esgotado' : 'Errou', tone: overReason === 'opponent_wrong' ? 'text-emerald-400' : 'text-red-400' };
+    case 'over': return { text: overReason === 'opponent_first' ? 'Adversário resolveu antes' : overReason === 'timeout' ? 'Tempo esgotado' : 'Errou', tone: 'text-red-400' };
     default: return { text: `Sua vez · lance ${moveNumber} de ${total}`, tone: 'text-emerald-400' };
   }
 }
@@ -251,14 +251,13 @@ export function PuzzleHUD({ onLeaveDaily = leaveDailyTable, onOpenDaily, onForfe
     Math.max(myPoints, opponentPoints) >= Math.floor(battle.bestOf.total / 2) + 1 || Math.abs(myPoints - opponentPoints) > roundsLeft);
   const roundTitle = roundResult?.winnerId === '' ? 'Tempo esgotado' : roundWon ? 'Rodada sua!' : 'Rodada perdida';
   const roundSubtitle = roundResult?.reason === 'timeout' ? 'Ninguém resolveu a tempo'
-    : roundResult?.reason === 'wrong' ? roundWon ? 'O adversário errou' : 'Você errou'
-      : roundWon ? 'Você resolveu primeiro' : 'O adversário resolveu primeiro';
+    : roundWon ? 'Você resolveu primeiro' : 'O adversário resolveu primeiro';
   const outcome = battle.result?.winnerId === '' ? 'Empate' : battle.result?.winnerId === battle.me.playerId ? 'Você venceu!' : 'Você perdeu';
   const themes = hasPuzzle && battle.showThemes ? puzzleMainThemes(puzzle.themes) : [];
    const requestedTheme = hasPuzzle && puzzle.themeFallback
      ? `Tema: ${themes.length ? themes.map(puzzleThemeLabel).join(', ') : 'variado'}`
      : battle.theme ? puzzleThemeLabel(battle.theme) : '';
-   const title = [BATTLE_MODE_INFO[battle.mode].label, PUZZLE_BAND_INFO[battle.band].label, requestedTheme].filter(Boolean).join(' · ');
+    const title = [BATTLE_MODE_INFO[battle.mode]?.label ?? battle.mode, PUZZLE_BAND_INFO[battle.band].label, requestedTheme].filter(Boolean).join(' · ');
   const meta = hasPuzzle && !finished
     ? [`Puzzle ${puzzle.context.kind === 'battle' ? puzzle.context.index + 1 : battle.me.index + 1}`, `${puzzleDifficultyLabel(puzzle.rating)} (${puzzle.rating})`, ...(themes.length ? [themes.map(puzzleThemeLabel).join(', ')] : [])].join(' · ')
     : undefined;
@@ -277,9 +276,14 @@ export function PuzzleHUD({ onLeaveDaily = leaveDailyTable, onOpenDaily, onForfe
           <BattleStats player={battle.me} elapsed={elapsed} />
         </PlayerCard>
       </div>}
-       right={<PlayerCard active={!finished && !battle.opponent.done} testId="battle-opponent-chip" color={battle.opponent.color} name={battle.opponent.name} tag={battle.opponent.color === 'w' ? '(Brancas)' : '(Pretas)'}>
-        <BattleStats player={battle.opponent} elapsed={elapsed} />
-      </PlayerCard>}
+       right={<div className="flex w-full flex-col items-end gap-1">
+         {!finished && !roundResult && (battle.opponent.cooldownUntil ?? 0) > serverTime && <span className="rounded-full border border-amber-400/40 bg-slate-900/90 px-2 py-0.5 text-[10px] font-semibold text-amber-200" data-testid="battle-opponent-cooldown">
+           Adversário errou · reinício em {Math.min(Math.ceil(BATTLE_WRONG_COOLDOWN_MS / 1000), Math.ceil((battle.opponent.cooldownUntil! - serverTime) / 1000))}s
+         </span>}
+         <PlayerCard active={!finished && !battle.opponent.done} testId="battle-opponent-chip" color={battle.opponent.color} name={battle.opponent.name} tag={battle.opponent.color === 'w' ? '(Brancas)' : '(Pretas)'}>
+           <BattleStats player={battle.opponent} elapsed={elapsed} />
+         </PlayerCard>
+       </div>}
     />
 
      {confirmForfeit && !finished && <div className="pointer-events-auto fixed inset-0 z-[240] flex items-center justify-center bg-black/40 p-4">
@@ -299,9 +303,9 @@ export function PuzzleHUD({ onLeaveDaily = leaveDailyTable, onOpenDaily, onForfe
          <p className="mt-2 text-xs text-slate-300">{battleDecided ? 'Resultado' : 'Próximo puzzle'} em {Math.max(0, Math.ceil((roundResult.until - serverTime) / 1000))}s</p>
        </div>
      </div>}
-     {!finished && !roundResult && hasPuzzle && (phase === 'wrong' || phase === 'over' || phase === 'solved') && status && <Toast tone={phase === 'solved' || feedback?.puzzleOverReason === 'opponent_wrong' ? 'border-emerald-500/50' : 'border-red-500/50'} testId="battle-toast">
+      {!finished && !roundResult && hasPuzzle && (phase === 'wrong' || phase === 'over' || phase === 'solved') && status && <Toast tone={phase === 'solved' ? 'border-emerald-500/50' : 'border-red-500/50'} testId="battle-toast">
       <p className={`text-xs font-semibold ${status.tone}`}>{status.text}</p>
-       {battle.me.done ? <p className="text-[10px] text-slate-400">Você terminou — aguardando o adversário</p> : <p className="text-[10px] text-slate-400">Próximo puzzle…</p>}
+        {battle.me.done ? <p className="text-[10px] text-slate-400">Você terminou — aguardando o adversário</p> : <p className="text-[10px] text-slate-400">{feedback?.restart ? 'A posição será reiniciada…' : 'Próximo puzzle…'}</p>}
     </Toast>}
 
     {finished && <div className="fixed inset-0 z-[230] flex items-center justify-center p-4 pointer-events-none">

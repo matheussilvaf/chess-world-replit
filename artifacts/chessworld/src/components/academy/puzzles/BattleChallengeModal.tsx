@@ -41,7 +41,7 @@ export function BattleChallengeModal({ boardId, onCreate = sendBattleCreate, onC
       {board?.status === 'playing' ? <p className="py-8 text-center">Mesa ocupada — batalha em andamento</p>
         : waiting ? <div className="space-y-4">
           <p className="text-lg font-semibold">{mine ? 'Aguardando adversário…' : `Desafio de ${board.waitingPlayerName}`}</p>
-          <p>{BATTLE_MODE_INFO[board.battleMode ?? 'race'].label} · {PUZZLE_BAND_INFO[board.battleBand ?? 'beginner'].label}</p>
+          <p>{BATTLE_MODE_INFO[board.battleMode as keyof typeof BATTLE_MODE_INFO]?.label ?? board.battleMode ?? 'Corrida'} · {PUZZLE_BAND_INFO[board.battleBand ?? 'beginner'].label}</p>
           <p className="text-sm text-slate-300">Tema: {board.battleTheme ? puzzleThemeLabel(board.battleTheme) : 'qualquer'} · temas {board.battleShowThemes ? 'visíveis' : 'ocultos'}</p>
           {mine && <p className="text-amber-300">Expira em {Math.floor(remaining / 60)}:{String(remaining % 60).padStart(2, '0')}</p>}
           <button data-testid={mine ? 'battle-cancel' : 'battle-accept'} className="w-full rounded-xl bg-amber-500 py-3 font-bold text-slate-950"
