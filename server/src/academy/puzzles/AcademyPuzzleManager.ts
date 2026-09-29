@@ -6,7 +6,7 @@ import { ACADEMY_MSG, academyTableKind } from '../../shared/academy/AcademyShape
 import { BattleEngine, type BattleEngineEvent } from '../../shared/academy/battleEngine.js';
 import { evaluatePlayerMove, puzzleSetup, puzzleSolutionMoves } from '../../shared/academy/puzzleSolver.js';
 import {
-  BATTLE_CHALLENGE_TTL_MS, PUZZLE_MSG, dailyPuzzleDate, dailyPuzzleNextReset, isBattleMode, isDailySlot, isPuzzleBand,
+  BATTLE_CHALLENGE_TTL_MS, PUZZLE_MSG, dailyPuzzleDate, dailyPuzzleNextReset, isBattleMode, isBattleTheme, isDailySlot, isPuzzleBand,
   puzzleMainThemes, type BattleCreatePayload, type PuzzleContext, type PuzzleErrorCode, type PuzzleSeat,
 } from '../../shared/academy/PuzzleShapes.js';
 import { resolveDailyConfigFor } from './puzzleConfigRepository.js';
@@ -20,7 +20,7 @@ import { checkPuzzleError, drawPuzzle, puzzleClient, PuzzleStorageError, type Pu
 interface Session { id: string; userId: string; context: PuzzleContext; puzzle: PuzzleRow; k: number; date?: string; boardId: string; seat: PuzzleSeat }
 interface Battle {
   id: string; boardId: string; engine: BattleEngine; players: [string, string]; names: [string, string];
-  showThemes: boolean; startedAt: string; puzzles: Map<number, PuzzleRow>; loading: Map<number, Promise<PuzzleRow>>;
+  showThemes: boolean; theme: string | null; startedAt: string; puzzles: Map<number, PuzzleRow>; loading: Map<number, Promise<PuzzleRow>>;
   rewards: Map<string, { amount: number; balance: number | null }>; offlineSince: number | null;
 }
 interface Context {
@@ -100,11 +100,17 @@ export class AcademyPuzzleManager {
       message === 'daily_done' ? 'daily_done' : message.includes('Nenhum puzzle') ? 'no_puzzles' : 'daily_unavailable',
     message === 'daily_done' ? 'Este puzzle diário já foi encerrado.' : message);
   }
-  private async guarded(client: Client, task: () => Promise<void>) {
-    if (this.busy.has(client.sessionId)) return;
-    this.busy.add(client.sessionId);
+  /**
+   * Um comando por vez por cliente (o segundo é descartado). A leitura de estado
+   * (`dailyOpen`) usa uma pista própria: o `open` automático ao entrar/sentar não
+   * pode engolir um "Resolver" clicado logo em seguida.
+   */
+  private async guarded(client: Client, task: () => Promise<void>, lane = '') {
+    const key = client.sessionId + lane;
+    if (this.busy.has(key)) return;
+    this.busy.add(key);
     try { await task(); } catch (e) { this.failure(client, e); }
-    finally { this.busy.delete(client.sessionId); }
+    finally { this.busy.delete(key); }
   }
   async dailyOpen(client: Client) {
     await this.guarded(client, async () => {
@@ -117,7 +123,7 @@ export class AcademyPuzzleManager {
         client.send(PUZZLE_MSG.dailyState, { date: dailyPuzzleDate(now), nextResetAt: dailyPuzzleNextReset(now),
           serverNow: now, slots: [], schemaMissing: true });
       }
-    });
+    }, ':open');
   }
   async dailyStart(client: Client, payload: unknown) {
     await this.guarded(client, async () => {
@@ -136,7 +142,7 @@ export class AcademyPuzzleManager {
   }
   private async startSession(userId: string, context: PuzzleContext, puzzle: PuzzleRow, livesLeft?: number, date?: string, deadlineAt?: number) {
     let seatInfo: { boardId: string; seat: PuzzleSeat } | undefined;
-    let showThemes: boolean;
+    let showThemes = false;
     if (context.kind === 'daily') {
       showThemes = (await resolveDailyConfigFor(date ?? dailyPuzzleDate())).showThemes;
       // A cadeira é lida DEPOIS do await: dailyLeave/desconexão podem ter
@@ -144,7 +150,7 @@ export class AcademyPuzzleManager {
       const board = this.dailyBoard();
       const seat = this.dailySeatOf(userId);
       if (board && seat) seatInfo = { boardId: board.id, seat };
-    } else {
+    } else if (context.kind === 'battle') {
       const battle = this.battles.get(context.battleId);
       showThemes = !!battle?.showThemes;
       if (battle && battle.engine.phase === 'running' && battle.engine.currentIndex(userId) === context.index) {
@@ -205,6 +211,8 @@ export class AcademyPuzzleManager {
         else client.send(PUZZLE_MSG.dailyState, await buildDailyState(user.id));
         return;
       }
+      // Lições/problemas têm o próprio gerente de sessões (LessonManager); aqui só diário e batalha.
+      if (session.context.kind !== 'battle') return;
       const battle = this.battles.get(session.context.battleId);
       const now = Date.now();
       // Prazos vencidos (melhor de N, pressão, tempo) são aplicados ANTES de aceitar o lance: um lance
@@ -223,8 +231,8 @@ export class AcademyPuzzleManager {
     const user = this.player(client);
     if (!user || user.id.startsWith('anon:') || !input || typeof input.boardId !== 'string' ||
       academyTableKind(input.boardId) !== 'puzzle_battle' || !isBattleMode(input.mode) ||
-      !isPuzzleBand(input.band) || typeof input.showThemes !== 'boolean') {
-      this.error(client, 'invalid_payload', 'Mesa, modo ou dificuldade inválidos.'); return;
+      !isPuzzleBand(input.band) || typeof input.showThemes !== 'boolean' || (input.theme !== undefined && input.theme !== '' && !isBattleTheme(input.theme))) {
+      this.error(client, 'invalid_payload', 'Mesa, modo, dificuldade ou tema inválidos.'); return;
     }
     const board = this.room.state.boards.get(input.boardId);
     if (!board) { this.error(client, 'board_missing', 'Mesa não encontrada.'); return; }
@@ -234,6 +242,7 @@ export class AcademyPuzzleManager {
     }
     board.status = 'waiting'; board.waitingPlayerId = user.id; board.waitingPlayerName = user.username;
     board.battleMode = input.mode; board.battleBand = input.band; board.battleShowThemes = input.showThemes;
+    board.battleTheme = input.theme ?? '';
     board.battleExpiresAt = Date.now() + BATTLE_CHALLENGE_TTL_MS;
     user.currentBoardId = board.id;
   }
@@ -268,7 +277,7 @@ export class AcademyPuzzleManager {
       const names: [string, string] = [board.waitingPlayerName, user.username];
       const engine = new BattleEngine({ mode: board.battleMode as BattleCreatePayload['mode'], band: board.battleBand as BattleCreatePayload['band'],
         players: [{ id: players[0], name: names[0] }, { id: players[1], name: names[1] }], now: Date.now() });
-      const battle: Battle = { id, boardId: board.id, engine, players, names, showThemes: board.battleShowThemes,
+      const battle: Battle = { id, boardId: board.id, engine, players, names, showThemes: board.battleShowThemes, theme: board.battleTheme || null,
         startedAt: new Date().toISOString(), puzzles: new Map(), loading: new Map(), rewards: new Map(), offlineSince: null };
       this.battles.set(id, battle);
       this.room.updateRoomHold();
@@ -283,8 +292,11 @@ export class AcademyPuzzleManager {
     if (!battle.loading.has(index)) {
       battle.loading.set(index, (async () => {
         const range = battle.engine.targetRatingForIndex(index);
-        const puzzle = await drawPuzzle({ ratingMin: range.min, ratingMax: range.max,
-          excludeIds: [...battle.puzzles.values()].map((p) => p.puzzleId) });
+        const excludeIds = [...battle.puzzles.values()].map((p) => p.puzzleId);
+        // Com filtro de tema: tenta na faixa; se o tema não tiver puzzle nessa
+        // faixa (temas raros), amplia para qualquer tema em vez de travar a batalha.
+        const puzzle = (battle.theme && await drawPuzzle({ ratingMin: range.min, ratingMax: range.max, theme: battle.theme, excludeIds }))
+          || await drawPuzzle({ ratingMin: range.min, ratingMax: range.max, excludeIds });
         if (!puzzle) throw new PuzzleStorageError('Nenhum puzzle disponível nesta faixa.');
         battle.puzzles.set(index, puzzle);
         return puzzle;
@@ -306,7 +318,7 @@ export class AcademyPuzzleManager {
       const view = battle.engine.view(id, Date.now());
       c.send(PUZZLE_MSG.battleState, {
         battleId: battle.id, boardId: battle.boardId, mySeat: this.battleSeat(battle, id), mode: battle.engine.mode, band: battle.engine.band,
-        showThemes: battle.showThemes, serverNow: Date.now(), ...view,
+        showThemes: battle.showThemes, ...(battle.theme ? { theme: battle.theme } : {}), serverNow: Date.now(), ...view,
         ...(battle.rewards.has(id) ? { result: { ...view.result, myRewardGambits: battle.rewards.get(id)!.amount, gambitsBalance: battle.rewards.get(id)!.balance } } : {}),
       });
     }
@@ -395,6 +407,9 @@ export class AcademyPuzzleManager {
   async onJoin(client: Client) {
     const id = this.player(client)?.id;
     if (!id) return;
+    // Estado do dia para todo mundo logado: a mesa do diário mostra o progresso
+    // ("1 de 3 concluídos") sem precisar clicar nela.
+    if (!id.startsWith('anon:')) void this.dailyOpen(client);
     for (const battle of this.battles.values()) if (battle.players.includes(id) && battle.engine.phase !== 'finished') {
       battle.engine.setOffline(id, false); battle.offlineSince = null;
       this.sendState(battle);

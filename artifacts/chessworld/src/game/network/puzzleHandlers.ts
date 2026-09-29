@@ -8,6 +8,7 @@ import { pushNotice } from '../../stores/noticesStore';
 import { usePuzzleSessionStore } from '../../stores/puzzleSessionStore';
 import { usePuzzleStore } from '../../stores/puzzleStore';
 import { useBattleStore } from '../../stores/battleStore';
+import { useLessonStore } from '../../stores/lessonStore';
 import { leavePuzzleTable, sitAtPuzzleTable } from '../puzzleTableClient';
 import { getActiveRoom, getActiveRoomType } from './colyseusClient';
 
@@ -21,6 +22,7 @@ export function resetPuzzleClientState(): void {
   usePuzzleStore.getState().reset();
   usePuzzleSessionStore.getState().clear();
   useBattleStore.getState().clear();
+  useLessonStore.getState().reset();
 }
 
 export function registerDailyPuzzleHandlers(room: Room): () => void {

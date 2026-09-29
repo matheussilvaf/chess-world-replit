@@ -2,9 +2,10 @@ import type { BattleStatePayload, PuzzleSeat } from '../../../shared/academy/Puz
 import { useBattleStore } from '../../../stores/battleStore';
 import { usePuzzleStore, type DailySeat } from '../../../stores/puzzleStore';
 import { usePuzzleSessionStore } from '../../../stores/puzzleSessionStore';
+import { academyTableKind } from '../../../shared/academy/AcademyShapes';
 
 export interface PuzzleTable {
-  kind: 'daily' | 'battle';
+  kind: 'daily' | 'battle' | 'lesson';
   boardId: string;
   seat: PuzzleSeat;
   /** Lado que fica embaixo na tela: a cor do puzzle atual ou, sem puzzle, a da cadeira. */
@@ -24,7 +25,7 @@ export function usePuzzleTable(): PuzzleTable | null {
       orientation: playerColor ?? (battle.mySeat === 'top' ? 'b' : 'w') };
   }
   if (dailySeat) {
-    return { kind: 'daily', boardId: dailySeat.boardId, seat: dailySeat.seat, battle: null, dailySeat,
+    return { kind: academyTableKind(dailySeat.boardId) === 'lesson' ? 'lesson' : 'daily', boardId: dailySeat.boardId, seat: dailySeat.seat, battle: null, dailySeat,
       orientation: playerColor ?? (dailySeat.seat === 'top' ? 'b' : 'w') };
   }
   return null;

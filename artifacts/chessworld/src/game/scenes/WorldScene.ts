@@ -7,6 +7,7 @@ import { tmjCollisionShape } from '../world/tmjCollisionShapes';
 import { WORLD_TILESETS, ALL_TILESETS, EXTRA_TILESETS, findTilesetForGid, findTilesetForGidInMap, getTextureKeyForTileset } from '../config/worldAssets';
 import { embedExternalTilesets } from '../config/externalTilesets';
 import { ACADEMY_MAP_KEY, academyTableIdFromFolder } from '../../shared/academy/AcademyShapes';
+import { puzzleThemeLabel } from '../../shared/academy/PuzzleShapes';
 import { ArenaModuleManager } from '../map/ArenaModuleManager';
 import {
   getSelectedCharacter,
@@ -2332,7 +2333,7 @@ export class WorldScene extends Phaser.Scene {
     });
   }
 
-  public updateBoardStatus(arenaId: string, status: string, info?: { playerName?: string; timeLabel?: string; fen?: string; battleMode?: string; battleBand?: string; battleExpiresAt?: number }) {
+  public updateBoardStatus(arenaId: string, status: string, info?: { playerName?: string; timeLabel?: string; fen?: string; battleMode?: string; battleBand?: string; battleTheme?: string; battleExpiresAt?: number }) {
     this.battleBannerTimers.get(arenaId)?.remove();
     this.battleBannerTimers.delete(arenaId);
     if (/^academy_challenge_\d+$/.test(arenaId) && this.chessOverlay) {
@@ -2341,7 +2342,7 @@ export class WorldScene extends Phaser.Scene {
         const bands: Record<string, string> = { beginner: 'Iniciante', intermediate: 'Intermediário', advanced: 'Avançado', master: 'Mestre' };
         const refresh = () => {
           const seconds = Math.max(0, Math.ceil(((info?.battleExpiresAt ?? Date.now()) - Date.now()) / 1000));
-          this.chessOverlay?.showWaitingBanner(arenaId, `${labels[info?.battleMode ?? ''] ?? 'Batalha'} · ${bands[info?.battleBand ?? ''] ?? ''} · ${info?.playerName ?? ''} · ${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`, '');
+          this.chessOverlay?.showWaitingBanner(arenaId, `${labels[info?.battleMode ?? ''] ?? 'Batalha'} · ${bands[info?.battleBand ?? ''] ?? ''}${info?.battleTheme ? ` · ${puzzleThemeLabel(info.battleTheme)}` : ''} · ${info?.playerName ?? ''} · ${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`, '');
         };
         refresh();
         this.battleBannerTimers.set(arenaId, this.time.addEvent({ delay: 1000, loop: true, callback: refresh }));

@@ -43,14 +43,43 @@ function PieceDot({ color }: { color: 'w' | 'b' }) {
   return <span className={`h-2.5 w-2.5 flex-shrink-0 rounded-full ${color === 'w' ? 'border border-slate-300 bg-white' : 'border border-slate-400 bg-slate-950'}`} />;
 }
 
-/** Cartão compacto no estilo do relógio das partidas (canto superior = adversário, inferior = jogador). */
-function Chip({ active, clickable, onClick, children, testId }: { active?: boolean; clickable?: boolean; onClick?: () => void; children: ReactNode; testId?: string }) {
+/**
+ * Cartão de jogador: UMA linha (cor · nome · números), largura fluida.
+ * Os dois cartões da batalha dividem a base da tela lado a lado (`flex-1` +
+ * `min-w-0`), então nunca se sobrepõem — no celular o nome é truncado e os
+ * números continuam inteiros.
+ */
+function PlayerCard({ active, clickable, onClick, children, testId, color, name, tag }: {
+  active?: boolean; clickable?: boolean; onClick?: () => void; children?: ReactNode; testId?: string; color: 'w' | 'b'; name: string; tag?: string;
+}) {
   return <button type="button" data-testid={testId} onClick={clickable ? onClick : undefined} disabled={!clickable}
-    className={`flex min-w-[7.5rem] max-w-[13rem] flex-col items-start rounded-xl border px-3 py-2 text-left shadow-xl backdrop-blur-sm transition-all duration-300 select-none ${
+    className={`flex w-full min-w-0 items-center gap-2 rounded-xl border px-2.5 py-2 text-left shadow-xl backdrop-blur-sm transition-all duration-300 select-none ${
       active ? 'border-emerald-500/60 bg-slate-800/95' : 'border-slate-700/50 bg-slate-900/90'
     } ${clickable ? 'cursor-pointer hover:border-slate-500/70 active:scale-[0.98]' : 'cursor-default'}`}>
-    {children}
+    <PieceDot color={color} />
+    <span className="min-w-0 flex-1 truncate text-[11px] font-semibold leading-none text-white">{name}{tag && <span className="ml-1 font-normal text-slate-400">{tag}</span>}</span>
+    {children && <span className="flex flex-shrink-0 items-center gap-1.5 font-mono text-[12px] font-bold tabular-nums leading-none">{children}</span>}
   </button>;
+}
+
+/** Linha da base: meu cartão à esquerda, adversário à direita, cada um com no máximo metade da largura. */
+function BottomRow({ left, right }: { left: ReactNode; right?: ReactNode }) {
+  return <div className="pointer-events-none fixed inset-x-3 bottom-3 z-[200] flex items-end justify-between gap-2 sm:inset-x-4 sm:bottom-4">
+    <div className="pointer-events-auto flex min-w-0 flex-1 basis-0 justify-start sm:max-w-[18rem]">{left}</div>
+    {right && <div className="pointer-events-auto flex min-w-0 flex-1 basis-0 justify-end sm:max-w-[18rem]">{right}</div>}
+  </div>;
+}
+
+/** Cartão central do topo: o único elemento lá em cima (modo, tempo, nível/tema e status). */
+function TopCard({ title, timer, meta, status, testId }: { title: string; timer?: string; meta?: string; status?: { text: string; tone: string } | null; testId?: string }) {
+  return <div className="pointer-events-none fixed inset-x-3 top-3 z-[200] flex justify-center" data-testid={testId}>
+    <div className="flex max-w-full flex-col items-center rounded-xl border border-amber-500/40 bg-slate-900/90 px-3 py-1.5 text-center shadow-xl backdrop-blur-sm">
+      <span className="max-w-full truncate text-[10px] font-semibold uppercase tracking-wide text-amber-300">{title}</span>
+      {timer && <span className="font-mono text-lg font-bold tabular-nums leading-none text-amber-200" data-testid="battle-timer">{timer}</span>}
+      {meta && <span className="mt-1 max-w-full truncate text-[10px] leading-none text-slate-300" data-testid="puzzle-top-meta">{meta}</span>}
+      {status && <span role="status" className={`mt-1 text-[11px] font-semibold leading-none ${status.tone}`}>{status.text}</span>}
+    </div>
+  </div>;
 }
 
 function OptionsCard({ onClose, children }: { onClose: () => void; children: ReactNode }) {
@@ -76,16 +105,16 @@ function Toast({ bottom = 76, tone = 'border-slate-600/60', children, testId }: 
 const primaryButton = 'rounded-xl bg-amber-500 px-4 py-2 text-xs font-bold text-slate-950 hover:bg-amber-400 active:scale-95 transition-all';
 const ghostButton = 'rounded-xl border border-slate-600 px-4 py-2 text-xs font-bold text-slate-200 hover:bg-slate-800 active:scale-95 transition-all';
 
+/** Números do jogador na batalha, numa linha só (sem "Puzzle nº": o índice já aparece no cartão do topo). */
 function BattleStats({ player, elapsed }: { player: BattlePlayerView; elapsed: number }) {
   return <>
-    <span className="text-[11px] leading-none text-slate-300">{player.done ? 'Terminou' : `Puzzle nº ${player.index + 1}`}{player.offline ? ' · offline' : ''}</span>
-    <div className="mt-1.5 flex items-center gap-2 font-mono text-[13px] font-bold tabular-nums leading-none">
-      <span className="text-emerald-400">✓{player.solved}</span>
-      <span className="text-red-400">✗{player.failed}</span>
-      {player.lives !== undefined && <span className="text-rose-400">{hearts(player.lives)}</span>}
-      {player.points !== undefined && <span className="text-amber-300">{player.points} pt</span>}
-      {player.clockMs !== undefined && <span className={player.clockMs - elapsed < 10_000 ? 'text-red-400' : 'text-slate-200'}>{clock(player.clockMs - elapsed)}</span>}
-    </div>
+    <span className="text-emerald-400">✓{player.solved}</span>
+    <span className="text-red-400">✗{player.failed}</span>
+    {player.lives !== undefined && <span className="text-rose-400">{hearts(player.lives)}</span>}
+    {player.points !== undefined && <span className="text-amber-300">{player.points}pt</span>}
+    {player.clockMs !== undefined && <span className={player.clockMs - elapsed < 10_000 ? 'text-red-400' : 'text-slate-200'}>{clock(player.clockMs - elapsed)}</span>}
+    {player.done && <span className="text-[10px] font-normal text-slate-400">fim</span>}
+    {player.offline && <span className="text-[10px] font-normal text-amber-300">off</span>}
   </>;
 }
 
@@ -120,7 +149,7 @@ export function PuzzleHUD({ onLeaveDaily = leaveDailyTable, onOpenDaily, onForfe
     return () => { window.removeEventListener('mousedown', onDown); window.removeEventListener('touchstart', onDown); };
   }, [showOptions]);
 
-  if (!table || dailyOpen) return null;
+  if (!table || table.kind === 'lesson' || dailyOpen) return null;
   const hasPuzzle = !!puzzle && puzzle.boardId === table.boardId;
   const myColor = table.orientation;
   const oppColor = myColor === 'w' ? 'b' : 'w';
@@ -143,46 +172,26 @@ export function PuzzleHUD({ onLeaveDaily = leaveDailyTable, onOpenDaily, onForfe
     const finished = phase === 'solved' || (phase === 'solution' && !!solution && solutionStep >= solution.length) || (feedback?.dailyStatus === 'failed' && phase !== 'wrong');
     const inProgress = hasPuzzle && !finished;
     const themes = hasPuzzle && daily?.showThemes !== false ? puzzleMainThemes(puzzle.themes) : [];
+    const meta = hasPuzzle
+      ? [`${puzzleDifficultyLabel(puzzle.rating)} (${puzzle.rating})`, ...(themes.length ? [themes.map(puzzleThemeLabel).join(', ')] : [])].join(' · ')
+      : 'Escolha um puzzle';
     return <>
-      <div className="pointer-events-none fixed left-3 top-3 z-[200] flex flex-col items-start gap-1.5" data-testid="puzzle-hud-daily">
-        <Chip active={hasPuzzle && (phase === 'reply' || phase === 'setup')}>
-          <div className="flex w-full items-center gap-1.5">
-            <PieceDot color={oppColor} />
-            <span className="truncate text-[11px] font-semibold leading-none text-white">Puzzle do dia</span>
-            {slot && <span className="flex-shrink-0 text-[10px] leading-none text-slate-400">· slot {slot}</span>}
-          </div>
-          <span className="mt-1.5 text-[11px] leading-none text-slate-300">
-            {hasPuzzle ? `${puzzleDifficultyLabel(puzzle.rating)} (${puzzle.rating})` : 'Escolha um puzzle'}
-          </span>
-          {status && <span role="status" className={`mt-1.5 text-[11px] font-semibold leading-none ${status.tone}`}>{status.text}</span>}
-        </Chip>
-        {themes.length > 0 && <div className="flex max-w-[13rem] flex-wrap gap-1">
-          {themes.map((theme) => <span key={theme} className="rounded-md border border-slate-700/60 bg-slate-900/85 px-1.5 py-0.5 text-[10px] text-slate-300">{puzzleThemeLabel(theme)}</span>)}
-        </div>}
-      </div>
+      <TopCard testId="puzzle-hud-daily" title={`Puzzle do dia${slot ? ` · slot ${slot}` : ''}`} meta={meta} status={status} />
 
-      <div className="pointer-events-auto fixed bottom-4 left-4 z-[200] flex flex-col items-start gap-1.5">
-        <div ref={optionsRef} className="relative">
-          {showOptions && <OptionsCard onClose={() => setShowOptions(false)}>
-            {!inProgress && <button type="button" data-testid="puzzle-another" onClick={() => { setShowOptions(false); openDaily(); }} className={`${optionButton} bg-amber-500 text-slate-950 hover:bg-amber-400`}>
-              <Puzzle className="h-4 w-4 flex-shrink-0" />Outro puzzle</button>}
-            <button type="button" data-testid="puzzle-leave" onClick={() => { setShowOptions(false); onLeaveDaily(); }} className={`${optionButton} bg-red-600 hover:bg-red-500 active:bg-red-700`}>
-              <LogOut className="h-4 w-4 flex-shrink-0" />Levantar</button>
-          </OptionsCard>}
-          <Chip active={hasPuzzle && phase === 'ready'} clickable onClick={() => setShowOptions((v) => !v)} testId="puzzle-me-chip">
-            <div className="flex w-full items-center gap-1.5">
-              <PieceDot color={myColor} />
-              <span className="truncate text-[11px] font-semibold leading-none text-white">{myName}</span>
-              {hasPuzzle && <span className="flex-shrink-0 text-[10px] leading-none text-slate-400">({myColor === 'w' ? 'Brancas' : 'Pretas'})</span>}
-            </div>
-            <div className="mt-1.5 flex items-center gap-2 font-mono text-[14px] font-bold tabular-nums leading-none">
-              <span className="text-rose-400" aria-label={`${lives ?? 0} vidas`}>{hearts(lives ?? 0)}</span>
-              {hasPuzzle && <span className={phase === 'ready' ? 'text-emerald-400' : 'text-slate-400'}>{Math.min(moveNumber, puzzle.solutionLength)}/{puzzle.solutionLength}</span>}
-            </div>
-            {hasPuzzle && slotView && !finished && lives !== undefined && <span className="mt-1.5 text-[10px] leading-none text-amber-300">até {dailyRewardFor(slotView.rewardGambits, lives)} Gambitos</span>}
-          </Chip>
-        </div>
-      </div>
+      <BottomRow left={<div ref={optionsRef} className="relative w-full">
+        {showOptions && <OptionsCard onClose={() => setShowOptions(false)}>
+          {!inProgress && <button type="button" data-testid="puzzle-another" onClick={() => { setShowOptions(false); openDaily(); }} className={`${optionButton} bg-amber-500 text-slate-950 hover:bg-amber-400`}>
+            <Puzzle className="h-4 w-4 flex-shrink-0" />Outro puzzle</button>}
+          <button type="button" data-testid="puzzle-leave" onClick={() => { setShowOptions(false); onLeaveDaily(); }} className={`${optionButton} bg-red-600 hover:bg-red-500 active:bg-red-700`}>
+            <LogOut className="h-4 w-4 flex-shrink-0" />Levantar</button>
+        </OptionsCard>}
+        <PlayerCard active={hasPuzzle && phase === 'ready'} clickable onClick={() => setShowOptions((v) => !v)} testId="puzzle-me-chip"
+          color={myColor} name={myName} tag={hasPuzzle ? (myColor === 'w' ? '(Brancas)' : '(Pretas)') : undefined}>
+          <span className="text-rose-400" aria-label={`${lives ?? 0} vidas`}>{hearts(lives ?? 0)}</span>
+          {hasPuzzle && <span className={phase === 'ready' ? 'text-emerald-400' : 'text-slate-400'}>{Math.min(moveNumber, puzzle.solutionLength)}/{puzzle.solutionLength}</span>}
+          {hasPuzzle && slotView && !finished && lives !== undefined && <span className="text-[10px] font-normal text-amber-300">até {dailyRewardFor(slotView.rewardGambits, lives)} G</span>}
+        </PlayerCard>
+      </div>} />
 
       {hasPuzzle && phase === 'wrong' && <Toast tone="border-red-500/50" testId="puzzle-toast-wrong">
         <p className="text-xs font-semibold text-red-300">Lance errado</p>
@@ -215,47 +224,30 @@ export function PuzzleHUD({ onLeaveDaily = leaveDailyTable, onOpenDaily, onForfe
   const timer = battle.endsAt !== undefined ? clock(battle.endsAt - serverTime)
     : battle.bestOf ? `${battle.bestOf.current + 1}/${battle.bestOf.total} · ${clock(battle.bestOf.deadlineAt - serverTime)}` : '';
   const outcome = battle.result?.winnerId === '' ? 'Empate' : battle.result?.winnerId === battle.me.playerId ? 'Você venceu!' : 'Você perdeu';
+  const themes = hasPuzzle && battle.showThemes ? puzzleMainThemes(puzzle.themes) : [];
+  const title = [BATTLE_MODE_INFO[battle.mode].label, PUZZLE_BAND_INFO[battle.band].label, ...(battle.theme ? [puzzleThemeLabel(battle.theme)] : [])].join(' · ');
+  const meta = hasPuzzle && !finished
+    ? [`Puzzle ${battle.me.index + 1}`, `${puzzleDifficultyLabel(puzzle.rating)} (${puzzle.rating})`, ...(themes.length ? [themes.map(puzzleThemeLabel).join(', ')] : [])].join(' · ')
+    : undefined;
   return <>
-    <div className="pointer-events-none fixed left-3 top-3 z-[200] flex flex-col items-start gap-1.5" data-testid="puzzle-hud-battle">
-      <Chip active={!finished && !battle.opponent.done}>
-        <div className="flex w-full items-center gap-1.5">
-          <PieceDot color={oppColor} />
-          <span className="truncate text-[11px] font-semibold leading-none text-white">{battle.opponent.name}</span>
-        </div>
-        <div className="mt-1.5"><BattleStats player={battle.opponent} elapsed={elapsed} /></div>
-      </Chip>
-    </div>
+    <TopCard testId="puzzle-hud-battle" title={title} timer={!finished && timer ? timer : undefined} meta={meta} status={!finished ? status : null} />
 
-    <div className="pointer-events-none fixed left-1/2 top-3 z-[200] -translate-x-1/2">
-      <div className="flex flex-col items-center rounded-xl border border-amber-500/40 bg-slate-900/90 px-3 py-1.5 shadow-xl backdrop-blur-sm">
-        <span className="text-[10px] font-semibold uppercase tracking-wide text-amber-300">{BATTLE_MODE_INFO[battle.mode].label} · {PUZZLE_BAND_INFO[battle.band].label}</span>
-        {!finished && timer && <span className="font-mono text-lg font-bold tabular-nums leading-none text-amber-200" data-testid="battle-timer">{timer}</span>}
-        {status && !finished && <span role="status" className={`mt-1 text-[11px] font-semibold leading-none ${status.tone}`}>{status.text}</span>}
-      </div>
-    </div>
-
-    <div className="pointer-events-auto fixed bottom-4 left-4 z-[200] flex flex-col items-start gap-1.5">
-      <div ref={optionsRef} className="relative">
+    <BottomRow
+      left={<div ref={optionsRef} className="relative w-full">
         {showOptions && <OptionsCard onClose={() => setShowOptions(false)}>
           {!finished && <button type="button" data-testid="battle-forfeit" onClick={() => { setShowOptions(false); if (window.confirm('Desistir desta batalha?')) onForfeit(battle.battleId); }} className={`${optionButton} bg-red-600 hover:bg-red-500 active:bg-red-700`}>
             <Flag className="h-4 w-4 flex-shrink-0" />Desistir</button>}
           {finished && <button type="button" onClick={() => { setShowOptions(false); onDismissBattle(); }} className={`${optionButton} bg-amber-500 text-slate-950 hover:bg-amber-400`}>
             <LogOut className="h-4 w-4 flex-shrink-0" />Levantar</button>}
         </OptionsCard>}
-        <Chip active={!finished && hasPuzzle && phase === 'ready'} clickable onClick={() => setShowOptions((v) => !v)} testId="puzzle-me-chip">
-          <div className="flex w-full items-center gap-1.5">
-            <PieceDot color={myColor} />
-            <span className="truncate text-[11px] font-semibold leading-none text-white">{myName}</span>
-          </div>
-          <div className="mt-1.5"><BattleStats player={battle.me} elapsed={elapsed} /></div>
-          {hasPuzzle && !finished && <span className="mt-1.5 text-[10px] leading-none text-slate-400">{puzzleDifficultyLabel(puzzle.rating)} ({puzzle.rating}) · lance {Math.min(moveNumber, puzzle.solutionLength)}/{puzzle.solutionLength}</span>}
-        </Chip>
-      </div>
-    </div>
-
-    {hasPuzzle && battle.showThemes && puzzle.themes.length > 0 && !finished && <div className="pointer-events-none fixed bottom-4 right-4 z-[200] flex max-w-[12rem] flex-wrap justify-end gap-1">
-      {puzzleMainThemes(puzzle.themes).map((theme) => <span key={theme} className="rounded-md border border-slate-700/60 bg-slate-900/85 px-1.5 py-0.5 text-[10px] text-slate-300">{puzzleThemeLabel(theme)}</span>)}
-    </div>}
+        <PlayerCard active={!finished && hasPuzzle && phase === 'ready'} clickable onClick={() => setShowOptions((v) => !v)} testId="puzzle-me-chip" color={myColor} name={myName}>
+          <BattleStats player={battle.me} elapsed={elapsed} />
+        </PlayerCard>
+      </div>}
+      right={<PlayerCard active={!finished && !battle.opponent.done} testId="battle-opponent-chip" color={oppColor} name={battle.opponent.name}>
+        <BattleStats player={battle.opponent} elapsed={elapsed} />
+      </PlayerCard>}
+    />
 
     {!finished && hasPuzzle && (phase === 'wrong' || phase === 'over' || phase === 'solved') && status && <Toast tone={phase === 'solved' ? 'border-emerald-500/50' : 'border-red-500/50'} testId="battle-toast">
       <p className={`text-xs font-semibold ${status.tone}`}>{status.text}</p>
@@ -269,7 +261,7 @@ export function PuzzleHUD({ onLeaveDaily = leaveDailyTable, onOpenDaily, onForfe
         <div className="grid grid-cols-2 gap-2 text-left">
           {[battle.me, battle.opponent].map((player) => <div key={player.playerId} className="rounded-xl border border-slate-700 bg-slate-800/80 p-3">
             <p className="truncate text-xs font-semibold">{player.name}</p>
-            <BattleStats player={player} elapsed={0} />
+            <div className="mt-1.5 flex flex-wrap items-center gap-1.5 font-mono text-[13px] font-bold tabular-nums leading-none"><BattleStats player={player} elapsed={0} /></div>
           </div>)}
         </div>
         <p className="text-lg font-bold text-emerald-300">{battle.result?.myRewardGambits ? `+${battle.result.myRewardGambits} Gambitos` : 'Sem recompensa'}</p>

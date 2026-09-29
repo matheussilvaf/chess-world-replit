@@ -5,6 +5,6 @@
 - [Hunting system](hunting-system.md) — animais/contratos/NPC, co-op (partyId) e IA de ameaça: rig v2, geometria TMJ, HUNT_MSG, salto global `motion` editado só em /dev/caca (média = velocidade do nível), PUT /motion, tiros, lock só no resgate.
 - [Controles de toque](mobile-touch-controls.md) — analógico nipplejs (Phaser 4 → sem rex), camadas z do HUD móvel (ataque 150 < modais 500), store touchControls, verificar via /dev/controles.
 - [Sistema de amigos](friends-system.md) — friend_requests (requester_id/receiver_id, sem "visto"), escritas só via /api/friends, notifyUser em processo, teste com contas e2e.
-- [Tactics Academy](tactics-academy.md) — fases 1→3, Stockfish lite-single, TMJ (pasta manda no tableId), puzzles NA MESA (cadeira relida após await; reset ao trocar de sala), bancadas /dev.
+- [Tactics Academy](tactics-academy.md) — fases 1→3, Stockfish lite-single, TMJ (pasta manda no tableId), puzzles NA MESA, lições (geração anti-corrida, opening_tags text[]), bancadas /dev.
 - [Performance do cliente](client-performance.md) — culling/LOD por câmera para animais/NPCs/remotos, dirty-check de Text (setColor re-renderiza!), materialização preguiçosa.
 - [Spawn autoritativo](spawn-sync.md) — servidor resolve spawn por `spawnId` da whitelist; x/y do cliente eram ignorados → guard de movimento congelava quem entrava longe do spawn.

@@ -1,0 +1,236 @@
+Sala de lições:
+
+Ao clicar em qualquer tabuleiro da sala, abrir um painel com duas abas:
+LIÇÕES e PROBLEMAS.
+
+Mesmo banco e mesma regra de FEN do prompt da sala de puzzles: aplicar
+automaticamente o primeiro lance de "moves" antes de o jogador jogar,
+informar a cor que ele joga, e executar os lances do adversário
+automaticamente após cada acerto.
+
+--- ABA 1: LIÇÕES ---
+
+Lista de temas agrupados em categorias:
+
+  MATES
+    Mate em 1 · Mate em 2 · Mate em 3
+    Mate do Corredor · Mate Sufocado
+  TÁTICAS FUNDAMENTAIS
+    Garfo · Cravada · Espeto · Ataque Descoberto · Xeque Duplo
+    Peça Pendurada · Peça Presa
+  TÁTICAS AVANÇADAS
+    Sacrifício · Desvio · Atração · Interferência
+    Ataque em Raio-X · Zugzwang
+  PEÕES E PROMOÇÃO
+    Peão Avançado · Promoção · Subpromoção
+  FINAIS
+    Final de Peões · Final de Torres · Final de Damas
+    Final de Cavalos · Final de Bispos
+
+Cada tema abre uma tela de três partes, nesta ordem:
+
+  1. EXPLICAÇÃO — texto curto definindo o conceito, 3 a 5 frases.
+     Este texto é conteúdo fixo. quero que voce crie as explicações previamente.
+
+  2. EXEMPLOS — 2 posições resolvidas, executadas passo a passo com
+     animação e comentário em cada lance, sem o jogador jogar. Botão
+     de avançar lance a lance. quero que voce crie as explicacoes e comentários.
+
+  3. PRÁTICA — 10 posições do banco, filtradas por aquele tema e pela
+     dificuldade escolhida pelo jogador. Aqui ele joga. Ao final,
+     mostrar quantas acertou e permitir refazer com 10 posições novas.
+
+Nível de dificuldade escolhido pelo jogador antes da prática:
+  Iniciante 600-1100 | Intermediário 1100-1600
+  Avançado 1600-2100 | Expert 2100-2600
+
+Marcar como concluído o tema em que o jogador acertar 8 das 10 na
+prática, em qualquer dificuldade. Tema concluído acende uma vela sobre
+a carteira correspondente no mapa da sala.
+
+
+
+BA 2: PROBLEMAS ---
+
+Create a clean filter interface.
+
+THEME
+
+Grouped using the Lichess theme organization:
+
+Mixed
+
+Game Phase:
+Opening
+Middlegame
+Endgame
+Rook Endgame
+Bishop Endgame
+Pawn Endgame
+Knight Endgame
+Queen Endgame
+Queen + Rook Endgame
+
+Tactical Motifs:
+Fork
+Pin
+Skewer
+Discovered Attack
+Double Check
+Hanging Piece
+Capturing Defender
+Trapped Piece
+Exposed King
+Sacrifice
+etc.
+
+Advanced:
+Attraction
+Deflection
+Interference
+Clearance
+Intermezzo
+Quiet Move
+Defensive Move
+X-Ray Attack
+Zugzwang
+etc.
+
+Checkmates:
+Mate
+Mate in 1
+Mate in 2
+Mate in 3
+Mate in 4
+Mate in 5+
+checkmate patterns
+
+Special:
+Castling
+En Passant
+Promotion
+Underpromotion
+
+Origin:
+Master
+Master vs Master
+Super GM
+
+==================================================
+DIFFICULTY
+==================================================
+
+Use exactly:
+
+Beginner < 1000
+Easy 1000–1399
+Intermediate 1400–1799
+Advanced 1800–2199
+Expert 2200–2599
+Master 2600+
+
+Allow:
+
+Any Difficulty
+
+as well.
+
+ADDITIONAL FILTERS
+==================================================
+
+Allow optional filtering by:
+
+Game Phase
+Puzzle Length:
+Any
+One Move
+Short
+Long
+Very Long
+
+Opening Tag
+
+Do not show technical database names like:
+
+mateIn2
+discoveredAttack
+
+to the player.
+
+Use readable UI labels.
+
+Reuse the exact existing Lichess puzzle execution logic.
+
+Remember:
+
+Lichess FEN is BEFORE the setup move.
+
+Apply Moves[0].
+
+Show the resulting position.
+
+Moves[1] is the player's first move.
+
+After every correct player move:
+automatically play the next opponent move.
+
+Continue until the solution ends.
+
+Automatically orient the board toward the solver.
+
+Display:
+
+White to move
+
+or
+
+Black to move.
+
+Do not expose future solution moves to the client before they are needed.
+
+Show useful training statistics:
+
+Lessons completed / total
+Total puzzles attempted
+Total puzzles solved on first attempt
+Overall first-attempt accuracy
+
+Accuracy by theme
+
+Examples:
+
+Fork 82%
+Pin 74%
+Skewer 61%
+Deflection 44%
+
+Show:
+
+Strongest Themes
+
+and
+
+Needs Practice
+
+Do not create a new game currency.
+
+Do not create a new player level system.
+
+This is training information only.
+
+==================================================
+PUZZLE HISTORY
+==================================================
+
+Store enough player puzzle history to avoid obvious repetition.
+
+For normal practice, do not intentionally show a recently completed puzzle again when other matching puzzles are available.
+
+Never load hundreds of thousands of puzzles into Node memory.
+
+Never scan the full table for every request.
+
+Never use ORDER BY RANDOM() over the complete puzzle table.
+
+Reuse the random_key selection mechanism created in the Puzzle Room implementation.
+

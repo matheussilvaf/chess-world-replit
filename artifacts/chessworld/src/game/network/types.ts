@@ -30,6 +30,8 @@ export interface BoardState {
   battleMode?: import('../../shared/academy/PuzzleShapes').BattleMode;
   battleBand?: import('../../shared/academy/PuzzleShapes').PuzzleBand;
   battleShowThemes?: boolean;
+  /** Filtro de tema da batalha (chave do Lichess); '' ou ausente = qualquer tema. */
+  battleTheme?: string;
   battleExpiresAt?: number;
 }
 

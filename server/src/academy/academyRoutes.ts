@@ -8,6 +8,7 @@ import { puzzleSetup } from '../shared/academy/puzzleSolver.js';
 import { buildDailyState, invalidateDailyCache, previewDailyPuzzles } from './puzzles/dailyPuzzleService.js';
 import { deleteDailyConfig, getBattleRewards, listDailyConfigs, listDailyPins, resolveDailyConfigFor, saveBattleRewards, saveDailyConfig, saveDailyPin } from './puzzles/puzzleConfigRepository.js';
 import { checkPuzzleError, countPuzzles, drawPuzzle, getPuzzleById, listThemeCounts, puzzleClient, PuzzleStorageError } from './puzzles/puzzleRepository.js';
+import { buildLessonState } from './lessons/lessonRepository.js';
 
 export const academyRouter = Router();
 export const academyAdminRouter = Router();
@@ -83,6 +84,9 @@ academyRouter.get('/puzzles/themes', route(async (_req, res) => {
 }));
 academyRouter.get('/daily/me', requireSupabaseAuth, route(async (req, res) => {
   res.json(await buildDailyState((req as Request & { userId: string }).userId));
+}));
+academyRouter.get('/lessons/me', requireSupabaseAuth, route(async (req, res) => {
+  res.json(await buildLessonState((req as Request & { userId: string }).userId));
 }));
 academyRouter.get('/battles/me', requireSupabaseAuth, route(async (req, res) => {
   const id = (req as Request & { userId: string }).userId;

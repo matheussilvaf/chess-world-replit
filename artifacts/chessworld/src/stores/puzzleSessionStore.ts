@@ -48,10 +48,12 @@ interface PuzzleSessionState {
   /** Casas do lance errado (piscam em vermelho). */
   error: Squares | null;
   solutionStep: number;
+  manualSolution: boolean;
   /** Próxima sessão recebida enquanto o lance errado ainda piscava. */
   pending: PuzzleStartedPayload | null;
 
   start: (puzzle: PuzzleStartedPayload) => void;
+  showExample: (example: { boardId: string; seat: 'top' | 'bottom'; fen: string; moves: string[]; playerColor: 'w' | 'b' }) => void;
   applyFeedback: (feedback: PuzzleFeedbackPayload) => void;
   animationDone: () => void;
   /** Lance do jogador: aplica localmente e entra em `waiting`. false = ilegal/fora de hora. */
@@ -67,13 +69,21 @@ function fresh(puzzle: PuzzleStartedPayload) {
   return {
     puzzle, feedback: null, fen: puzzle.fen, setupFen: applyUci(puzzle.fen, puzzle.setupMove),
     phase: 'setup' as PuzzlePhase, moveNumber: 1, last: null,
-    animation: m ? { from: m.from, to: m.to, key: 0 } : null, error: null, solutionStep: 0, pending: null,
+    animation: m ? { from: m.from, to: m.to, key: 0 } : null, error: null, solutionStep: 0, manualSolution: false, pending: null,
   };
 }
 
 export const usePuzzleSessionStore = create<PuzzleSessionState>((set, get) => ({
   puzzle: null, feedback: null, fen: '', setupFen: '', phase: 'setup', moveNumber: 1, last: null,
-  animation: null, error: null, solutionStep: 0, pending: null,
+  animation: null, error: null, solutionStep: 0, manualSolution: false, pending: null,
+  showExample: ({ boardId, seat, fen, moves, playerColor }) => set({
+    puzzle: { sessionId: 'lesson-example', context: { kind: 'lesson', theme: 'fork', difficulty: 'iniciante', index: 0, total: 10 },
+      puzzleId: 'lesson-example', boardId, seat, rating: 0, themes: [], fen, setupMove: '',
+      playerColor, solutionLength: Math.ceil(moves.length / 2) },
+    feedback: { sessionId: 'lesson-example', ok: true, solved: false, moveIndex: 0, solutionMoves: moves },
+    fen, setupFen: fen, phase: 'solution', animation: null, error: null, last: null,
+    solutionStep: 0, manualSolution: true, moveNumber: 1, pending: null,
+  }),
 
   start: (puzzle) => {
     // O servidor manda o reinício logo após o erro: segura até o piscar terminar.
@@ -131,7 +141,7 @@ export const usePuzzleSessionStore = create<PuzzleSessionState>((set, get) => ({
   clear: () => {
     if (blinkTimer !== null) { window.clearTimeout(blinkTimer); blinkTimer = null; }
     set({ puzzle: null, feedback: null, fen: '', setupFen: '', phase: 'setup', moveNumber: 1, last: null,
-      animation: null, error: null, solutionStep: 0, pending: null });
+      animation: null, error: null, solutionStep: 0, manualSolution: false, pending: null });
   },
 }));
 

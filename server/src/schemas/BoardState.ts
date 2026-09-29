@@ -21,6 +21,8 @@ export class BoardState extends Schema {
   battleMode: string = '';
   battleBand: string = '';
   battleShowThemes: boolean = false;
+  /** Filtro de tema da batalha (chave do Lichess) ou '' = qualquer tema. */
+  battleTheme: string = '';
   battleExpiresAt: number = 0;
 }
 
@@ -45,5 +47,6 @@ defineTypes(BoardState, {
   battleMode: 'string',
   battleBand: 'string',
   battleShowThemes: 'boolean',
+  battleTheme: 'string',
   battleExpiresAt: 'number',
 });

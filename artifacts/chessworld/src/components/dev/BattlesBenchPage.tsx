@@ -35,7 +35,7 @@ export default function BattlesBenchPage() {
       id: BOARD_ID, name: 'Desafio 1', status, waitingPlayerId: status === 'waiting' ? 'bench-me' : '',
       waitingPlayerName: status === 'waiting' ? 'Você' : '',
       timeCategory: '', baseMinutes: 0, incrementSeconds: 0, timeLabel: '', matchId: '',
-      battleMode: settings?.mode, battleBand: settings?.band, battleShowThemes: settings?.showThemes,
+      battleMode: settings?.mode, battleBand: settings?.band, battleShowThemes: settings?.showThemes, battleTheme: settings?.theme,
       battleExpiresAt: status === 'waiting' ? Date.now() + 600_000 : undefined,
     }]);
   };
@@ -45,7 +45,7 @@ export default function BattlesBenchPage() {
     const now = Date.now(), view = current.view('bench-me', now);
     const snapshot: BattleStatePayload = {
       battleId: 'bench-battle', boardId: BOARD_ID, mySeat: 'bottom', mode: settings.mode, band: settings.band,
-      showThemes: settings.showThemes, serverNow: now, ...view,
+      showThemes: settings.showThemes, theme: settings.theme, serverNow: now, ...view,
       result: view.result ? { ...view.result, myRewardGambits: 0, gambitsBalance: null } : undefined,
     };
     useBattleStore.getState().setBattle(snapshot);

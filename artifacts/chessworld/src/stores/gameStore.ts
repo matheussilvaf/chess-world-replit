@@ -23,6 +23,7 @@ interface ColyseusBoardInfo {
   battleMode?: BattleMode;
   battleBand?: PuzzleBand;
   battleShowThemes?: boolean;
+  battleTheme?: string;
   battleExpiresAt?: number;
 }
 

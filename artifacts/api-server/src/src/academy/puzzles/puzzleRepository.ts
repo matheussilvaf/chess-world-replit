@@ -36,7 +36,7 @@ export async function getPuzzlesByIds(ids: string[]): Promise<PuzzleRow[]> {
   checkPuzzleError(error);
   return (data ?? []).filter(isValidPuzzle).map(parsePuzzle);
 }
-export interface PuzzleFilter { ratingMin: number; ratingMax: number; theme?: string; excludeIds?: string[] }
+export interface PuzzleFilter { ratingMin: number; ratingMax: number; theme?: string; themes?: string[]; opening?: string; excludeIds?: string[] }
 export async function drawPuzzle(filter: PuzzleFilter): Promise<PuzzleRow | null> {
   const excluded = new Set(filter.excludeIds ?? []);
   for (let attempt = 0; attempt < 5; attempt++) {
@@ -44,8 +44,11 @@ export async function drawPuzzle(filter: PuzzleFilter): Promise<PuzzleRow | null
     for (const upper of [true, false]) {
       let query = puzzleClient().from('lichess_puzzles').select('puzzle_id,fen,moves,rating,themes,game_url')
         .gte('rating', filter.ratingMin).lte('rating', filter.ratingMax);
-      if (filter.theme) query = query.contains('themes', [filter.theme]);
-      if (excluded.size && excluded.size < 200) query = query.not('puzzle_id', 'in', `(${[...excluded].map((id) => `"${id.replace(/["\\]/g, '')}"`).join(',')})`);
+      const themes = [...(filter.themes ?? []), ...(filter.theme ? [filter.theme] : [])];
+      if (themes.length) query = query.contains('themes', themes);
+      // opening_tags é text[] (família + variação); `contains` casa a tag inteira.
+      if (filter.opening) query = query.contains('opening_tags', [filter.opening]);
+      if (excluded.size && excluded.size <= 400) query = query.not('puzzle_id', 'in', `(${[...excluded].map((id) => `"${id.replace(/["\\]/g, '')}"`).join(',')})`);
       query = upper ? query.gte('random_key', key).order('random_key', { ascending: true }) :
         query.lt('random_key', key).order('random_key', { ascending: false });
       const { data, error } = await query.limit(1);
@@ -58,7 +61,9 @@ export async function drawPuzzle(filter: PuzzleFilter): Promise<PuzzleRow | null
 export async function countPuzzles(filter: PuzzleFilter): Promise<number> {
   let query = puzzleClient().from('lichess_puzzles').select('puzzle_id', { head: true, count: 'exact' })
     .gte('rating', filter.ratingMin).lte('rating', filter.ratingMax);
-  if (filter.theme) query = query.contains('themes', [filter.theme]);
+  const themes = [...(filter.themes ?? []), ...(filter.theme ? [filter.theme] : [])];
+  if (themes.length) query = query.contains('themes', themes);
+  if (filter.opening) query = query.contains('opening_tags', [filter.opening]);
   const { count, error } = await query;
   checkPuzzleError(error);
   return count ?? 0;

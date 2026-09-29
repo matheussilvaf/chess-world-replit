@@ -1,4 +1,5 @@
 import { useEffect, useMemo } from 'react';
+import type { PuzzleContext } from '../../../shared/academy/PuzzleShapes';
 import { TableBoardOverlay, type ScreenRect } from '../../chess/TableBoardOverlay';
 import { useNow } from '../../../hooks/useNow';
 import { sendBattleMove } from '../../../game/network/battleHandlers';
@@ -16,7 +17,7 @@ const INITIAL_FEN = 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1';
  */
 export function PuzzleTableOverlay({ onMove, rectOverride }: {
   /** Transporte alternativo (bancadas). */
-  onMove?: (sessionId: string, uci: string, kind: 'daily' | 'battle') => void;
+  onMove?: (sessionId: string, uci: string, kind: PuzzleContext['kind']) => void;
   rectOverride?: ScreenRect | null;
 }) {
   const table = usePuzzleTable();
@@ -28,6 +29,7 @@ export function PuzzleTableOverlay({ onMove, rectOverride }: {
   const animation = usePuzzleSessionStore((s) => s.animation);
   const error = usePuzzleSessionStore((s) => s.error);
   const solutionStep = usePuzzleSessionStore((s) => s.solutionStep);
+  const manualSolution = usePuzzleSessionStore((s) => s.manualSolution);
   const solution = usePuzzleSessionStore((s) => s.feedback?.solutionMoves);
   const receivedAt = useBattleStore((s) => s.receivedAt);
   const battle = table?.battle ?? null;
@@ -47,10 +49,10 @@ export function PuzzleTableOverlay({ onMove, rectOverride }: {
 
   // Replay automático da solução (sem vidas).
   useEffect(() => {
-    if (phase !== 'solution' || !solution || solutionStep >= solution.length) return;
+    if (manualSolution || phase !== 'solution' || !solution || solutionStep >= solution.length) return;
     const timer = window.setTimeout(() => usePuzzleSessionStore.getState().setSolutionStep(solutionStep + 1), SOLUTION_STEP_MS);
     return () => window.clearTimeout(timer);
-  }, [phase, solution, solutionStep]);
+  }, [phase, solution, solutionStep, manualSolution]);
 
   if (!table) return null;
   const hasPuzzle = !!puzzle && puzzle.boardId === table.boardId;

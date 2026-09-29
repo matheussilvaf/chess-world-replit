@@ -1,11 +1,11 @@
 import { useEffect, useState } from 'react';
 import { X } from 'lucide-react';
-import { BATTLE_MODES, BATTLE_MODE_INFO, PUZZLE_BANDS, PUZZLE_BAND_INFO, type BattleMode, type PuzzleBand } from '../../../shared/academy/PuzzleShapes';
+import { BATTLE_MODES, BATTLE_MODE_INFO, BATTLE_THEME_OPTIONS, PUZZLE_BANDS, PUZZLE_BAND_INFO, puzzleThemeLabel, type BattleMode, type PuzzleBand } from '../../../shared/academy/PuzzleShapes';
 import { sendBattleAccept, sendBattleCancel, sendBattleCreate } from '../../../game/network/battleHandlers';
 import { useAuthStore } from '../../../stores/authStore';
 import { useGameStore } from '../../../stores/gameStore';
 
-export function BattleChallengeModal({ boardId, onCreate = sendBattleCreate, onCancel = sendBattleCancel, onAccept = sendBattleAccept, onClose, myId, initialMode = 'race', initialBand = 'beginner' }: {
+export function BattleChallengeModal({ boardId, onCreate = sendBattleCreate, onCancel = sendBattleCancel, onAccept = sendBattleAccept, onClose, myId, initialMode = 'race', initialBand = 'beginner', initialTheme = '' }: {
   boardId: string;
   onCreate?: typeof sendBattleCreate;
   onCancel?: typeof sendBattleCancel;
@@ -14,12 +14,15 @@ export function BattleChallengeModal({ boardId, onCreate = sendBattleCreate, onC
   myId?: string;
   initialMode?: BattleMode;
   initialBand?: PuzzleBand;
+  /** Tema pré-selecionado ('' = qualquer). */
+  initialTheme?: string;
 }) {
   const board = useGameStore((s) => s.colyseusBoards.find((b) => b.id === boardId));
   const userId = useAuthStore((s) => s.user?.id);
   const [mode, setMode] = useState<BattleMode>(initialMode);
   const [band, setBand] = useState<PuzzleBand>(initialBand);
   const [showThemes, setShowThemes] = useState(true);
+  const [theme, setTheme] = useState(initialTheme);
   const [now, setNow] = useState(Date.now());
   useEffect(() => {
     const timer = window.setInterval(() => setNow(Date.now()), 1000);
@@ -39,7 +42,7 @@ export function BattleChallengeModal({ boardId, onCreate = sendBattleCreate, onC
         : waiting ? <div className="space-y-4">
           <p className="text-lg font-semibold">{mine ? 'Aguardando adversário…' : `Desafio de ${board.waitingPlayerName}`}</p>
           <p>{BATTLE_MODE_INFO[board.battleMode ?? 'race'].label} · {PUZZLE_BAND_INFO[board.battleBand ?? 'beginner'].label}</p>
-          <p className="text-sm text-slate-300">Temas {board.battleShowThemes ? 'visíveis' : 'ocultos'}</p>
+          <p className="text-sm text-slate-300">Tema: {board.battleTheme ? puzzleThemeLabel(board.battleTheme) : 'qualquer'} · temas {board.battleShowThemes ? 'visíveis' : 'ocultos'}</p>
           {mine && <p className="text-amber-300">Expira em {Math.floor(remaining / 60)}:{String(remaining % 60).padStart(2, '0')}</p>}
           <button data-testid={mine ? 'battle-cancel' : 'battle-accept'} className="w-full rounded-xl bg-amber-500 py-3 font-bold text-slate-950"
             onClick={() => { mine ? onCancel(boardId) : onAccept(boardId); if (!myId) close(); }}>
@@ -58,9 +61,17 @@ export function BattleChallengeModal({ boardId, onCreate = sendBattleCreate, onC
               {PUZZLE_BAND_INFO[item].label} · {PUZZLE_BAND_INFO[item].min}–{PUZZLE_BAND_INFO[item].max}
             </button>)}
           </div></fieldset>
+          <label className="block text-sm"><span className="mb-1 block font-semibold">Tema dos puzzles</span>
+            <select data-testid="battle-theme" value={theme} onChange={(e) => setTheme(e.target.value)}
+              className="w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-slate-100 focus:border-amber-400 focus:outline-none">
+              <option value="">Qualquer tema</option>
+              {BATTLE_THEME_OPTIONS.map((t) => <option key={t} value={t}>{puzzleThemeLabel(t)}</option>)}
+            </select>
+            <span className="mt-1 block text-xs text-slate-400">Só entram puzzles com esse tema. Se a faixa não tiver puzzle do tema, o servidor completa com qualquer tema.</span>
+          </label>
           <label className="flex items-center gap-2 text-sm"><input data-testid="battle-themes" type="checkbox" checked={showThemes} onChange={(e) => setShowThemes(e.target.checked)} />Mostrar o tema dos puzzles</label>
           <button data-testid="battle-create" className="w-full rounded-xl bg-amber-500 py-3 font-bold text-slate-950"
-            onClick={() => { onCreate({ boardId, mode, band, showThemes }); if (!myId) close(); }}>Abrir desafio</button>
+            onClick={() => { onCreate({ boardId, mode, band, showThemes, ...(theme ? { theme } : {}) }); if (!myId) close(); }}>Abrir desafio</button>
         </div>}
     </div>
   </div>;

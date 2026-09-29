@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { DailyPuzzlePanel, type DailyPuzzleTransport } from '../academy/puzzles/DailyPuzzlePanel';
 import { PuzzleHUD } from '../academy/puzzles/PuzzleHUD';
+import { DailyTableOverlay } from '../academy/puzzles/DailyTableOverlay';
 import { PuzzleTableOverlay } from '../academy/puzzles/PuzzleTableOverlay';
 import { dailyPuzzleDate, dailyPuzzleNextReset, dailyRewardFor, type DailySlot, type DailySlotView, type PuzzleStartedPayload } from '../../shared/academy/PuzzleShapes';
 import { evaluatePlayerMove, isValidPuzzle, puzzleSetup, puzzleSolutionMoves } from '../../shared/academy/puzzleSolver';
@@ -110,11 +111,13 @@ export default function PuzzlesBenchPage() {
     // The bench's fake room is intentionally stable for the page lifetime.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }), []);
-  useEffect(() => () => { usePuzzleStore.getState().reset(); usePuzzleSessionStore.getState().clear(); }, []);
+  // Como o servidor ao entrar na sala: o estado do dia chega antes de sentar (aviso parado na mesa).
+  useEffect(() => { publish(); return () => { usePuzzleStore.getState().reset(); usePuzzleSessionStore.getState().clear(); }; }, []); // eslint-disable-line react-hooks/exhaustive-deps
   const seated = usePuzzleStore((s) => s.seat);
 
   return <div className="min-h-screen bg-slate-950 text-white">
     <BenchTableFrame>{(rect) => <>
+      <DailyTableOverlay rectOverride={rect} />
       <PuzzleTableOverlay rectOverride={rect} onMove={move} />
       <PuzzleHUD onLeaveDaily={leave} onOpenDaily={() => setPanel(true)} />
     </>}</BenchTableFrame>

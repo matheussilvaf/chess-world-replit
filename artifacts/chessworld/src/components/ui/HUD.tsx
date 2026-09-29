@@ -3,6 +3,7 @@ import { useAuthStore } from '../../stores/authStore';
 import { useGameStore } from '../../stores/gameStore';
 import { useFriendsStore } from '../../stores/friendsStore';
 import { useChessStore } from '../../stores/chessStore';
+import { useAtChessBoard } from '../../hooks/useAtChessBoard';
 import { useGameSettingsStore } from '../../stores/gameSettingsStore';
 import { useColyseusStore } from '../../hooks/useColyseusConnection';
 import type { ChatMessage } from '../../types';
@@ -43,6 +44,7 @@ export function HUD() {
   const { region, onlinePlayers, unreadChat, liveChatMessage, showChat, toggleChat, toggleProfile, toggleFriends, toggleSettings, toggleVoiceChat, currentWorld, setTravelRequest } = useGameStore();
   const { phase } = useColyseusStore();
   const matchId = useChessStore(s => s.matchId);
+  const atBoard = useAtChessBoard();
   const chatPreviewSeconds = useGameSettingsStore((s) => s.chatPreviewSeconds);
   const [isFullscreen, setIsFullscreen] = useState(!!document.fullscreenElement);
   const inventoryOpen = useInventoryUiStore((s) => s.open);
@@ -62,7 +64,9 @@ export function HUD() {
   }, [mobileMenuOpen]);
 
   const regionInfo = REGIONS.find(r => r.id === region);
-  const inGame = !!matchId;
+  // "Em jogo" = partida OU mesa de puzzle/batalha/lição: o badge do perfil e os
+  // atalhos do mundo somem para deixar a tela limpa.
+  const inGame = !!matchId || atBoard;
 
   // Saldo de Crowns: a sala empurra `wallet_update` ao entrar/coletar; o GET cobre
   // o caso de o servidor ainda não ter enviado (ou deploys sem a mensagem).

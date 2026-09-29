@@ -1,6 +1,6 @@
 ---
 name: Tactics Academy (bots/puzzles/lições)
-description: Lições não óbvias da fase 1 da academia — Stockfish no browser, TMJ com tilesets externos, sala Colyseus solo, detecção de tabela ausente no PostgREST.
+description: Lições não óbvias das fases 1–3 da academia — Stockfish no browser, TMJ com tilesets externos, sala Colyseus solo, PostgREST (tabela ausente, opening_tags text[]), corridas de sessão nas lições.
 ---
 
 # Tactics Academy — lições da fase 1 (set/2026)
@@ -42,3 +42,12 @@ description: Lições não óbvias da fase 1 da academia — Stockfish no browse
 - Zustand: seletor que devolve objeto novo (fen/lance derivado do replay) → loop "Maximum update depth"; derivar com useMemo a partir de primitivos.
 - Lance errado: casas piscam vermelho ~720 ms antes do reinício/solução (feedback chega, reinício aguarda o blink; `pending` guarda um start que chegou durante o blink).
 - Roteiros de teste: `puzzleSolutionMoves` exclui o lance de preparação (l1Pgu = 5 passos, não 6); recompensa parcial com 2 vidas = 70% (30 → 21).
+
+# Fase 3 — Sala de Lições (set/2026)
+- Tabelas só após o usuário rodar `server/supabase/tactics_academy_phase3.sql`; até lá `practiceStart` responde `schema_missing` com mensagem amigável (bloqueia, não degrada) e o e2e `artifacts/api-server/scripts/e2e-lessons.mjs` para nesse ponto (o protocolo até `academy_lesson_state` já prova sentar/abrir).
+- **Regra:** sessões de lição/problema vivem no `LessonManager`; a WorldRoom roteia `puzzleMove` por posse do `sessionId` (`lessons.ownsSession`) antes de cair no gerente do diário/batalhas. Ids são UUID — nunca reutilizar ids sequenciais nos dois gerentes.
+- **Regra:** `stop`/`release` incrementam uma geração por usuário e `start` revalida a geração após CADA await (histórico + sorteio). **Why:** "Parar" durante o sorteio de uma nova prática instalava a sessão depois do cancelamento.
+- `lichess_puzzles.opening_tags` é **text[]** (família + variação por linha): filtrar com `contains`, nunca `ilike` (retorna 204 sem resultado nem erro). O `not in` de exclusão aceita até 400 ids (janela de 300 do histórico + usados) sem estourar URL do PostgREST (~360 ms).
+- Temas raros (subpromoção 2–13 por faixa, mate sufocado expert=1): o sorteio alarga o rating antes de devolver `no_puzzles`; contagem por tema×faixa medida em 29/set/2026 (mateIn1 iniciante 8k, interference iniciante 18).
+- Gerente do diário descarta comandos concorrentes por cliente; o `dailyOpen` automático (entrar/sentar) usa pista própria para não engolir um "Resolver".
+- Bancada `/dev/licoes` (simulação local): a cadeira de lição reaproveita `puzzleStore.seat`, então o HUD do mundo some via `useAtChessBoard`. Nos exemplos o jogador é a cor de `playerColor`; lances ilegais são ignorados em silêncio (não é bug).

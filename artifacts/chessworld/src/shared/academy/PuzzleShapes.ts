@@ -14,6 +14,7 @@
  * Recompensas: SOMENTE Gambitos (diário e batalhas), configuráveis no /admin;
  * nada de XP nem Coroas. Batalhas podem ficar sem recompensa (0 / desligado).
  */
+import type { LessonDifficultyId, LessonThemeId, ProblemFilters } from './LessonShapes.js';
 
 // ---------------------------------------------------------------------------
 // Faixas e rótulos
@@ -163,7 +164,14 @@ export interface DailySeatedPayload {
 
 export type PuzzleContext =
   | { kind: 'daily'; slot: DailySlot }
-  | { kind: 'battle'; battleId: string; index: number };
+  | { kind: 'battle'; battleId: string; index: number }
+  | { kind: 'lesson'; theme: LessonThemeId; difficulty: LessonDifficultyId; index: number; total: number }
+  | { kind: 'problem'; index: number; filters: ProblemFilters };
+
+/** Restringe um contexto aos modos antigos, para evitar tratar lições como batalhas. */
+export function isTablePuzzleContext(context: PuzzleContext): context is Extract<PuzzleContext, { kind: 'daily' | 'battle' }> {
+  return context.kind === 'daily' || context.kind === 'battle';
+}
 
 /** servidor → cliente: um puzzle para resolver (`PUZZLE_MSG.puzzleStarted`). */
 export interface PuzzleStartedPayload extends PuzzleSummary {
@@ -266,6 +274,18 @@ export const BATTLE_STREAK_RATING_STEP = 50;
 /** Puzzles que o servidor mantém pré-sorteados à frente de cada jogador. */
 export const BATTLE_PREFETCH = 2;
 
+/**
+ * Temas que podem ser escolhidos como FILTRO de uma batalha (todos os temas
+ * táticos do banco; ficam de fora os meta-temas de tamanho/origem/fase e as
+ * etiquetas de avaliação, que não descrevem uma ideia). Ordenados pelo rótulo.
+ */
+export const BATTLE_THEME_OPTIONS: readonly string[] = Object.keys(PUZZLE_THEME_LABELS)
+  .filter((t) => !PUZZLE_META_THEMES.includes(t))
+  .sort((a, b) => puzzleThemeLabel(a).localeCompare(puzzleThemeLabel(b), 'pt-BR'));
+export function isBattleTheme(v: unknown): v is string {
+  return typeof v === 'string' && BATTLE_THEME_OPTIONS.includes(v);
+}
+
 /** cliente → servidor (`PUZZLE_MSG.battleCreate`). */
 export interface BattleCreatePayload {
   boardId: string;
@@ -273,6 +293,8 @@ export interface BattleCreatePayload {
   band: PuzzleBand;
   /** Mostrar o tema de cada puzzle aos dois jogadores. */
   showThemes: boolean;
+  /** Filtro opcional: só puzzles que contenham este tema (chave do Lichess, ver `BATTLE_THEME_OPTIONS`). */
+  theme?: string;
 }
 
 /** cliente → servidor (`PUZZLE_MSG.battleAccept` / `battleCancel`). */
@@ -329,6 +351,8 @@ export interface BattleStatePayload {
   mode: BattleMode;
   band: PuzzleBand;
   showThemes: boolean;
+  /** Filtro de tema escolhido na criação (ausente = qualquer tema). */
+  theme?: string;
   phase: BattlePhase;
   serverNow: number;
   /** Início do jogo (fim da contagem regressiva). */

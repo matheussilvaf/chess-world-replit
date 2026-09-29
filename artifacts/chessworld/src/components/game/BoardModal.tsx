@@ -7,7 +7,7 @@ import { academyTableKind, botIdForTable } from '../../shared/academy/AcademySha
 import { BotChallengeModal } from '../academy/BotChallengeModal';
 import { DailyPuzzlePanel } from '../academy/puzzles/DailyPuzzlePanel';
 import { BattleChallengeModal } from '../academy/puzzles/BattleChallengeModal';
-import { LessonTablePlaceholder } from '../academy/LessonTablePlaceholder';
+import { LessonPanel } from '../academy/lessons/LessonPanel';
 
 export interface TimeControl {
   label: string;
@@ -61,7 +61,7 @@ export function BoardModal() {
   const academyKind = academyTableKind(selectedBoard.id);
   if (academyKind === 'puzzle_day') return <DailyPuzzlePanel key={selectedBoard.id} boardId={selectedBoard.id} />;
   if (academyKind === 'puzzle_battle') return <BattleChallengeModal key={selectedBoard.id} boardId={selectedBoard.id} />;
-  if (academyKind === 'lesson') return <LessonTablePlaceholder key={selectedBoard.id} />;
+  if (academyKind === 'lesson') return <LessonPanel key={selectedBoard.id} boardId={selectedBoard.id} />;
 
   const boardState = colyseusBoards.find(b => b.id === selectedBoard.id || b.name === selectedBoard.name);
   const colyseusStatus = boardState?.status || 'idle';

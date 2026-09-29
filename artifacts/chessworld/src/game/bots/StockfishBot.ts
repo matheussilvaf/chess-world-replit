@@ -44,15 +44,12 @@ type Pending = {
   signal?: AbortSignal;
   abort: () => void;
   cancelled: boolean;
-  /** Resolve quando o `bestmove` de uma busca cancelada finalmente chega (nunca sobrepor buscas). */
-  drained?: () => void;
   variants: Map<number, { depth: number; move: string }>;
 };
 
 export class StockfishBot {
   private state: EngineStatus = 'loading';
   private pending: Pending | null = null;
-  private draining: Promise<void> | null = null;
   private level: BotLevel | null = null;
   private phase: 'uci' | 'ready' | 'move' = 'uci';
   private initResolve?: () => void;
@@ -109,7 +106,6 @@ export class StockfishBot {
       const pending = this.pending;
       this.pending = null;
       pending.signal?.removeEventListener('abort', pending.abort);
-      pending.drained?.();
       pending.reject(error);
     }
   }
@@ -136,10 +132,7 @@ export class StockfishBot {
       const pending = this.pending;
       this.pending = null;
       pending.signal?.removeEventListener('abort', pending.abort);
-      if (pending.cancelled) {
-        pending.drained?.();
-        return;
-      }
+      if (pending.cancelled) return;
       const candidates = [...pending.variants.entries()].sort(([a], [b]) => a - b)
         .map(([, variant]) => variant.move).filter((move, index, all) => all.indexOf(move) === index);
       if (!candidates.length && /^[a-h][1-8][a-h][1-8][qrbn]?$/.test(best[1])) candidates.push(best[1]);
@@ -155,9 +148,6 @@ export class StockfishBot {
   }
 
   async bestMove(req: BotMoveRequest, signal?: AbortSignal): Promise<BotMoveResult> {
-    // Uma busca cancelada continua "pendente" até o engine responder ao `stop`;
-    // espera esse dreno em vez de falhar (o driver do jogo cancela e repede rápido).
-    if (this.pending?.cancelled && this.draining) await this.draining;
     if (this.state !== 'ready') throw new Error(`Stockfish indisponível (${this.state}).`);
     if (this.pending) throw new Error('Stockfish já está calculando um lance.');
     if (signal?.aborted) throw new DOMException('Operação cancelada.', 'AbortError');
@@ -173,10 +163,6 @@ export class StockfishBot {
       const pending: Pending = { resolve, reject, signal, cancelled: false, variants: new Map(), abort: () => {
         if (pending.cancelled) return;
         pending.cancelled = true;
-        const drainPromise: Promise<void> = new Promise<void>((done) => {
-          pending.drained = () => { done(); if (this.draining === drainPromise) this.draining = null; };
-        });
-        this.draining = drainPromise;
         this.worker.postMessage('stop');
         reject(new DOMException('Operação cancelada.', 'AbortError'));
         // Keep pending until the corresponding bestmove drains; never overlap searches.
@@ -196,7 +182,6 @@ export class StockfishBot {
     this.initReject = undefined;
     if (this.pending) {
       this.pending.signal?.removeEventListener('abort', this.pending.abort);
-      this.pending.drained?.();
       this.pending.reject(error);
       this.pending = null;
     }

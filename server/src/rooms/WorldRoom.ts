@@ -45,6 +45,8 @@ import { insertBotGame } from '../academy/botGamesRepository.js';
 import { academyTableKind } from '../shared/academy/AcademyShapes.js';
 import { PUZZLE_MSG } from '../shared/academy/PuzzleShapes.js';
 import { AcademyPuzzleManager } from '../academy/puzzles/AcademyPuzzleManager.js';
+import { LESSON_MSG } from '../shared/academy/LessonShapes.js';
+import { LessonManager } from '../academy/lessons/LessonManager.js';
 
 interface JoinOptions {
   /** Legado — IGNORADO para identidade (era spoofável). Mantido só por compat. */
@@ -120,6 +122,7 @@ export class WorldRoom extends Room<WorldState> {
   });
   public hunting: HuntingManager | null = null;
   private puzzles: AcademyPuzzleManager | null = null;
+  private lessons: LessonManager | null = null;
   private huntingGeneration = 0;
   /** Sessões cuja morte atual foi por fome (penalidade + respawn no mapa principal). */
   private starvedSessions = new Set<string>();
@@ -189,6 +192,11 @@ export class WorldRoom extends Room<WorldState> {
         findSessionByPlayerId: (id) => this.findSessionByPlayerId(id) ?? null,
         resetBoard: (board) => this.resetBoard(board),
         updateRoomHold: () => this.syncGraceHold(),
+      });
+      this.lessons = new LessonManager({
+        state: this.state, clients: this.clients,
+        findSessionByPlayerId: (id) => this.findSessionByPlayerId(id) ?? null,
+        resetBoard: (board) => this.resetBoard(board),
       });
     }
     if (this.region.startsWith('craft:')) {
@@ -305,7 +313,17 @@ export class WorldRoom extends Room<WorldState> {
     this.onMessage(PUZZLE_MSG.dailySit, (client, data) => this.puzzles?.dailySit(client, data));
     this.onMessage(PUZZLE_MSG.dailyLeave, (client) => this.puzzles?.dailyLeave(client));
     this.onMessage(PUZZLE_MSG.dailyStart, (client, data) => void this.puzzles?.dailyStart(client, data));
-    this.onMessage(PUZZLE_MSG.puzzleMove, (client, data) => void this.puzzles?.puzzleMove(client, data));
+    this.onMessage(PUZZLE_MSG.puzzleMove, (client, data) => {
+      if (this.lessons?.ownsSession(data?.sessionId)) void this.lessons.puzzleMove(client, data);
+      else void this.puzzles?.puzzleMove(client, data);
+    });
+    this.onMessage(LESSON_MSG.open, (client) => void this.lessons?.open(client));
+    this.onMessage(LESSON_MSG.sit, (client, data) => this.lessons?.sit(client, data));
+    this.onMessage(LESSON_MSG.leave, (client) => this.lessons?.leave(client));
+    this.onMessage(LESSON_MSG.practiceStart, (client, data) => void this.lessons?.practiceStart(client, data));
+    this.onMessage(LESSON_MSG.problemStart, (client, data) => void this.lessons?.problemStart(client, data));
+    this.onMessage(LESSON_MSG.next, (client, data) => void this.lessons?.next(client, data));
+    this.onMessage(LESSON_MSG.stop, (client) => this.lessons?.stop(client));
     this.onMessage(PUZZLE_MSG.battleCreate, (client, data) => this.puzzles?.battleCreate(client, data));
     this.onMessage(PUZZLE_MSG.battleCancel, (client, data) => this.puzzles?.battleCancel(client, data));
     this.onMessage(PUZZLE_MSG.battleAccept, (client, data) => void this.puzzles?.battleAccept(client, data));
@@ -1471,6 +1489,7 @@ export class WorldRoom extends Room<WorldState> {
         // Sala de Puzzles: libera cadeira/sessões ANTES de apagar o PlayerState
         // (o onLeave da conexão antiga já não encontra o jogador).
         this.puzzles?.onStaleSession(existing.id, staleClient);
+        this.lessons?.onStaleSession(existing.id);
         this.state.voiceParticipants.delete(existingSessionId);
         this.state.players.delete(existingSessionId);
         if (staleClient) {
@@ -1501,6 +1520,7 @@ export class WorldRoom extends Room<WorldState> {
 
     this.state.players.set(client.sessionId, player);
     void this.puzzles?.onJoin(client);
+    this.lessons?.onJoin(client);
     registerClient(playerId, client);
     if (!isAnonId(playerId)) presenceService.join(playerId, client.sessionId, this.region);
     void this.hunting?.onJoin(client);
@@ -1601,6 +1621,7 @@ export class WorldRoom extends Room<WorldState> {
     const username = player.username;
     this.hunting?.onLeave(client.sessionId, player.id);
     this.puzzles?.onLeave(client, consented);
+    this.lessons?.onLeave(client);
     console.log(`[WorldRoom] Player leaving: ${username} (${client.sessionId}) | consented: ${consented}`);
 
     // --- Synchronous state cleanup FIRST, before ANY await. A hung config or
@@ -1981,6 +2002,7 @@ export class WorldRoom extends Room<WorldState> {
     board.battleMode = '';
     board.battleBand = '';
     board.battleShowThemes = false;
+    board.battleTheme = '';
     board.battleExpiresAt = 0;
   }
 

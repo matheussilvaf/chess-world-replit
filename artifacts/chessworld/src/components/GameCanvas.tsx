@@ -3,6 +3,7 @@ import { CRAFTING_MAP, CRAFT_REGION_PREFIX } from '../game/config/craftingMapCon
 import { ACADEMY_EXIT_SPAWN, ACADEMY_MAP_PATH, ACADEMY_TARGET_MAP, ACADEMY_MSG, botIdForTable } from '../shared/academy/AcademyShapes';
 import { useAcademyStore } from '../stores/academyStore';
 import { registerDailyPuzzleHandlers, resetPuzzleClientState } from '../game/network/puzzleHandlers';
+import { registerLessonHandlers } from '../game/network/lessonHandlers';
 import { registerBattleHandlers } from '../game/network/battleHandlers';
 import { academyTableKind } from '../shared/academy/AcademyShapes';
 import { botEngine } from '../game/bots/botEngine';
@@ -31,10 +32,8 @@ import { initCharacterSystem, getDefaultCharacterId } from '../game/characters/c
 import type { WorldScene } from '../game/scenes/WorldScene';
 import type { Room } from 'colyseus.js';
 import { PlayerNameTags } from './game/PlayerNameTags';
-import { AttackButton } from './game/AttackButton';
-import { VirtualJoystick } from './game/VirtualJoystick';
+import { WorldControls } from './game/WorldControls';
 import { CharacterCreationModal } from './character-creation/CharacterCreationModal';
-import { ToolHotbar } from './game/ToolHotbar';
 import { CollectionInventoryPanel } from './game/CollectionInventoryPanel';
 import { SkillsPanel } from './game/SkillsPanel';
 import { RecipeBookModal } from './game/RecipeBookModal';
@@ -1354,6 +1353,7 @@ export function GameCanvas() {
     // Sala de Puzzles (diário + batalhas): os handlers filtram pelo contexto da mensagem.
     registerDailyPuzzleHandlers(room);
     registerBattleHandlers(room);
+    registerLessonHandlers(room);
 
     room.onMessage('match_started', (data: any) => {
       useRatingStore.getState().dismiss();
@@ -1597,16 +1597,10 @@ export function GameCanvas() {
       <PlayerNameTags />
       {/* Setas na borda da tela apontando para os animais do contrato fora de vista */}
       <HuntCompass />
-      {/* Mobile: circular attack button (touch devices only) */}
-      <AttackButton
-        getScene={() => (gameRef.current ? getWorldScene(gameRef.current) : null)}
-      />
-      <VirtualJoystick
-        getScene={() => (gameRef.current ? getWorldScene(gameRef.current) : null)}
-      />
+      {/* Ataque (toque), joystick e hotbar: somem enquanto o jogador está num tabuleiro */}
+      <WorldControls getScene={() => (gameRef.current ? getWorldScene(gameRef.current) : null)} />
       {/* Personagem do jogador: criação obrigatória + equipamento */}
       {showCreation && <CharacterCreationModal />}
-      <ToolHotbar />
       {inventoryOpen && <CollectionInventoryPanel />}
       {skillsOpen && <SkillsPanel />}
       {recipeBookOpen && <RecipeBookModal />}
@@ -1642,6 +1636,7 @@ function updateBoardVisual(scene: WorldScene, board: any, room?: Room<any>) {
       timeLabel: board.timeLabel,
       battleMode: board.battleMode,
       battleBand: board.battleBand,
+      battleTheme: board.battleTheme,
       battleExpiresAt: board.battleExpiresAt,
     });
   } else if (board.status === 'playing') {
@@ -1651,7 +1646,7 @@ function updateBoardVisual(scene: WorldScene, board: any, room?: Room<any>) {
       if (board.blackPlayerId && board.blackPlayerId !== localUserId) scene.seatRemotePlayerById(board.blackPlayerId, 'top', board.id);
     };
     const academyKind = academyTableKind(board.id);
-    if (academyKind === 'puzzle_battle' || academyKind === 'puzzle_day') {
+    if (academyKind === 'puzzle_battle' || academyKind === 'puzzle_day' || academyKind === 'lesson') {
       // Mesas de puzzle: o tabuleiro não é revelado aos outros jogadores; só os
       // sprites sentam (na mesa do diário cada cadeira pode vagar separadamente).
       scene.updateBoardStatus(board.id, 'playing');
@@ -1696,6 +1691,7 @@ function syncBoardsToStore(room: Room<any>) {
       battleMode: board.battleMode,
       battleBand: board.battleBand,
       battleShowThemes: board.battleShowThemes,
+      battleTheme: board.battleTheme || undefined,
       battleExpiresAt: board.battleExpiresAt,
     });
   });

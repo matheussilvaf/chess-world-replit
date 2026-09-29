@@ -5,6 +5,7 @@ import { PublicChat } from './chat/PublicChat';
 import { PlayerProfile } from './profile/PlayerProfile';
 import { BoardModal } from './game/BoardModal';
 import { PuzzleHUD } from './academy/puzzles/PuzzleHUD';
+import { DailyTableOverlay } from './academy/puzzles/DailyTableOverlay';
 import { PuzzleTableOverlay } from './academy/puzzles/PuzzleTableOverlay';
 import { HouseModal } from './game/HouseModal';
 import { FriendRequests } from './game/FriendRequests';
@@ -12,6 +13,8 @@ import { SettingsModal } from './game/SettingsModal';
 import { VoiceChatPanel } from './game/VoiceChatPanel';
 import { TableWaitingOverlays } from './game/TableWaitingOverlays';
 import { BotTableLabels } from './academy/BotTableLabels';
+import { LessonHUD } from './academy/lessons/LessonHUD';
+import { LessonDeskCandles } from './academy/lessons/LessonDeskCandles';
 import { useBotMatchDriver } from '../game/bots/useBotMatchDriver';
 import { TournamentPanelOverlays } from './game/TournamentPanelOverlays';
 import { InteractionDebugModal } from './game/InteractionDebugModal';
@@ -111,8 +114,11 @@ export default function GameScene() {
       {/* Sala de Puzzles: tabuleiro e HUD sobre a mesa do mapa (diário e batalhas). */}
       <PuzzleTableOverlay />
       <PuzzleHUD />
+      <LessonHUD />
       <TableWaitingOverlays />
       <BotTableLabels />
+      <LessonDeskCandles />
+      <DailyTableOverlay />
       <TournamentPanelOverlays />
       <TouchControlsPositioner />
     </div>
