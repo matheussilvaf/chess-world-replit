@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Chess, type Square } from 'chess.js';
 
 const files = 'abcdefgh';
@@ -17,10 +17,12 @@ export interface SimpleChessBoardProps {
   checkSquare?: string | null;
   interactive: boolean;
   size?: number | 'auto';
+  animateMove?: { from: string; to: string; key: string | number };
+  onAnimationEnd?: () => void;
 }
 
 export function SimpleChessBoard({
-  fen, orientation, onMove, legalMovesFor, chess: supplied, lastMove, checkSquare, interactive, size = 'auto',
+  fen, orientation, onMove, legalMovesFor, chess: supplied, lastMove, checkSquare, interactive, size = 'auto', animateMove, onAnimationEnd,
 }: SimpleChessBoardProps) {
   const board = useMemo(() => new Chess(fen), [fen]);
   const chess = supplied ?? board;
@@ -33,6 +35,23 @@ export function SimpleChessBoard({
     : [];
   const ranks = orientation === 'w' ? [8, 7, 6, 5, 4, 3, 2, 1] : [1, 2, 3, 4, 5, 6, 7, 8];
   const cols = orientation === 'w' ? [...files] : [...files].reverse();
+  const [animating, setAnimating] = useState(false);
+  const [travelled, setTravelled] = useState(false);
+  useEffect(() => {
+    if (!animateMove) { setAnimating(false); return; }
+    setAnimating(true);
+    setTravelled(false);
+    const frame = window.setTimeout(() => setTravelled(true), 35);
+    const end = window.setTimeout(() => { setAnimating(false); onAnimationEnd?.(); }, 340);
+    return () => { window.clearTimeout(frame); window.clearTimeout(end); };
+    // A key identifies one animation; callback changes must not restart it.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [animateMove?.key]);
+  const movingPiece = animateMove && chess.get(animateMove.from as Square);
+  const position = (square: string) => ({
+    left: `${cols.indexOf(square[0]) * 12.5}%`,
+    top: `${ranks.indexOf(Number(square[1])) * 12.5}%`,
+  });
 
   function move(from: string, to: string, piece?: 'q' | 'r' | 'b' | 'n') {
     const accepted = onMove?.(from, to, piece);
@@ -74,11 +93,11 @@ export function SimpleChessBoard({
           const checked = square === checkSquare;
           const background = checked ? '#ec7272' : highlighted ? '#829769' : last
             ? dark ? '#baca44' : '#f5f682' : dark ? '#b58863' : '#f0d9b5';
-          return <div key={square} data-square={square} aria-label={`Casa ${square}${piece ? ` ${piece.color === 'w' ? 'branca' : 'preta'} ${piece.type}` : ''}`}
+          return <div key={square} data-square={square} data-testid={`square-${square}`} aria-label={`Casa ${square}${piece ? ` ${piece.color === 'w' ? 'branca' : 'preta'} ${piece.type}` : ''}`}
             onPointerDown={() => { if (interactive) start.current = square; }}
             className="relative flex items-center justify-center aspect-square"
             style={{ backgroundColor: background, cursor: interactive ? 'pointer' : 'default' }}>
-            {piece && <img draggable={false} src={`/assets/chesspieces/${images[`${piece.color}${piece.type}`]}.png`}
+            {piece && !(animating && square === animateMove?.from) && <img draggable={false} src={`/assets/chesspieces/${images[`${piece.color}${piece.type}`]}.png`}
               alt="" className="w-[85%] h-[85%] object-contain pointer-events-none drop-shadow-md" />}
             {legal.includes(square) && <span className={`absolute pointer-events-none rounded-full ${piece ? 'inset-1 border-[5px] border-black/25' : 'w-1/4 h-1/4 bg-black/25'}`} />}
             {col === 0 && <span className={`absolute top-0.5 left-1 text-[10px] sm:text-xs font-bold pointer-events-none ${dark ? 'text-amber-100' : 'text-amber-900'}`}>{rank}</span>}
@@ -86,6 +105,11 @@ export function SimpleChessBoard({
           </div>;
         }))}
       </div>
+      {animating && animateMove && movingPiece && <img draggable={false} alt="" aria-hidden="true"
+        src={`/assets/chesspieces/${images[`${movingPiece.color}${movingPiece.type}`]}.png`}
+        className="pointer-events-none absolute z-[5] object-contain drop-shadow-lg"
+        style={{ width: '10.625%', height: '10.625%', margin: '0.9375%', transition: travelled ? 'left 280ms ease-in-out, top 280ms ease-in-out' : 'none',
+          ...position(travelled ? animateMove.to : animateMove.from) }} />}
       {promotion && <div className="absolute inset-0 z-10 flex items-center justify-center bg-slate-950/65 rounded-lg">
         <div className="rounded-xl bg-slate-800 p-4 text-white shadow-2xl">
           <p className="mb-3 text-center font-semibold">Escolha a promoção</p>

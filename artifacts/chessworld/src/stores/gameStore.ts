@@ -5,6 +5,7 @@ import { supabase } from '../lib/supabase';
 import type { Board, House, PlayerPresence, Match, ChatMessage } from '../types';
 import type { Region } from '../config/game';
 import { GAME_CONFIG } from '../config/game';
+import type { BattleMode, PuzzleBand } from '../shared/academy/PuzzleShapes';
 
 interface ColyseusBoardInfo {
   id: string;
@@ -19,6 +20,10 @@ interface ColyseusBoardInfo {
   incrementSeconds: number;
   timeLabel: string;
   matchId: string;
+  battleMode?: BattleMode;
+  battleBand?: PuzzleBand;
+  battleShowThemes?: boolean;
+  battleExpiresAt?: number;
 }
 
 interface MatchStartedInfo {

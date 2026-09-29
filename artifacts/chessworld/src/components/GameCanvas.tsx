@@ -2,6 +2,8 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { CRAFTING_MAP, CRAFT_REGION_PREFIX } from '../game/config/craftingMapConfig';
 import { ACADEMY_EXIT_SPAWN, ACADEMY_MAP_PATH, ACADEMY_TARGET_MAP, ACADEMY_MSG, botIdForTable } from '../shared/academy/AcademyShapes';
 import { useAcademyStore } from '../stores/academyStore';
+import { registerDailyPuzzleHandlers } from '../game/network/puzzleHandlers';
+import { registerBattleHandlers } from '../game/network/battleHandlers';
 import { botEngine } from '../game/bots/botEngine';
 import Phaser from 'phaser';
 import { createPhaserGame, getWorldScene } from '../game/PhaserGame';
@@ -1341,6 +1343,9 @@ export function GameCanvas() {
       console.error('[Academia] Erro:', data.code, data.message);
       pushNotice({ title: data.message || 'Não foi possível concluir a ação na Academia.' });
     });
+    // Sala de Puzzles (diário + batalhas): os handlers filtram pelo contexto da mensagem.
+    registerDailyPuzzleHandlers(room);
+    registerBattleHandlers(room);
 
     room.onMessage('match_started', (data: any) => {
       useRatingStore.getState().dismiss();
@@ -1627,8 +1632,15 @@ function updateBoardVisual(scene: WorldScene, board: any, room?: Room<any>) {
     scene.updateBoardStatus(board.id, 'waiting', {
       playerName: board.waitingPlayerName,
       timeLabel: board.timeLabel,
+      battleMode: board.battleMode,
+      battleBand: board.battleBand,
+      battleExpiresAt: board.battleExpiresAt,
     });
   } else if (board.status === 'playing') {
+    if (/^academy_challenge_\d+$/.test(board.id)) {
+      scene.updateBoardStatus(board.id, 'playing');
+      return;
+    }
     let fen = '';
     if (room?.state?.matches && board.matchId) {
       room.state.matches.forEach((m: any, mId: string) => {
@@ -1670,6 +1682,10 @@ function syncBoardsToStore(room: Room<any>) {
       incrementSeconds: board.incrementSeconds,
       timeLabel: board.timeLabel,
       matchId: board.matchId || '',
+      battleMode: board.battleMode,
+      battleBand: board.battleBand,
+      battleShowThemes: board.battleShowThemes,
+      battleExpiresAt: board.battleExpiresAt,
     });
   });
   useGameStore.getState().setColyseusBoards(boards);

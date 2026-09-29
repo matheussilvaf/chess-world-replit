@@ -4,6 +4,7 @@ import { HUD } from './ui/HUD';
 import { PublicChat } from './chat/PublicChat';
 import { PlayerProfile } from './profile/PlayerProfile';
 import { BoardModal } from './game/BoardModal';
+import { BattleScreen } from './academy/puzzles/BattleScreen';
 import { HouseModal } from './game/HouseModal';
 import { FriendRequests } from './game/FriendRequests';
 import { SettingsModal } from './game/SettingsModal';
@@ -95,6 +96,7 @@ export default function GameScene() {
       <PublicChat />
       <PlayerProfile />
       <BoardModal />
+      <BattleScreen />
       <HouseModal />
       <FriendRequests />
       <PlayerSummaryModal />

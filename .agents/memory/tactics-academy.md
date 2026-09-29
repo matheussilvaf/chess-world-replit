@@ -27,3 +27,10 @@ description: Lições não óbvias da fase 1 da academia — Stockfish no browse
 
 ## Supabase/PostgREST
 - `select(..., { head: true, count })` NÃO revela tabela ausente de forma confiável; testar existência com uma query real e tratar `42P01`/`PGRST205` como `schemaMissing` explícito (o usuário roda o SQL manualmente).
+
+# Fase 2 — Sala de Puzzles (set/2026)
+- Tabelas da fase 2 só existem depois que o usuário roda `server/supabase/tactics_academy_phase2.sql`; até lá o e2e `artifacts/api-server/scripts/e2e-puzzles.mjs` pula o diário (schemaMissing) mas a batalha roda inteira (recompensa/histórico viram `console.warn`, nunca travam o `resetBoard`).
+- **Regra:** no diário, a transição condicional da tentativa (`status='in_progress'` → `solved`, RETURNING lives) vem ANTES do `awardGambitsAtomic`; o prêmio usa as vidas do banco. **Why:** duas sessões do mesmo usuário podiam pagar prêmio numa tentativa já reprovada — a idempotência por matchId evita duplo pagamento, não pagamento indevido.
+- **Regra:** nas batalhas, aplicar `engine.tick(now)` (prazos de melhor-de-N/pressão/tempo) antes de aceitar um lance e passar o `index` da sessão ao `playerMove`; o engine descarta lance cujo índice mudou. Após qualquer `await` (carregar puzzle) revalidar fase/índice antes de abrir sessão. **Why:** lance atrasado pontuava no puzzle seguinte.
+- Pin do admin não altera sorteio com tentativas registradas (400 explicando); cache do sorteio diário tem TTL 60 s por processo.
+- Playwright não carrega o mundo Phaser (sem WebGL): validar UI pelas bancadas `/dev/puzzles` e `/dev/batalhas` (simulação local, sem servidor). Ao escrever plano de teste com lances, conferir a legalidade antes (um "erro" reportado era lance ilegal do plano, não bug).

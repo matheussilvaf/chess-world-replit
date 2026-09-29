@@ -141,7 +141,7 @@ export class ChessOverlayManager {
     const banner = this.scene.add.container(cx, bannerY).setDepth(160);
     banner.setRotation(this.previewRotations.get(tableId) ?? 0);
 
-    const bannerW = Math.max(config.width + 8, 110);
+    const bannerW = Math.max(config.width + 8, timeLabel ? 110 : playerName.length * 4 + 12);
     const bannerH = 22;
     const bg = this.scene.add.graphics();
     bg.fillStyle(0xd97706, 0.95);
@@ -149,12 +149,12 @@ export class ChessOverlayManager {
     bg.lineStyle(1, 0xfbbf24, 1);
     bg.strokeRoundedRect(-bannerW / 2, -bannerH / 2, bannerW, bannerH, 4);
 
-    const text = this.scene.add.text(0, -4, 'Waiting for duel', {
+    const text = this.scene.add.text(0, -4, timeLabel ? 'Aguardando duelo' : playerName, {
       fontFamily: 'Arial, sans-serif', fontSize: '7px', fontStyle: 'bold',
       color: '#ffffff', resolution: 2,
     }).setOrigin(0.5);
 
-    const sub = this.scene.add.text(0, 6, `${playerName} | ${timeLabel}`, {
+    const sub = this.scene.add.text(0, 6, timeLabel ? `${playerName} | ${timeLabel}` : '', {
       fontFamily: 'Arial, sans-serif', fontSize: '6px',
       color: '#fde68a', resolution: 2,
     }).setOrigin(0.5);
@@ -173,7 +173,7 @@ export class ChessOverlayManager {
     overlay.banner = banner;
   }
 
-  showInProgressBanner(tableId: string, fen?: string) {
+  showInProgressBanner(tableId: string, fen?: string, label = 'Match in progress') {
     const config = this.configs.get(tableId);
     if (!config) return;
     this.removeBanner(tableId);
@@ -189,7 +189,7 @@ export class ChessOverlayManager {
     bg.fillStyle(0x059669, 0.9);
     bg.fillRoundedRect(-bannerW / 2, -bannerH / 2, bannerW, bannerH, 3);
 
-    const text = this.scene.add.text(0, 0, 'Match in progress', {
+    const text = this.scene.add.text(0, 0, label, {
       fontFamily: 'Arial, sans-serif', fontSize: '6px', fontStyle: 'bold',
       color: '#ffffff', resolution: 2,
     }).setOrigin(0.5);

@@ -27,6 +27,10 @@ export interface BoardState {
   whitePlayerId?: string;
   blackPlayerId?: string;
   matchId?: string;
+  battleMode?: import('../../shared/academy/PuzzleShapes').BattleMode;
+  battleBand?: import('../../shared/academy/PuzzleShapes').PuzzleBand;
+  battleShowThemes?: boolean;
+  battleExpiresAt?: number;
 }
 
 export interface MatchState {

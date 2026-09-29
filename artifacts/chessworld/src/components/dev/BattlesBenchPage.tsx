@@ -1,0 +1,137 @@
+import { useEffect, useRef, useState } from 'react';
+import { BattleEngine, type BattleEngineEvent } from '../../shared/academy/battleEngine';
+import { isValidPuzzle, evaluatePlayerMove, puzzleSetup, type PuzzleMoves } from '../../shared/academy/puzzleSolver';
+import { BATTLE_MODES, BATTLE_MODE_INFO, PUZZLE_BANDS, PUZZLE_BAND_INFO, type BattleCreatePayload, type BattleStatePayload } from '../../shared/academy/PuzzleShapes';
+import { useBattleStore } from '../../stores/battleStore';
+import { useGameStore } from '../../stores/gameStore';
+import { BattleChallengeModal } from '../academy/puzzles/BattleChallengeModal';
+import { BattleScreen } from '../academy/puzzles/BattleScreen';
+
+const BOARD_ID = 'academy_challenge_1';
+const PUZZLES = [
+  { puzzle_id: 'l1Pgu', fen: '2k5/1pp2ppp/1q2p3/7n/5r2/2N2Q2/PPP2PPP/1R4K1 w - - 7 20', moves: ['f3h5', 'b6f2', 'g1h1', 'f2f1', 'b1f1', 'f4f1'], rating: 751, themes: ['backRankMate', 'mateIn3'] },
+  { puzzle_id: 'wDpDn', fen: '4n3/p5k1/4P1p1/1PbK1P2/6PB/8/8/8 b - - 2 51', moves: ['c5b6', 'd5c6', 'g6f5', 'c6d7'], rating: 2732, themes: ['crushing', 'endgame'] },
+  { puzzle_id: 'devMate', fen: '6k1/5ppp/8/8/8/8/5PPP/R2Q2K1 b - - 0 1', moves: ['g8h8', 'a1a8'], rating: 1200, themes: ['mateIn1'] },
+  { puzzle_id: 'devOpening', fen: 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1', moves: ['d2d4', 'd7d5', 'g1f3'], rating: 900, themes: ['opening'] },
+] as const;
+const validPuzzles = PUZZLES.filter((p) => isValidPuzzle(p));
+if (validPuzzles.length !== PUZZLES.length) throw new Error('Puzzle inválido na bancada de batalhas.');
+
+export default function BattlesBenchPage() {
+  const [mode, setMode] = useState<BattleCreatePayload['mode']>('race');
+  const [band, setBand] = useState<BattleCreatePayload['band']>('beginner');
+  const [modal, setModal] = useState(false);
+  const [waiting, setWaiting] = useState(false);
+  const engine = useRef<BattleEngine | null>(null);
+  const config = useRef<BattleCreatePayload | null>(null);
+  const moveIndex = useRef(0);
+  const botTimer = useRef<number | null>(null);
+  const acceptTimer = useRef<number | null>(null);
+  const board = (status: string, settings?: BattleCreatePayload) => {
+    useGameStore.getState().setColyseusBoards([{
+      id: BOARD_ID, name: 'Desafio 1', status, waitingPlayerId: status === 'waiting' ? 'bench-me' : '',
+      waitingPlayerName: status === 'waiting' ? 'Você' : '',
+      timeCategory: '', baseMinutes: 0, incrementSeconds: 0, timeLabel: '', matchId: '',
+      battleMode: settings?.mode, battleBand: settings?.band, battleShowThemes: settings?.showThemes,
+      battleExpiresAt: status === 'waiting' ? Date.now() + 600_000 : undefined,
+    }]);
+  };
+  const publish = () => {
+    const current = engine.current, settings = config.current;
+    if (!current || !settings) return;
+    const now = Date.now(), view = current.view('bench-me', now);
+    const snapshot: BattleStatePayload = {
+      battleId: 'bench-battle', boardId: BOARD_ID, mode: settings.mode, band: settings.band,
+      showThemes: settings.showThemes, serverNow: now, ...view,
+      result: view.result ? { ...view.result, myRewardGambits: 0, gambitsBalance: null } : undefined,
+    };
+    useBattleStore.getState().setBattle(snapshot);
+    useBattleStore.getState().setScreenOpen(true);
+  };
+  const assign = (index: number) => {
+    const p = validPuzzles[index % validPuzzles.length];
+    const setup = puzzleSetup(p);
+    moveIndex.current = 0;
+    useBattleStore.getState().setPuzzle({
+      puzzleId: p.puzzle_id, rating: p.rating, themes: config.current?.showThemes ? [...p.themes] : [],
+      sessionId: `bench-${index}-${Date.now()}`, context: { kind: 'battle', battleId: 'bench-battle', index },
+      fen: setup.fen, setupMove: setup.setupMove, playerColor: setup.playerColor, solutionLength: setup.solutionLength,
+      livesLeft: engine.current?.view('bench-me', Date.now()).me.lives,
+      deadlineAt: engine.current?.view('bench-me', Date.now()).bestOf?.deadlineAt,
+    });
+  };
+  const applyEvents = (events: BattleEngineEvent[]) => {
+    for (const event of events) {
+      if (event.type === 'puzzle_over' && event.playerId === 'bench-me') {
+        const p = useBattleStore.getState().puzzle;
+        if (p) useBattleStore.getState().setFeedback({
+          sessionId: p.sessionId, ok: false, solved: false, moveIndex: moveIndex.current,
+          puzzleOver: true, puzzleOverReason: event.reason,
+        });
+      }
+      if (event.type === 'puzzle_assigned' && event.playerId === 'bench-me') assign(event.index);
+    }
+    if (events.length) publish();
+  };
+  const start = (settings: BattleCreatePayload) => {
+    config.current = settings;
+    board('waiting', settings);
+    setWaiting(true);
+    acceptTimer.current = window.setTimeout(() => {
+      setModal(false);
+      setWaiting(false);
+      board('playing', settings);
+      engine.current = new BattleEngine({
+        mode: settings.mode, band: settings.band,
+        players: [{ id: 'bench-me', name: 'Você' }, { id: 'bench-bot', name: 'Bot da bancada' }], now: Date.now(),
+      });
+      publish();
+    }, 2000);
+  };
+  useEffect(() => {
+    const ticker = window.setInterval(() => {
+      if (engine.current) applyEvents(engine.current.tick(Date.now()));
+    }, 250);
+    return () => { window.clearInterval(ticker); if (botTimer.current) window.clearTimeout(botTimer.current); if (acceptTimer.current) window.clearTimeout(acceptTimer.current); useBattleStore.getState().clear(); };
+  }, []);
+  useEffect(() => {
+    if (!engine.current || engine.current.phase === 'finished') return;
+    const bot = () => {
+      if (!engine.current || engine.current.phase !== 'running') return;
+      applyEvents(engine.current.playerMove('bench-bot', { ok: Math.random() > 0.28, solved: true }, Date.now()));
+      botTimer.current = window.setTimeout(bot, 2000 + Math.random() * 4000);
+    };
+    botTimer.current = window.setTimeout(bot, 2000 + Math.random() * 4000);
+    return () => { if (botTimer.current) window.clearTimeout(botTimer.current); };
+  }, [waiting]);
+  const move = (sessionId: string, uci: string) => {
+    const active = useBattleStore.getState().puzzle;
+    if (!active || active.sessionId !== sessionId || !engine.current || engine.current.phase !== 'running') return;
+    const p = validPuzzles[active.context.kind === 'battle' ? active.context.index % validPuzzles.length : 0] as PuzzleMoves;
+    const evaluation = evaluatePlayerMove(p, moveIndex.current, uci);
+    if (!evaluation.legal) return;
+    useBattleStore.getState().setFeedback({
+      sessionId, ok: evaluation.ok, solved: evaluation.solved, moveIndex: moveIndex.current,
+      reply: evaluation.reply, puzzleOver: !evaluation.ok, puzzleOverReason: evaluation.ok ? undefined : 'wrong',
+      livesLeft: engine.current.view('bench-me', Date.now()).me.lives,
+    });
+    if (evaluation.ok && !evaluation.solved) { moveIndex.current += 1; return; }
+    // Let PuzzleBoard animate its feedback before assigning the next puzzle.
+    window.setTimeout(() => { if (engine.current) applyEvents(engine.current.playerMove('bench-me', evaluation, Date.now())); }, 850);
+  };
+  return <main className="min-h-screen bg-slate-950 p-6 text-slate-100">
+    <div className="mx-auto max-w-3xl space-y-5">
+      <h1 className="text-3xl font-bold text-amber-300">Bancada das batalhas de puzzles</h1>
+      <p>Simulação local: sem login nem conexão com o servidor.</p>
+      <div className="flex flex-wrap gap-3">
+        <label>Modo <select data-testid="bench-mode" value={mode} onChange={(e) => setMode(e.target.value as BattleCreatePayload['mode'])} className="ml-2 bg-slate-800 p-2">{BATTLE_MODES.map((value) => <option key={value} value={value}>{BATTLE_MODE_INFO[value].label}</option>)}</select></label>
+        <label>Faixa <select data-testid="bench-band" value={band} onChange={(e) => setBand(e.target.value as BattleCreatePayload['band'])} className="ml-2 bg-slate-800 p-2">{PUZZLE_BANDS.map((value) => <option key={value} value={value}>{PUZZLE_BAND_INFO[value].label}</option>)}</select></label>
+      </div>
+      <button data-testid="bench-create" onClick={() => { board('idle'); setModal(true); }} className="rounded-xl bg-amber-500 px-6 py-3 font-bold text-slate-950">Criar desafio</button>
+      {waiting && <p data-testid="bench-waiting">O bot aceitará o desafio em 2 segundos…</p>}
+    </div>
+    {modal && <BattleChallengeModal boardId={BOARD_ID} myId="bench-me" initialMode={mode} initialBand={band} onClose={() => setModal(false)} onCreate={(payload) => start(payload)}
+      onCancel={() => { if (acceptTimer.current) window.clearTimeout(acceptTimer.current); board('idle'); setWaiting(false); setModal(false); }} />}
+    <BattleScreen onMove={move} onDismiss={() => { engine.current = null; board('idle'); }} onLeave={() => { if (engine.current) applyEvents(engine.current.forfeit('bench-me', Date.now())); }} />
+  </main>;
+}

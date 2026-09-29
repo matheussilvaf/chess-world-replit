@@ -41,6 +41,9 @@ import { presenceService } from '../presence/presenceService.js';
 import { ACADEMY_MSG, ACADEMY_ROOM_NAME, botIdForTable, botPlayerId, isBotPlayerId, type CreateBotChallengePayload, type BotMovePayload, type AcademyBot } from '../shared/academy/AcademyShapes.js';
 import { getBots } from '../academy/academyBotsRepository.js';
 import { insertBotGame } from '../academy/botGamesRepository.js';
+import { academyTableKind } from '../shared/academy/AcademyShapes.js';
+import { PUZZLE_MSG } from '../shared/academy/PuzzleShapes.js';
+import { AcademyPuzzleManager } from '../academy/puzzles/AcademyPuzzleManager.js';
 
 interface JoinOptions {
   /** Legado — IGNORADO para identidade (era spoofável). Mantido só por compat. */
@@ -112,6 +115,7 @@ export class WorldRoom extends Room<WorldState> {
     onSwingFrame: (sessionId, rects, swingId) => this.hunting?.onSwingFrame(sessionId, rects, swingId),
   });
   public hunting: HuntingManager | null = null;
+  private puzzles: AcademyPuzzleManager | null = null;
   private huntingGeneration = 0;
   /** Sessões cuja morte atual foi por fome (penalidade + respawn no mapa principal). */
   private starvedSessions = new Set<string>();
@@ -175,6 +179,14 @@ export class WorldRoom extends Room<WorldState> {
     }, 30_000);
 
     this.region = String(options.region || 'default');
+    if (this.roomName === ACADEMY_ROOM_NAME) {
+      this.puzzles = new AcademyPuzzleManager({
+        state: this.state, clients: this.clients,
+        findSessionByPlayerId: (id) => this.findSessionByPlayerId(id) ?? null,
+        resetBoard: (board) => this.resetBoard(board),
+        updateRoomHold: () => this.syncGraceHold(),
+      });
+    }
     if (this.region.startsWith('craft:')) {
       const generation = ++this.huntingGeneration;
       void HuntingManager.create({
@@ -285,6 +297,14 @@ export class WorldRoom extends Room<WorldState> {
         console.log(`[WorldRoom] Boards registered: ${registered} (total: ${this.state.boards.size})`);
       }
     });
+    this.onMessage(PUZZLE_MSG.dailyOpen, (client) => void this.puzzles?.dailyOpen(client));
+    this.onMessage(PUZZLE_MSG.dailyStart, (client, data) => void this.puzzles?.dailyStart(client, data));
+    this.onMessage(PUZZLE_MSG.puzzleMove, (client, data) => void this.puzzles?.puzzleMove(client, data));
+    this.onMessage(PUZZLE_MSG.battleCreate, (client, data) => this.puzzles?.battleCreate(client, data));
+    this.onMessage(PUZZLE_MSG.battleCancel, (client, data) => this.puzzles?.battleCancel(client, data));
+    this.onMessage(PUZZLE_MSG.battleAccept, (client, data) => void this.puzzles?.battleAccept(client, data));
+    this.onMessage(PUZZLE_MSG.battleLeave, (client, data) => this.puzzles?.battleLeave(client, data));
+    this.onMessage(PUZZLE_MSG.battleDismiss, (client) => this.puzzles?.battleDismiss(client));
 
     this.onMessage('create_challenge', (client, data) => {
       const { boardId, timeCategory, baseMinutes, incrementSeconds, timeLabel, side } = data as {
@@ -292,7 +312,7 @@ export class WorldRoom extends Room<WorldState> {
       };
       const player = this.state.players.get(client.sessionId);
       if (!player) return;
-      if (botIdForTable(boardId)) {
+      if (botIdForTable(boardId) || (this.roomName === ACADEMY_ROOM_NAME && academyTableKind(boardId))) {
         client.send(ACADEMY_MSG.error, { code: 'bot_table', message: 'Use o desafio de bot nesta mesa.' });
         return;
       }
@@ -336,7 +356,7 @@ export class WorldRoom extends Room<WorldState> {
       const { boardId } = data as { boardId: string };
       const player = this.state.players.get(client.sessionId);
       if (!player) return;
-      if (botIdForTable(boardId)) {
+      if (botIdForTable(boardId) || (this.roomName === ACADEMY_ROOM_NAME && academyTableKind(boardId))) {
         client.send(ACADEMY_MSG.error, { code: 'bot_table', message: 'Esta mesa é reservada para bots.' });
         return;
       }
@@ -1471,6 +1491,7 @@ export class WorldRoom extends Room<WorldState> {
     player.isMoving = false;
 
     this.state.players.set(client.sessionId, player);
+    void this.puzzles?.onJoin(client);
     registerClient(playerId, client);
     if (!isAnonId(playerId)) presenceService.join(playerId, client.sessionId, this.region);
     void this.hunting?.onJoin(client);
@@ -1570,6 +1591,7 @@ export class WorldRoom extends Room<WorldState> {
     const leavingHp = Math.max(0, Math.floor(player.hp));
     const username = player.username;
     this.hunting?.onLeave(client.sessionId, player.id);
+    this.puzzles?.onLeave(client, consented);
     console.log(`[WorldRoom] Player leaving: ${username} (${client.sessionId}) | consented: ${consented}`);
 
     // --- Synchronous state cleanup FIRST, before ANY await. A hung config or
@@ -1730,7 +1752,7 @@ export class WorldRoom extends Room<WorldState> {
   private syncGraceHold(): void {
     let pending = false;
     this.disconnectTimers.forEach((timers) => { if (timers.size > 0) pending = true; });
-    this.autoDispose = !pending;
+    this.autoDispose = !pending && !this.puzzles?.hasActiveBattles();
   }
 
   async onDispose() {
@@ -1897,6 +1919,7 @@ export class WorldRoom extends Room<WorldState> {
   private async tick() {
     this.hunting?.tick(1000 / this.TICK_RATE);
     const now = Date.now();
+    this.puzzles?.tick(now);
     const timedOutMatches: MatchState[] = [];
     const entries: [string, MatchState][] = [];
     this.state.matches.forEach((match, matchId) => entries.push([matchId, match]));
@@ -1946,6 +1969,10 @@ export class WorldRoom extends Room<WorldState> {
     board.whitePlayerId = '';
     board.blackPlayerId = '';
     board.matchId = '';
+    board.battleMode = '';
+    board.battleBand = '';
+    board.battleShowThemes = false;
+    board.battleExpiresAt = 0;
   }
 
   hasPlayerById(playerId: string): boolean {

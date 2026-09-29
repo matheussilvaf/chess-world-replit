@@ -3,8 +3,11 @@ import { useGameStore } from '../../stores/gameStore';
 import { useAuthStore } from '../../stores/authStore';
 import { sendCreateChallenge, sendAcceptChallenge, sendBoardCancel } from '../../game/network/colyseusClient';
 import { X, Loader2, Swords, Zap, Timer, Clock, Eye, Crown } from 'lucide-react';
-import { botIdForTable } from '../../shared/academy/AcademyShapes';
+import { academyTableKind, botIdForTable } from '../../shared/academy/AcademyShapes';
 import { BotChallengeModal } from '../academy/BotChallengeModal';
+import { DailyPuzzlesModal } from '../academy/puzzles/DailyPuzzlesModal';
+import { BattleChallengeModal } from '../academy/puzzles/BattleChallengeModal';
+import { LessonTablePlaceholder } from '../academy/LessonTablePlaceholder';
 
 export interface TimeControl {
   label: string;
@@ -55,6 +58,10 @@ export function BoardModal() {
   if (!selectedBoard) return null;
   const botId = botIdForTable(selectedBoard.id);
   if (botId) return <BotChallengeModal key={selectedBoard.id} botId={botId} boardId={selectedBoard.id} />;
+  const academyKind = academyTableKind(selectedBoard.id);
+  if (academyKind === 'puzzle_day') return <DailyPuzzlesModal key={selectedBoard.id} boardId={selectedBoard.id} />;
+  if (academyKind === 'puzzle_battle') return <BattleChallengeModal key={selectedBoard.id} boardId={selectedBoard.id} />;
+  if (academyKind === 'lesson') return <LessonTablePlaceholder key={selectedBoard.id} />;
 
   const boardState = colyseusBoards.find(b => b.id === selectedBoard.id || b.name === selectedBoard.name);
   const colyseusStatus = boardState?.status || 'idle';

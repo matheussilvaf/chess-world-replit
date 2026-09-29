@@ -407,6 +407,7 @@ export class WorldScene extends Phaser.Scene {
   private seatTween: Phaser.Tweens.Tween | null = null;
   private savedCollisionFilter: any = null;
   private chessOverlay!: ChessOverlayManager;
+  private battleBannerTimers = new Map<string, Phaser.Time.TimerEvent>();
 
   constructor() {
     super({ key: 'WorldScene' });
@@ -2330,7 +2331,26 @@ export class WorldScene extends Phaser.Scene {
     });
   }
 
-  public updateBoardStatus(arenaId: string, status: string, info?: { playerName?: string; timeLabel?: string; fen?: string }) {
+  public updateBoardStatus(arenaId: string, status: string, info?: { playerName?: string; timeLabel?: string; fen?: string; battleMode?: string; battleBand?: string; battleExpiresAt?: number }) {
+    this.battleBannerTimers.get(arenaId)?.remove();
+    this.battleBannerTimers.delete(arenaId);
+    if (/^academy_challenge_\d+$/.test(arenaId) && this.chessOverlay) {
+      if (status === 'waiting') {
+        const labels: Record<string, string> = { race: 'Corrida', streak: 'Sequência', best_of_5: 'Melhor de 5', best_of_10: 'Melhor de 10', best_of_15: 'Melhor de 15', survival: 'Survival', pressure: 'Pressão' };
+        const bands: Record<string, string> = { beginner: 'Iniciante', intermediate: 'Intermediário', advanced: 'Avançado', master: 'Mestre' };
+        const refresh = () => {
+          const seconds = Math.max(0, Math.ceil(((info?.battleExpiresAt ?? Date.now()) - Date.now()) / 1000));
+          this.chessOverlay?.showWaitingBanner(arenaId, `${labels[info?.battleMode ?? ''] ?? 'Batalha'} · ${bands[info?.battleBand ?? ''] ?? ''} · ${info?.playerName ?? ''} · ${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`, '');
+        };
+        refresh();
+        this.battleBannerTimers.set(arenaId, this.time.addEvent({ delay: 1000, loop: true, callback: refresh }));
+      } else if (status === 'playing') {
+        this.chessOverlay.showInProgressBanner(arenaId, undefined, 'Batalha em andamento');
+      } else {
+        this.chessOverlay.removeBanner(arenaId);
+      }
+      return;
+    }
     // Use overlay manager if available
     if (this.chessOverlay) {
       if (status === 'waiting') {

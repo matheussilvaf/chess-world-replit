@@ -18,6 +18,10 @@ export class BoardState extends Schema {
   whitePlayerId!: string;
   blackPlayerId!: string;
   matchId!: string;
+  battleMode: string = '';
+  battleBand: string = '';
+  battleShowThemes: boolean = false;
+  battleExpiresAt: number = 0;
 }
 
 defineTypes(BoardState, {
@@ -38,4 +42,8 @@ defineTypes(BoardState, {
   whitePlayerId: 'string',
   blackPlayerId: 'string',
   matchId: 'string',
+  battleMode: 'string',
+  battleBand: 'string',
+  battleShowThemes: 'boolean',
+  battleExpiresAt: 'number',
 });

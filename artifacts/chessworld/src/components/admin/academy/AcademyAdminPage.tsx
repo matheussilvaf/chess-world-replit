@@ -4,8 +4,10 @@ import { BOT_ENGINE_PARAMS, BOT_LEVELS, BOT_NAME_MAX_LEN, DEFAULT_ACADEMY_BOTS, 
 import { academyApi } from '../../../game/network/academyApi';
 import { LevelBars } from '../../academy/LevelBars';
 import { ACADEMY_SQL } from './academySql';
+import { DailyPuzzlesAdmin } from './DailyPuzzlesAdmin';
 
 export function AcademyAdminPage() {
+  const [tab, setTab] = useState<'bots' | 'daily' | 'battles'>('bots');
   const [bots, setBots] = useState<AcademyBot[]>(DEFAULT_ACADEMY_BOTS);
   const [schemaMissing, setSchemaMissing] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -39,8 +41,14 @@ export function AcademyAdminPage() {
   return <main className="min-h-screen bg-slate-950 px-4 py-8 text-slate-100">
     <div className="mx-auto max-w-5xl space-y-6">
       <Link to="/admin" className="text-sm text-cyan-400 hover:text-cyan-300">← Voltar ao painel</Link>
-      <header><h1 className="text-2xl font-bold">Tactics Academy — Bots</h1>
-        <p className="mt-1 text-sm text-slate-400">Configure os nomes e os níveis dos quatro adversários de treino.</p></header>
+       <header><h1 className="text-2xl font-bold">Tactics Academy — Administração</h1>
+         <p className="mt-1 text-sm text-slate-400">Configure os bots, os puzzles diários e as batalhas.</p></header>
+       <nav aria-label="Seções da Academia" className="flex flex-wrap gap-2 border-b border-slate-700 pb-3">
+         {([['bots', 'Bots'], ['daily', 'Puzzles diários'], ['battles', 'Batalhas']] as const).map(([id, label]) =>
+           <button key={id} type="button" onClick={() => setTab(id)} aria-current={tab === id ? 'page' : undefined}
+             className={`rounded-lg px-4 py-2 text-sm font-semibold ${tab === id ? 'bg-cyan-700 text-white' : 'bg-slate-800 text-slate-300 hover:bg-slate-700'}`}>{label}</button>)}
+       </nav>
+       {tab === 'bots' && <>
       {error && <p role="alert" className="rounded-lg border border-red-700 bg-red-950/60 p-3 text-sm text-red-200">{error}</p>}
       {success && <p role="status" className="rounded-lg border border-green-700 bg-green-950/50 p-3 text-sm text-green-200">{success}</p>}
       {schemaMissing && <section className="rounded-lg border border-amber-600 bg-amber-950/40 p-4">
@@ -73,6 +81,8 @@ export function AcademyAdminPage() {
         className="rounded-lg bg-cyan-600 px-5 py-2 text-sm font-semibold text-white hover:bg-cyan-500 disabled:opacity-50">
         {saving ? 'Salvando…' : 'Salvar bots'}
       </button>
+       </>}
+       {tab !== 'bots' && <DailyPuzzlesAdmin section={tab} />}
     </div>
   </main>;
 }
